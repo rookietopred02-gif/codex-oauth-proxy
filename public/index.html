@@ -1,0 +1,1295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codex OAuth Proxy Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg0: #081127;
+        --bg1: #111b37;
+        --bg2: #16254b;
+        --card: rgba(255, 255, 255, 0.06);
+        --card-border: rgba(255, 255, 255, 0.14);
+        --text: #eaf0ff;
+        --muted: #9aa8ca;
+        --ok: #2fd7a5;
+        --warn: #ffca6c;
+        --bad: #ff6f7f;
+        --accent: #66a1ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        font-family: "Space Grotesk", sans-serif;
+        background:
+          radial-gradient(1200px 500px at 10% -20%, #1f4488 0%, transparent 60%),
+          radial-gradient(900px 500px at 90% -10%, #4d226f 0%, transparent 65%),
+          linear-gradient(130deg, var(--bg0) 0%, var(--bg1) 45%, var(--bg2) 100%);
+        min-height: 100vh;
+      }
+
+      .wrap {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .head {
+        display: grid;
+        gap: 6px;
+        margin-bottom: 18px;
+      }
+
+      .title {
+        font-size: clamp(28px, 5vw, 44px);
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .sub {
+        color: var(--muted);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+      }
+
+      .grid {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+
+      .card {
+        border: 1px solid var(--card-border);
+        background: var(--card);
+        border-radius: 14px;
+        padding: 14px;
+        backdrop-filter: blur(8px);
+        animation: cardIn 420ms ease both;
+      }
+
+      @keyframes cardIn {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .card h3 {
+        margin: 0 0 12px;
+        font-size: 14px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #d9e4ff;
+      }
+
+      .kv {
+        display: grid;
+        grid-template-columns: 130px 1fr;
+        gap: 8px;
+        font-size: 13px;
+        margin-bottom: 6px;
+      }
+
+      .kv .k {
+        color: var(--muted);
+      }
+
+      .mono {
+        font-family: "JetBrains Mono", monospace;
+        word-break: break-all;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 999px;
+        padding: 5px 10px;
+        font-size: 12px;
+        font-family: "JetBrains Mono", monospace;
+        border: 1px solid var(--card-border);
+      }
+
+      .status.ok {
+        color: var(--ok);
+      }
+
+      .status.bad {
+        color: var(--bad);
+      }
+
+      .btns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      button {
+        border: 1px solid var(--card-border);
+        color: var(--text);
+        background: #1a2e5f;
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #234184;
+      }
+
+      button.secondary {
+        background: #2b244f;
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--card-border);
+        background: rgba(0, 0, 0, 0.25);
+        color: var(--text);
+        padding: 9px 10px;
+        font-size: 13px;
+        margin-bottom: 10px;
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: none;
+        border-color: rgba(102, 161, 255, 0.8);
+        box-shadow:
+          0 0 0 1px rgba(102, 161, 255, 0.5),
+          0 0 0 4px rgba(102, 161, 255, 0.14);
+      }
+
+      select {
+        appearance: none;
+        -webkit-appearance: none;
+        -moz-appearance: none;
+        color-scheme: dark;
+        padding-right: 36px;
+        background-image:
+          linear-gradient(45deg, transparent 50%, #9eb9f9 50%),
+          linear-gradient(135deg, #9eb9f9 50%, transparent 50%),
+          linear-gradient(180deg, rgba(23, 37, 74, 0.98), rgba(13, 24, 52, 0.98));
+        background-position:
+          calc(100% - 16px) calc(50% - 2px),
+          calc(100% - 10px) calc(50% - 2px),
+          0 0;
+        background-size:
+          6px 6px,
+          6px 6px,
+          100% 100%;
+        background-repeat: no-repeat;
+        transition:
+          border-color 0.15s ease,
+          box-shadow 0.15s ease,
+          background-color 0.15s ease;
+      }
+
+      select:hover {
+        border-color: rgba(133, 170, 255, 0.7);
+      }
+
+      select::-ms-expand {
+        display: none;
+      }
+
+      select option,
+      select optgroup {
+        background: #15284f;
+        color: #eaf0ff;
+      }
+
+      textarea {
+        resize: vertical;
+        min-height: 72px;
+      }
+
+      .log {
+        max-height: 260px;
+        overflow: auto;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 6px 4px;
+        text-align: left;
+        white-space: nowrap;
+      }
+
+      th {
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      .hint {
+        font-size: 12px;
+        color: var(--warn);
+      }
+
+      .result {
+        margin-top: 8px;
+        border-radius: 10px;
+        border: 1px solid var(--card-border);
+        background: rgba(0, 0, 0, 0.28);
+        padding: 10px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .inline-row {
+        display: grid;
+        grid-template-columns: 1.3fr 1.3fr auto;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .inline-row select,
+      .inline-row input {
+        margin-bottom: 0;
+      }
+
+      .checkline {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .checkline input {
+        width: auto;
+        margin: 0;
+      }
+
+      .map-del {
+        border: 1px solid rgba(255, 111, 127, 0.45);
+        background: rgba(255, 111, 127, 0.14);
+        color: #ffadb7;
+        border-radius: 8px;
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+
+      .pool-kpis {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+
+      .metric-card {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background:
+          linear-gradient(160deg, rgba(31, 45, 86, 0.86), rgba(14, 24, 49, 0.92));
+        border-radius: 12px;
+        padding: 11px;
+      }
+
+      .metric-label {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 5px;
+      }
+
+      .metric-value {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 24px;
+        line-height: 1;
+        margin-bottom: 5px;
+      }
+
+      .metric-sub {
+        color: var(--muted);
+        font-size: 11px;
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      .pool-layout {
+        display: grid;
+        grid-template-columns: 1.15fr 1fr;
+        gap: 12px;
+      }
+
+      .pool-pane {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 12px;
+        background: rgba(8, 15, 33, 0.45);
+        padding: 11px;
+      }
+
+      .pool-pane h4 {
+        margin: 0 0 10px;
+        font-size: 13px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #d9e4ff;
+      }
+
+      .recommend-list {
+        display: grid;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      .recommend-item {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 10px;
+        background: rgba(25, 37, 73, 0.62);
+        padding: 9px 10px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .recommend-name {
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .recommend-sub {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 11px;
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      .account-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 10px;
+      }
+
+      .account-grid.compact {
+        grid-template-columns: 1fr;
+        max-height: 360px;
+        overflow: auto;
+        padding-right: 2px;
+      }
+
+      .account-card {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background:
+          linear-gradient(160deg, rgba(23, 39, 78, 0.82), rgba(13, 24, 50, 0.9));
+        border-radius: 12px;
+        padding: 12px;
+      }
+
+      .account-card.active {
+        border-color: rgba(102, 161, 255, 0.7);
+        box-shadow:
+          0 0 0 1px rgba(102, 161, 255, 0.35),
+          0 10px 24px rgba(41, 91, 185, 0.22);
+      }
+
+      .account-card.compact .account-meta {
+        gap: 6px 8px;
+      }
+
+      .account-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      .account-name {
+        font-weight: 700;
+        font-size: 14px;
+        line-height: 1.2;
+      }
+
+      .account-id {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      .pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        justify-content: flex-end;
+      }
+
+      .pill {
+        border-radius: 999px;
+        border: 1px solid transparent;
+        padding: 2px 8px;
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      .pill.ok {
+        color: #9df6d6;
+        border-color: rgba(47, 215, 165, 0.44);
+        background: rgba(47, 215, 165, 0.14);
+      }
+
+      .pill.warn {
+        color: #ffe29f;
+        border-color: rgba(255, 202, 108, 0.44);
+        background: rgba(255, 202, 108, 0.14);
+      }
+
+      .pill.bad {
+        color: #ffc1c8;
+        border-color: rgba(255, 111, 127, 0.44);
+        background: rgba(255, 111, 127, 0.14);
+      }
+
+      .pill.neutral {
+        color: #c9d7ff;
+        border-color: rgba(169, 188, 235, 0.38);
+        background: rgba(143, 164, 218, 0.14);
+      }
+
+      .account-meta {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px 10px;
+      }
+
+      .meta-item .k {
+        color: var(--muted);
+        font-size: 11px;
+        margin-bottom: 2px;
+      }
+
+      .meta-item .v {
+        font-size: 12px;
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      .account-error {
+        margin-top: 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 111, 127, 0.32);
+        background: rgba(80, 19, 38, 0.28);
+        padding: 7px 8px;
+        color: #ffb6c1;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        word-break: break-word;
+      }
+
+      .usage-stack {
+        margin-top: 10px;
+        display: grid;
+        gap: 8px;
+      }
+
+      .usage-item .label {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+
+      .usage-item .label .v {
+        color: #d4e2ff;
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      .usage-track {
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.1);
+        overflow: hidden;
+      }
+
+      .usage-fill {
+        height: 100%;
+        border-radius: 999px;
+        transition: width 200ms ease;
+      }
+
+      .usage-fill.ok {
+        background: linear-gradient(90deg, #1fcf8d, #36e3a7);
+      }
+
+      .usage-fill.warn {
+        background: linear-gradient(90deg, #f6a63a, #ffca6c);
+      }
+
+      .usage-fill.bad {
+        background: linear-gradient(90deg, #f06a7a, #ff8f9d);
+      }
+
+      .account-empty {
+        border: 1px dashed rgba(255, 255, 255, 0.22);
+        border-radius: 10px;
+        padding: 14px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 980px) {
+        .pool-layout {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="head">
+        <div class="title">Codex OAuth Proxy Dashboard</div>
+        <div class="sub">Local control surface for auth, upstream settings, and runtime diagnostics.</div>
+      </div>
+
+      <div class="grid">
+        <section class="card">
+          <h3>Runtime</h3>
+          <div class="kv"><div class="k">Mode</div><div id="mode" class="mono">-</div></div>
+          <div class="kv"><div class="k">Uptime</div><div id="uptime" class="mono">-</div></div>
+          <div class="kv"><div class="k">Base URL</div><div class="mono">http://127.0.0.1:8787/v1</div></div>
+          <div class="status" id="authBadge">loading...</div>
+          <div class="btns">
+            <button id="refreshBtn">Refresh</button>
+            <button id="loginBtn">OAuth Login</button>
+            <button id="addAccount2Btn">Add Account #2</button>
+            <button id="addAccount3Btn">Add Account #3</button>
+            <button id="logoutBtn" class="secondary">Logout</button>
+          </div>
+          <div class="hint">If you hav used the Codex CLI before, it will automatically fetch and authenticating.</div>
+        </section>
+
+        <section class="card" style="grid-column: 1 / -1">
+          <h3>Account Pool</h3>
+          <div class="btns" style="margin-top:0;margin-bottom:10px">
+            <button id="refreshUsageBtn">Refresh Usage (All)</button>
+          </div>
+          <div class="pool-kpis">
+            <div class="metric-card">
+              <div class="metric-label">Total Accounts</div>
+              <div id="poolTotal" class="metric-value">0</div>
+              <div class="metric-sub">all pooled identities</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Healthy Ratio</div>
+              <div id="poolHealthyRatio" class="metric-value">0%</div>
+              <div class="metric-sub">ready for request routing</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Cooldown</div>
+              <div id="poolCooldownCount" class="metric-value">0</div>
+              <div class="metric-sub">temporarily paused</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">At Risk</div>
+              <div id="poolRiskCount" class="metric-value">0</div>
+              <div id="poolRiskHint" class="metric-sub">disabled / expired</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Strategy</div>
+              <div id="poolStrategy" class="metric-value" style="font-size:16px">-</div>
+              <div id="poolAuthState" class="metric-sub">auth: -</div>
+            </div>
+          </div>
+          <div class="pool-layout">
+            <div class="pool-pane">
+              <h4>Current Account</h4>
+              <div id="currentAccountCard" class="account-empty">No active account selected.</div>
+            </div>
+            <div class="pool-pane">
+              <h4>Best Account Recommendation</h4>
+              <div id="recommendList" class="recommend-list">
+                <div class="account-empty">No recommendation yet.</div>
+              </div>
+              <h4>All Accounts</h4>
+              <div id="accountPoolCards" class="account-grid compact">
+                <div class="account-empty">Loading account pool...</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Proxy Config</h3>
+          <label for="upstreamMode">Upstream Mode</label>
+          <select id="upstreamMode">
+            <option value="codex-chatgpt">openai-v1</option>
+            <option value="gemini-v1beta">gemini-v1beta</option>
+            <option value="anthropic-v1">anthropic-v1</option>
+          </select>
+          <label for="upstreamBaseUrl">Upstream Base URL</label>
+          <input id="upstreamBaseUrl" />
+          <label for="defaultModel">Default Model</label>
+          <input id="defaultModel" />
+          <label for="defaultInstructions">Default Instructions</label>
+          <textarea id="defaultInstructions"></textarea>
+          <label for="defaultReasoningEffort">Reasoning Effort (思維長度)</label>
+          <select id="defaultReasoningEffort">
+            <option value="adaptive">adaptive (auto)</option>
+            <option value="none">none</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+          </select>
+          <div class="btns">
+            <button id="saveConfigBtn">Save Runtime Config</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Self Test</h3>
+          <label for="testPrompt">Prompt</label>
+          <textarea id="testPrompt">Reply with one short sentence: dashboard self-test passed.</textarea>
+          <div class="btns">
+            <button id="runTestBtn">Run Upstream Test</button>
+          </div>
+          <div class="result" id="testResult">No test executed.</div>
+        </section>
+
+        <section class="card" style="grid-column: 1 / -1">
+          <h3>Model Router</h3>
+          <div class="hint">Priority: exact mapping &gt; wildcard (`*`) &gt; system fallback mapping.</div>
+          <label class="checkline"
+            ><input id="modelRouterEnabled" type="checkbox" />Enable model router</label
+          >
+          <div class="inline-row">
+            <select id="mapFrom"></select>
+            <select id="mapTo"></select>
+            <button id="addMappingBtn">Add Mapping</button>
+          </div>
+          <div class="btns">
+            <button id="saveMappingsBtn">Save Model Router</button>
+            <button id="resetMappingsBtn" class="secondary">Reset Mappings</button>
+            <button id="reloadModelOptionsBtn" class="secondary">Reload Model Options</button>
+          </div>
+          <div class="log">
+            <table>
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Target</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="mapTable"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="card" style="grid-column: 1 / -1">
+          <h3>Recent Proxy Requests</h3>
+          <div class="btns">
+            <button id="refreshReqBtn">Refresh Requests</button>
+            <button id="clearReqBtn" class="secondary">Clear Records</button>
+          </div>
+          <div class="log">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Method</th>
+                  <th>Path</th>
+                  <th>Input</th>
+                  <th>Output</th>
+                  <th>Total</th>
+                  <th>Status</th>
+                  <th>Latency</th>
+                </tr>
+              </thead>
+              <tbody id="reqTable"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      let currentMappings = {};
+      let modelCandidates = [];
+      let wildcardPresets = [];
+      let usageRefreshInFlight = false;
+      let lastUsageRefreshAtMs = 0;
+      const USAGE_AUTO_REFRESH_MIN_MS = 5 * 60 * 1000;
+
+      function escapeHtml(text) {
+        return String(text ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function fmtUptime(ms) {
+        const sec = Math.floor(ms / 1000);
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        const s = sec % 60;
+        return `${h}h ${m}m ${s}s`;
+      }
+
+      function displayUpstreamMode(mode) {
+        if (mode === "codex-chatgpt") return "openai-v1";
+        return mode;
+      }
+
+      function fmtToken(n) {
+        if (!Number.isFinite(n)) return "-";
+        if (Math.abs(n) < 1000) return String(n);
+        const v = n / 1000;
+        if (Math.abs(v) >= 100) return `${Math.round(v)}k`;
+        return `${v.toFixed(1).replace(/\\.0$/, "")}k`;
+      }
+
+      function fmtUnixSec(sec) {
+        if (!Number.isFinite(sec) || sec <= 0) return "-";
+        return new Date(sec * 1000).toLocaleString();
+      }
+
+      function fmtCooldown(cooldownUntilSec) {
+        if (!Number.isFinite(cooldownUntilSec) || cooldownUntilSec <= 0) return "-";
+        const remain = cooldownUntilSec - Math.floor(Date.now() / 1000);
+        if (remain <= 0) return "ready";
+        if (remain < 60) return `${remain}s`;
+        const m = Math.floor(remain / 60);
+        const s = remain % 60;
+        return `${m}m ${s}s`;
+      }
+
+      function shortId(value) {
+        const v = String(value || "");
+        if (!v) return "-";
+        if (v.length <= 16) return v;
+        return `${v.slice(0, 8)}...${v.slice(-6)}`;
+      }
+
+      function safePercent(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return null;
+        return Math.max(0, Math.min(100, n));
+      }
+
+      function resolveAccountHealth(account, activeAccountId) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const enabled = account?.enabled !== false;
+        const isActive = String(account?.accountId || "") === String(activeAccountId || "");
+        const cooldownUntil = Number(account?.cooldownUntil || 0);
+        const expiresAt = Number(account?.expiresAt || 0);
+        const inCooldown = cooldownUntil > nowSec;
+        const expired = expiresAt > 0 && expiresAt <= nowSec;
+        const expiringSoon = expiresAt > nowSec && expiresAt - nowSec < 180;
+
+        if (!enabled) return { label: "disabled", tone: "bad", isActive };
+        if (expired) return { label: "expired", tone: "bad", isActive };
+        if (inCooldown) return { label: "cooldown", tone: "warn", isActive };
+        if (expiringSoon) return { label: "expiring", tone: "warn", isActive };
+        return { label: "healthy", tone: "ok", isActive };
+      }
+
+      function computeAccountScore(account, activeAccountId) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const health = resolveAccountHealth(account, activeAccountId);
+        const failureCount = Number(account?.failureCount || 0);
+        const cooldownUntil = Number(account?.cooldownUntil || 0);
+        const expiresAt = Number(account?.expiresAt || 0);
+        const primaryUsed = safePercent(account?.usageSnapshot?.primary?.used_percent);
+        const secondaryUsed = safePercent(account?.usageSnapshot?.secondary?.used_percent);
+
+        let score = 100;
+        if (account?.enabled === false) score -= 90;
+        if (health.label === "expired") score -= 80;
+        if (health.label === "cooldown") score -= 35;
+        if (health.label === "expiring") score -= 15;
+        if (primaryUsed !== null) score -= Math.round(primaryUsed * 0.35);
+        if (secondaryUsed !== null) score -= Math.round(secondaryUsed * 0.15);
+        score -= Math.min(55, failureCount * 11);
+        if (cooldownUntil > nowSec) {
+          const remain = cooldownUntil - nowSec;
+          score -= Math.min(18, Math.floor(remain / 20));
+        }
+        if (expiresAt > nowSec && expiresAt - nowSec < 180) {
+          score -= 8;
+        }
+        if (health.isActive) score += 4;
+        return Math.max(0, Math.min(100, Math.round(score)));
+      }
+
+      function scoreTone(score) {
+        if (score >= 80) return "ok";
+        if (score >= 45) return "warn";
+        return "bad";
+      }
+
+      function percentTone(percent) {
+        if (!Number.isFinite(percent)) return "neutral";
+        if (percent <= 60) return "ok";
+        if (percent <= 85) return "warn";
+        return "bad";
+      }
+
+      function buildAccountCardHtml(account, activeAccountId, compact = false) {
+        const health = resolveAccountHealth(account, activeAccountId);
+        const score = computeAccountScore(account, activeAccountId);
+        const pills = [`<span class="pill ${health.tone}">${health.label}</span>`];
+        if (health.isActive) pills.push(`<span class="pill neutral">active</span>`);
+        const usage = account?.usageSnapshot || null;
+        const primaryUsed = safePercent(usage?.primary?.used_percent);
+        const secondaryUsed = safePercent(usage?.secondary?.used_percent);
+        const primaryTone = percentTone(primaryUsed);
+        const secondaryTone = percentTone(secondaryUsed);
+        const usageHtml =
+          primaryUsed === null && secondaryUsed === null
+            ? `<div class="account-empty" style="margin-top:10px;padding:8px 10px">Usage snapshot not fetched yet.</div>`
+            : `<div class="usage-stack">
+                ${
+                  primaryUsed === null
+                    ? ""
+                    : `<div class="usage-item">
+                        <div class="label"><span>Primary Window</span><span class="v">${primaryUsed}% used</span></div>
+                        <div class="usage-track"><div class="usage-fill ${primaryTone}" style="width:${primaryUsed}%"></div></div>
+                      </div>`
+                }
+                ${
+                  secondaryUsed === null
+                    ? ""
+                    : `<div class="usage-item">
+                        <div class="label"><span>Secondary Window</span><span class="v">${secondaryUsed}% used</span></div>
+                        <div class="usage-track"><div class="usage-fill ${secondaryTone}" style="width:${secondaryUsed}%"></div></div>
+                      </div>`
+                }
+              </div>`;
+        const errorHtml =
+          typeof account.lastError === "string" && account.lastError.trim().length > 0
+            ? `<div class="account-error">last_error: ${escapeHtml(account.lastError)}</div>`
+            : "";
+
+        return `<article class="account-card ${health.isActive ? "active" : ""} ${compact ? "compact" : ""}">
+          <div class="account-head">
+            <div>
+              <div class="account-name">${escapeHtml(account.label || "unnamed-account")}</div>
+              <div class="account-id" title="${escapeHtml(account.accountId || "-")}">${escapeHtml(shortId(account.accountId || "-"))}</div>
+            </div>
+            <div class="pill-row">
+              ${pills.join("")}
+              <span class="pill ${scoreTone(score)}">${score}%</span>
+            </div>
+          </div>
+          <div class="account-meta">
+            <div class="meta-item"><div class="k">Expires</div><div class="v">${fmtUnixSec(Number(account.expiresAt || 0))}</div></div>
+            <div class="meta-item"><div class="k">Last Used</div><div class="v">${fmtUnixSec(Number(account.lastUsedAt || 0))}</div></div>
+            <div class="meta-item"><div class="k">Failures</div><div class="v">${Number(account.failureCount || 0)}</div></div>
+            <div class="meta-item"><div class="k">Cooldown</div><div class="v">${fmtCooldown(Number(account.cooldownUntil || 0))}</div></div>
+            <div class="meta-item"><div class="k">Plan</div><div class="v">${escapeHtml(String(usage?.plan_type || "-"))}</div></div>
+            <div class="meta-item"><div class="k">Usage Updated</div><div class="v">${fmtUnixSec(Number(account.usageUpdatedAt || usage?.fetched_at || 0))}</div></div>
+          </div>
+          ${usageHtml}
+          ${errorHtml}
+        </article>`;
+      }
+
+      function uniqueSortedModels(items) {
+        return Array.from(
+          new Set(
+            (Array.isArray(items) ? items : [])
+              .map((v) => String(v || "").trim())
+              .filter(Boolean)
+          )
+        ).sort((a, b) => a.localeCompare(b));
+      }
+
+      function collectModelOptions() {
+        const models = [];
+        models.push(...modelCandidates);
+        models.push(...wildcardPresets);
+        models.push($("defaultModel").value);
+        for (const [from, to] of Object.entries(currentMappings || {})) {
+          models.push(from, to);
+        }
+        return uniqueSortedModels(models);
+      }
+
+      function renderModelOptions() {
+        const fromSelect = $("mapFrom");
+        const toSelect = $("mapTo");
+        const fromPrev = fromSelect.value;
+        const toPrev = toSelect.value;
+        const options = collectModelOptions();
+        const html = [`<option value="">Select model...</option>`]
+          .concat(options.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`))
+          .join("");
+
+        fromSelect.innerHTML = html;
+        toSelect.innerHTML = html;
+
+        if (fromPrev && options.includes(fromPrev)) fromSelect.value = fromPrev;
+        if (toPrev && options.includes(toPrev)) toSelect.value = toPrev;
+      }
+
+      async function loadModelCandidates(forceRefresh = false) {
+        try {
+          const data = await api(`/admin/model-candidates${forceRefresh ? "?refresh=1" : ""}`);
+          modelCandidates = uniqueSortedModels(data?.models);
+          wildcardPresets = uniqueSortedModels(data?.wildcardPresets);
+        } catch (err) {
+          console.warn("Failed to load model candidates:", err.message);
+        }
+        renderModelOptions();
+      }
+
+      function renderMappingsTable() {
+        const entries = Object.entries(currentMappings || {});
+        $("mapTable").innerHTML = entries
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(
+            ([from, to]) => `<tr>
+              <td class="mono">${escapeHtml(from)}</td>
+              <td class="mono">${escapeHtml(to)}</td>
+              <td><button class="map-del" data-map-del="${escapeHtml(from)}">Delete</button></td>
+            </tr>`
+          )
+          .join("");
+      }
+
+      async function api(path, init = {}) {
+        const res = await fetch(path, init);
+        const text = await res.text();
+        let data = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = { raw: text };
+        }
+        if (!res.ok) {
+          const msg = data?.message || data?.error || text || `HTTP ${res.status}`;
+          throw new Error(msg);
+        }
+        return data;
+      }
+
+      function renderState(state) {
+        $("mode").textContent = `${state.config.authMode} | ${displayUpstreamMode(state.config.upstreamMode)}`;
+        $("uptime").textContent = fmtUptime(state.uptimeMs);
+        $("upstreamMode").value = state.config.upstreamMode;
+        $("upstreamBaseUrl").value = state.config.upstreamBaseUrl;
+        $("defaultModel").value = state.config.defaultModel;
+        $("defaultInstructions").value = state.config.defaultInstructions;
+        $("defaultReasoningEffort").value = state.config.defaultReasoningEffort || "medium";
+        $("modelRouterEnabled").checked = state.config.modelRouterEnabled !== false;
+        currentMappings = { ...(state.config.modelMappings || {}) };
+        renderMappingsTable();
+        renderModelOptions();
+
+        const authOk = Boolean(state.auth?.authenticated);
+        const badge = $("authBadge");
+        badge.className = `status ${authOk ? "ok" : "bad"}`;
+        badge.textContent = authOk ? "AUTHENTICATED" : "NOT AUTHENTICATED";
+
+        const accounts = Array.isArray(state.auth?.accounts) ? state.auth.accounts : [];
+        const strategy = state.auth?.multiAccountStrategy || "-";
+        const enabledCount = Number(state.auth?.enabledAccountCount || 0);
+        const activeAccount = state.auth?.activeAccountId || "";
+        const poolEnabled = state.auth?.multiAccountEnabled === true;
+        const decorated = accounts.map((a) => {
+          const health = resolveAccountHealth(a, activeAccount);
+          const score = computeAccountScore(a, activeAccount);
+          return { ...a, _health: health, _score: score };
+        });
+        const healthyCount = decorated.filter((x) => x._health.label === "healthy").length;
+        const cooldownCount = decorated.filter((x) => x._health.label === "cooldown").length;
+        const riskCount = decorated.filter((x) =>
+          ["disabled", "expired", "cooldown", "expiring"].includes(x._health.label)
+        ).length;
+        const healthyRatio =
+          enabledCount > 0 ? Math.round((healthyCount / enabledCount) * 100) : 0;
+
+        $("poolTotal").textContent = String(accounts.length);
+        $("poolHealthyRatio").textContent = `${healthyRatio}%`;
+        $("poolCooldownCount").textContent = String(cooldownCount);
+        $("poolRiskCount").textContent = String(riskCount);
+        $("poolRiskHint").textContent = poolEnabled
+          ? `${enabledCount}/${accounts.length} enabled`
+          : "multi-account disabled";
+        $("poolStrategy").textContent = poolEnabled ? strategy : "disabled";
+        $("poolAuthState").textContent = authOk ? "auth: connected" : "auth: disconnected";
+
+        const activeItem =
+          decorated.find((x) => String(x.accountId || "") === String(activeAccount || "")) ||
+          decorated[0] ||
+          null;
+        $("currentAccountCard").innerHTML = activeItem
+          ? buildAccountCardHtml(activeItem, activeAccount)
+          : `<div class="account-empty">No active account selected.</div>`;
+
+        const recommendations = decorated
+          .filter((x) => x.enabled !== false)
+          .sort((a, b) => b._score - a._score)
+          .slice(0, 3);
+        $("recommendList").innerHTML =
+          recommendations.length === 0
+            ? `<div class="account-empty">No recommendation available.</div>`
+            : recommendations
+                .map((acc) => {
+                  const tone = scoreTone(acc._score);
+                  return `<div class="recommend-item">
+                    <div>
+                      <div class="recommend-name">${escapeHtml(acc.label || "unnamed-account")}</div>
+                      <div class="recommend-sub">${escapeHtml(shortId(acc.accountId || "-"))}</div>
+                    </div>
+                    <span class="pill ${tone}">${acc._score}%</span>
+                  </div>`;
+                })
+                .join("");
+
+        $("accountPoolCards").innerHTML =
+          decorated.length === 0
+            ? `<div class="account-empty">No pooled accounts yet. Use OAuth Login / Add Account #2 / #3.</div>`
+            : decorated
+                .map((a) => buildAccountCardHtml(a, activeAccount, true))
+                .join("");
+
+        const rows = (state.stats?.recentRequests || []).slice(0, 80);
+        $("reqTable").innerHTML = rows
+          .map((r) => {
+            const t = new Date(r.ts).toLocaleTimeString();
+            const statusColor = r.status >= 400 ? "var(--bad)" : "var(--ok)";
+            const routeText =
+              r.requestedModel && r.mappedModel
+                ? `${escapeHtml(r.requestedModel)} → ${escapeHtml(r.mappedModel)}`
+                : "";
+            return `<tr>
+              <td>${t}</td>
+              <td>${r.method}</td>
+              <td class="mono">${escapeHtml(r.path)}${routeText ? `<br><span style="color:var(--muted)">${routeText}</span>` : ""}</td>
+              <td>${fmtToken(r.inputTokens)}</td>
+              <td>${fmtToken(r.outputTokens)}</td>
+              <td>${fmtToken(r.totalTokens)}</td>
+              <td style="color:${statusColor}">${r.status}</td>
+              <td>${r.durationMs} ms</td>
+            </tr>`;
+          })
+          .join("");
+      }
+
+      async function refreshState() {
+        const state = await api("/admin/state");
+        renderState(state);
+      }
+
+      async function refreshUsage(force = false) {
+        if (usageRefreshInFlight) return false;
+        const now = Date.now();
+        if (!force && now - lastUsageRefreshAtMs < USAGE_AUTO_REFRESH_MIN_MS) {
+          return false;
+        }
+        usageRefreshInFlight = true;
+        try {
+          await api("/admin/auth-pool/refresh-usage", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({})
+          });
+          lastUsageRefreshAtMs = Date.now();
+          return true;
+        } catch (err) {
+          console.warn("Usage refresh failed:", err.message);
+          return false;
+        } finally {
+          usageRefreshInFlight = false;
+        }
+      }
+
+      async function saveConfig() {
+        await api("/admin/config", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            upstreamMode: $("upstreamMode").value,
+            upstreamBaseUrl: $("upstreamBaseUrl").value,
+            defaultModel: $("defaultModel").value,
+            defaultInstructions: $("defaultInstructions").value,
+            defaultReasoningEffort: $("defaultReasoningEffort").value,
+            modelRouterEnabled: $("modelRouterEnabled").checked,
+            modelMappings: currentMappings
+          })
+        });
+        await refreshState();
+      }
+
+      async function runTest() {
+        $("testResult").textContent = "Running test...";
+        try {
+          const result = await api("/admin/test", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ prompt: $("testPrompt").value })
+          });
+          $("testResult").textContent = JSON.stringify(result, null, 2);
+          await refreshState();
+        } catch (err) {
+          $("testResult").textContent = `TEST FAILED: ${err.message}`;
+        }
+      }
+
+      $("refreshBtn").addEventListener("click", refreshState);
+      $("loginBtn").addEventListener("click", () => window.open("/auth/login", "_blank"));
+      $("addAccount2Btn").addEventListener("click", () =>
+        window.open("/auth/login?label=acc2&prompt=login", "_blank")
+      );
+      $("addAccount3Btn").addEventListener("click", () =>
+        window.open("/auth/login?label=acc3&prompt=login", "_blank")
+      );
+      $("logoutBtn").addEventListener("click", async () => {
+        try {
+          await api("/auth/logout", { method: "POST" });
+          await refreshState();
+        } catch (err) {
+          alert(`Logout failed: ${err.message}`);
+        }
+      });
+      $("saveConfigBtn").addEventListener("click", async () => {
+        try {
+          await saveConfig();
+        } catch (err) {
+          alert(`Save config failed: ${err.message}`);
+        }
+      });
+      $("addMappingBtn").addEventListener("click", () => {
+        const from = $("mapFrom").value;
+        const to = $("mapTo").value;
+        if (!from || !to) {
+          alert("Both source and target model are required.");
+          return;
+        }
+        currentMappings[from] = to;
+        $("mapFrom").value = "";
+        $("mapTo").value = "";
+        renderMappingsTable();
+        renderModelOptions();
+      });
+      $("mapTable").addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const key = target.getAttribute("data-map-del");
+        if (!key) return;
+        delete currentMappings[key];
+        renderMappingsTable();
+      });
+      $("saveMappingsBtn").addEventListener("click", async () => {
+        try {
+          await api("/admin/config", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              modelRouterEnabled: $("modelRouterEnabled").checked,
+              modelMappings: currentMappings
+            })
+          });
+          await refreshState();
+        } catch (err) {
+          alert(`Save model router failed: ${err.message}`);
+        }
+      });
+      $("resetMappingsBtn").addEventListener("click", () => {
+        if (!confirm("Reset all custom model mappings?")) return;
+        currentMappings = {};
+        renderMappingsTable();
+        renderModelOptions();
+      });
+      $("reloadModelOptionsBtn").addEventListener("click", async () => {
+        await loadModelCandidates(true);
+      });
+      $("refreshReqBtn").addEventListener("click", async () => {
+        try {
+          await refreshState();
+        } catch (err) {
+          alert(`Refresh requests failed: ${err.message}`);
+        }
+      });
+      $("clearReqBtn").addEventListener("click", async () => {
+        if (!confirm("Clear all recent proxy request records?")) return;
+        try {
+          await api("/admin/requests/clear", { method: "POST" });
+          await refreshState();
+        } catch (err) {
+          alert(`Clear request records failed: ${err.message}`);
+        }
+      });
+      $("refreshUsageBtn").addEventListener("click", async () => {
+        try {
+          const didRefresh = await refreshUsage(true);
+          if (!didRefresh) return;
+          await refreshState();
+        } catch (err) {
+          alert(`Refresh usage failed: ${err.message}`);
+        }
+      });
+      $("runTestBtn").addEventListener("click", runTest);
+
+      Promise.all([loadModelCandidates(), refreshState()]).catch((err) => {
+        $("testResult").textContent = `Init failed: ${err.message}`;
+      });
+      refreshUsage(true)
+        .then((did) => (did ? refreshState() : null))
+        .catch(() => {});
+      setInterval(() => {
+        refreshState().catch(() => {});
+      }, 5000);
+      setInterval(() => {
+        refreshUsage(false)
+          .then((did) => {
+            if (did) return refreshState();
+            return null;
+          })
+          .catch(() => {});
+      }, 45000);
+    </script>
+  </body>
+</html>

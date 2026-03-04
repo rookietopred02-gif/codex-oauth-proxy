@@ -1,0 +1,17 @@
+{
+  "name": "codex-oauth-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local OAuth reverse proxy for Codex/OpenAI-compatible APIs",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2"
+  }
+}
