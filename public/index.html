@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Syncopate:wght@400;700&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap"
       rel="stylesheet"
     />
     <style>
@@ -23,6 +23,13 @@
         --warn: #ffca6c;
         --bad: #ff6f7f;
         --accent: #66a1ff;
+        --mx: 50vw;
+        --my: 50vh;
+        --fx-alpha: 1;
+        --fx-glow-opacity: 0.26;
+        --fx-shimmer-duration: 1.35s;
+        --fx-shimmer-alpha: 0.22;
+        --fx-orb-scale: 1;
       }
 
       * {
@@ -33,17 +40,38 @@
         margin: 0;
         color: var(--text);
         font-family: "Space Grotesk", sans-serif;
+        position: relative;
+        overflow-x: hidden;
         background:
           radial-gradient(1200px 500px at 10% -20%, #1f4488 0%, transparent 60%),
           radial-gradient(900px 500px at 90% -10%, #4d226f 0%, transparent 65%),
-          linear-gradient(130deg, var(--bg0) 0%, var(--bg1) 45%, var(--bg2) 100%);
+          linear-gradient(180deg, var(--bg0) 0%, var(--bg1) 50%, var(--bg2) 100%);
         min-height: 100vh;
       }
 
+      body::before {
+        content: "";
+        position: fixed;
+        inset: -20vh -20vw;
+        pointer-events: none;
+        z-index: 0;
+        background:
+          radial-gradient(420px circle at var(--mx) var(--my), rgba(106, 164, 255, 0.28), transparent 62%),
+          radial-gradient(360px circle at calc(var(--mx) * 0.82) calc(var(--my) * 1.08), rgba(168, 93, 255, 0.14), transparent 64%);
+        opacity: var(--fx-alpha);
+        transition: opacity 0.3s ease;
+      }
+
+      body.fx-off {
+        --fx-alpha: 0;
+      }
+
       .wrap {
-        max-width: 1200px;
+        max-width: 1280px;
         margin: 0 auto;
-        padding: 24px;
+        padding: 24px 22px 36px;
+        position: relative;
+        z-index: 2;
       }
 
       .head {
@@ -52,10 +80,24 @@
         margin-bottom: 18px;
       }
 
+      .head-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
       .title {
         font-size: clamp(28px, 5vw, 44px);
+        font-family: "Syncopate", "Space Grotesk", sans-serif;
         font-weight: 700;
-        letter-spacing: 0.02em;
+        letter-spacing: 0.04em;
+      }
+
+      .fx-toggle {
+        min-width: 96px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
       }
 
       .sub {
@@ -75,9 +117,41 @@
         border: 1px solid var(--card-border);
         background: var(--card);
         border-radius: 14px;
-        padding: 16px;
+        padding: 17px;
         backdrop-filter: blur(8px);
         animation: cardIn 420ms ease both;
+        position: relative;
+        transform-style: preserve-3d;
+        transition:
+          transform 0.18s ease,
+          box-shadow 0.22s ease,
+          border-color 0.2s ease;
+        will-change: transform;
+      }
+
+      .card::after {
+        content: "";
+        position: absolute;
+        inset: -1px;
+        border-radius: inherit;
+        pointer-events: none;
+        background: radial-gradient(
+          500px circle at var(--card-mx, 50%) var(--card-my, 50%),
+          rgba(102, 161, 255, var(--fx-glow-opacity)),
+          transparent 45%
+        );
+        opacity: 0;
+        transition: opacity 0.2s ease;
+      }
+
+      .card.fx-active {
+        box-shadow:
+          0 14px 26px rgba(0, 0, 0, 0.24),
+          0 0 0 1px rgba(127, 170, 255, 0.35);
+      }
+
+      .card.fx-active::after {
+        opacity: 1;
       }
 
       .card.span-12 {
@@ -101,6 +175,11 @@
         letter-spacing: 0.06em;
         text-transform: uppercase;
         color: #d9e4ff;
+        min-height: 18px;
+      }
+
+      .card.core-card {
+        min-height: 430px;
       }
 
       .kv {
@@ -155,10 +234,36 @@
         font-family: "JetBrains Mono", monospace;
         font-size: 12px;
         cursor: pointer;
+        position: relative;
+        overflow: hidden;
+        transition:
+          background 0.2s ease,
+          transform 0.18s ease,
+          box-shadow 0.2s ease;
+      }
+
+      button::before {
+        content: "";
+        position: absolute;
+        width: 180px;
+        height: 180px;
+        left: calc(var(--btn-mx, 50%) - 90px);
+        top: calc(var(--btn-my, 50%) - 90px);
+        border-radius: 999px;
+        background: radial-gradient(circle, rgba(147, 191, 255, 0.3), transparent 65%);
+        opacity: 0;
+        transition: opacity 0.2s ease;
+        pointer-events: none;
       }
 
       button:hover {
         background: #234184;
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(16, 31, 64, 0.4);
+      }
+
+      button:hover::before {
+        opacity: 1;
       }
 
       button.secondary {
@@ -277,9 +382,279 @@
         color: var(--bad);
       }
 
+      .req-row {
+        cursor: pointer;
+        transition: background-color 0.14s ease;
+      }
+
+      .req-row:hover td {
+        background: rgba(102, 161, 255, 0.08);
+      }
+
+      .req-row:focus-visible {
+        outline: 2px solid rgba(102, 161, 255, 0.8);
+        outline-offset: -2px;
+      }
+
+      .req-row.fx-trail td {
+        background:
+          linear-gradient(106deg, rgba(102, 161, 255, 0.08), rgba(138, 103, 255, 0.13), rgba(81, 216, 255, 0.09));
+        background-size: 220% 100%;
+        animation: rowTrail 780ms ease-out 1;
+      }
+
+      .fx-stage {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 1;
+        overflow: hidden;
+      }
+
+      .fx-orb {
+        position: absolute;
+        border-radius: 999px;
+        filter: blur(28px);
+        opacity: calc(0.32 * var(--fx-alpha));
+        will-change: transform;
+        transform: scale(var(--fx-orb-scale));
+      }
+
+      .fx-orb.fx-a {
+        width: 260px;
+        height: 260px;
+        background: rgba(102, 161, 255, 0.55);
+        top: 8vh;
+        left: 7vw;
+      }
+
+      .fx-orb.fx-b {
+        width: 320px;
+        height: 320px;
+        background: rgba(153, 96, 255, 0.45);
+        top: 42vh;
+        right: 9vw;
+      }
+
+      .fx-orb.fx-c {
+        width: 220px;
+        height: 220px;
+        background: rgba(67, 210, 200, 0.4);
+        bottom: 8vh;
+        left: 32vw;
+      }
+
+      .fx-spark-layer {
+        position: fixed;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        overflow: hidden;
+      }
+
+      .fx-spark {
+        position: absolute;
+        width: 5px;
+        height: 5px;
+        border-radius: 999px;
+        background: rgba(154, 204, 255, 0.9);
+        box-shadow: 0 0 10px rgba(154, 204, 255, 0.5);
+        animation: fxSparkFade var(--spark-life, 700ms) ease-out forwards;
+      }
+
+      @keyframes fxSparkFade {
+        from {
+          opacity: 0.92;
+          transform: translate3d(0, 0, 0) scale(1);
+        }
+        to {
+          opacity: 0;
+          transform: translate3d(var(--dx, 0), var(--dy, -16px), 0) scale(0.2);
+        }
+      }
+
+      .req-detail-backdrop[hidden] {
+        display: none;
+      }
+
+      .req-detail-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 999;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+        background: rgba(7, 12, 25, 0.5);
+        backdrop-filter: blur(10px);
+      }
+
+      .req-detail-modal {
+        width: min(1100px, 96vw);
+        max-height: min(90vh, 920px);
+        overflow: auto;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background:
+          radial-gradient(1200px 520px at 0% -30%, rgba(68, 114, 210, 0.2), transparent 60%),
+          linear-gradient(160deg, rgba(22, 35, 70, 0.96), rgba(10, 18, 39, 0.97));
+        box-shadow:
+          0 25px 60px rgba(0, 0, 0, 0.45),
+          0 0 0 1px rgba(111, 139, 198, 0.26);
+        padding: 16px;
+      }
+
+      .req-detail-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .req-detail-title {
+        margin: 0;
+        font-size: 18px;
+        letter-spacing: 0.02em;
+      }
+
+      .req-detail-close {
+        padding: 6px 10px;
+      }
+
+      .req-detail-meta-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(140px, 1fr));
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+
+      .req-detail-meta-item {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 10px;
+        background: rgba(17, 28, 58, 0.8);
+        padding: 9px 10px;
+      }
+
+      .req-detail-meta-item .k {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 4px;
+      }
+
+      .req-detail-meta-item .v {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        word-break: break-word;
+      }
+
+      .req-detail-code-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .req-detail-card {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 12px;
+        background: rgba(10, 18, 36, 0.78);
+        overflow: hidden;
+      }
+
+      .req-detail-card > summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 10px 12px;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        user-select: none;
+      }
+
+      .req-detail-card > summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .req-detail-card > summary::after {
+        content: "▾";
+        float: right;
+        color: var(--muted);
+      }
+
+      .req-detail-card:not([open]) > summary::after {
+        content: "▸";
+      }
+
+      .req-detail-code-meta {
+        padding: 8px 12px 0;
+        color: var(--muted);
+        font-size: 11px;
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      .req-detail-code-wrap {
+        margin: 8px 12px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        background: rgba(3, 8, 20, 0.88);
+      }
+
+      .req-detail-code {
+        margin: 0;
+        padding: 12px;
+        color: #dce8ff;
+        font-size: 12px;
+        line-height: 1.42;
+        font-family: "JetBrains Mono", monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 42vh;
+        overflow: auto;
+      }
+
       .hint {
         font-size: 12px;
         color: var(--warn);
+      }
+
+      .fx-panel {
+        margin-top: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 12px;
+        padding: 10px 10px 8px;
+        background: rgba(8, 15, 33, 0.4);
+      }
+
+      .fx-panel-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .fx-panel-grid label {
+        margin-bottom: 4px;
+      }
+
+      .fx-panel-grid select {
+        margin-bottom: 0;
+      }
+
+      .fx-guard {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        margin-bottom: 3px;
+        color: #d2e0ff;
+        font-size: 12px;
+        user-select: none;
+      }
+
+      .fx-guard input {
+        width: auto;
+        margin: 0;
       }
 
       .section-hint {
@@ -408,10 +783,15 @@
 
       .metric-card {
         border: 1px solid rgba(255, 255, 255, 0.16);
-        background:
-          linear-gradient(160deg, rgba(31, 45, 86, 0.86), rgba(14, 24, 49, 0.92));
+        background: rgba(20, 33, 66, 0.86);
         border-radius: 12px;
         padding: 11px;
+        transition: transform 0.18s ease, border-color 0.2s ease;
+      }
+
+      .metric-card:hover {
+        transform: translateY(-1px);
+        border-color: rgba(111, 176, 255, 0.46);
       }
 
       .metric-label {
@@ -427,6 +807,11 @@
         font-size: 24px;
         line-height: 1;
         margin-bottom: 5px;
+      }
+
+      .metric-value.fx-pulse,
+      .status.fx-pulse {
+        animation: dataPulse 620ms cubic-bezier(0.22, 0.61, 0.36, 1) 1;
       }
 
       .metric-value.metric-value--sm {
@@ -486,6 +871,16 @@
         grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
         gap: 8px;
+        transition:
+          transform 0.18s ease,
+          border-color 0.2s ease,
+          background-color 0.2s ease;
+      }
+
+      .recommend-item:hover {
+        transform: translateY(-1px);
+        border-color: rgba(111, 176, 255, 0.5);
+        background: rgba(34, 51, 95, 0.75);
       }
 
       .recommend-name {
@@ -508,7 +903,7 @@
 
       .account-grid.compact {
         grid-template-columns: 1fr;
-        max-height: clamp(280px, 52vh, 560px);
+        max-height: clamp(300px, 48vh, 640px);
         overflow: auto;
         padding-right: 4px;
       }
@@ -519,8 +914,7 @@
 
       .account-card {
         border: 1px solid rgba(255, 255, 255, 0.16);
-        background:
-          linear-gradient(160deg, rgba(23, 39, 78, 0.82), rgba(13, 24, 50, 0.9));
+        background: rgba(18, 31, 63, 0.88);
         border-radius: 12px;
         padding: 12px;
       }
@@ -708,18 +1102,79 @@
         .preheat-grid {
           grid-template-columns: 1fr 1fr;
         }
+
+        .req-detail-meta-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .req-detail-code-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          animation: none !important;
+          transition: none !important;
+        }
+
+        .fx-stage,
+        .fx-spark-layer,
+        body::before {
+          display: none !important;
+        }
+      }
+
+      @keyframes dataPulse {
+        0% {
+          text-shadow: 0 0 0 rgba(105, 178, 255, 0.2);
+          transform: scale(1);
+        }
+        45% {
+          text-shadow:
+            0 0 14px rgba(122, 197, 255, 0.58),
+            0 0 24px rgba(130, 120, 255, 0.28);
+          transform: scale(1.04);
+        }
+        100% {
+          text-shadow: 0 0 0 rgba(105, 178, 255, 0);
+          transform: scale(1);
+        }
+      }
+
+      @keyframes rowTrail {
+        0% {
+          background-position: 0% 0%;
+          filter: brightness(1);
+        }
+        55% {
+          filter: brightness(1.16);
+        }
+        100% {
+          background-position: 120% 0%;
+          filter: brightness(1);
+        }
       }
     </style>
   </head>
   <body>
+    <div class="fx-stage" aria-hidden="true">
+      <div id="fxOrbA" class="fx-orb fx-a"></div>
+      <div id="fxOrbB" class="fx-orb fx-b"></div>
+      <div id="fxOrbC" class="fx-orb fx-c"></div>
+    </div>
+    <div id="fxSparkLayer" class="fx-spark-layer" aria-hidden="true"></div>
     <div class="wrap">
       <div class="head">
-        <div class="title">Codex OAuth Proxy Dashboard</div>
+        <div class="head-top">
+          <div class="title">Codex OAuth Proxy Dashboard</div>
+          <button id="fxToggleBtn" class="secondary fx-toggle">FX: ON</button>
+        </div>
         <div class="sub">Local control surface for auth, upstream settings, and runtime diagnostics.</div>
       </div>
 
       <div class="grid">
-        <section class="card">
+        <section class="card core-card">
           <h3>Runtime</h3>
           <div class="kv"><div class="k">Mode</div><div id="mode" class="mono">-</div></div>
           <div class="kv"><div class="k">Uptime</div><div id="uptime" class="mono">-</div></div>
@@ -731,10 +1186,26 @@
             <button id="addAccountBtn">Add Account</button>
             <button id="logoutBtn" class="secondary">Logout</button>
           </div>
+          <div class="fx-panel">
+            <div class="fx-panel-grid">
+              <div>
+                <label for="fxLevelSelect">FX Level</label>
+                <select id="fxLevelSelect">
+                  <option value="low">Low</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="high" selected>High</option>
+                </select>
+              </div>
+              <label class="fx-guard" for="fxGuardToggle">
+                <input id="fxGuardToggle" type="checkbox" checked />
+                Performance Guard
+              </label>
+            </div>
+          </div>
           <div class="hint">If you have used the Codex CLI before, it will automatically fetch and authenticate.</div>
         </section>
 
-        <section class="card">
+        <section class="card core-card">
           <h3>Proxy Config</h3>
           <label for="upstreamMode">Upstream Mode</label>
           <select id="upstreamMode">
@@ -767,7 +1238,7 @@
           <div class="autosave-status" id="configAutoSaveStatus">Auto-save enabled.</div>
         </section>
 
-        <section class="card">
+        <section class="card core-card">
           <h3>Self Test</h3>
           <label for="testPrompt">Prompt</label>
           <textarea id="testPrompt">Reply with one short sentence: dashboard self-test passed.</textarea>
@@ -779,7 +1250,7 @@
 
         <section class="card span-12">
           <h3>Account Pool</h3>
-          <div class="hint section-hint">5h/W badge means 5-hour remaining / weekly remaining quota.</div>
+          <div class="hint section-hint">Dual-window accounts show 5h/W; single-window plans (for example free) auto-switch to one limit badge.</div>
           <div class="btns section-actions">
             <button id="refreshUsageBtn">Refresh Usage (All)</button>
           </div>
@@ -913,6 +1384,32 @@
       </div>
     </div>
 
+    <div id="reqDetailBackdrop" class="req-detail-backdrop" hidden>
+      <div class="req-detail-modal" role="dialog" aria-modal="true" aria-labelledby="reqDetailTitle">
+        <div class="req-detail-head">
+          <h3 id="reqDetailTitle" class="req-detail-title">Proxy Request Detail</h3>
+          <button id="reqDetailCloseBtn" class="secondary req-detail-close">Close</button>
+        </div>
+        <div id="reqDetailMetaGrid" class="req-detail-meta-grid"></div>
+        <div class="req-detail-code-grid">
+          <details class="req-detail-card" open>
+            <summary>Request Packet</summary>
+            <div id="reqDetailReqMeta" class="req-detail-code-meta mono">-</div>
+            <div class="req-detail-code-wrap">
+              <pre id="reqDetailReqCode" class="req-detail-code mono">(empty)</pre>
+            </div>
+          </details>
+          <details class="req-detail-card" open>
+            <summary>Response Packet</summary>
+            <div id="reqDetailResMeta" class="req-detail-code-meta mono">-</div>
+            <div class="req-detail-code-wrap">
+              <pre id="reqDetailResCode" class="req-detail-code mono">(empty)</pre>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+
     <script>
       const $ = (id) => document.getElementById(id);
       let currentMappings = {};
@@ -929,10 +1426,483 @@
       let autoSaveReady = false;
       let autoSaveSnapshot = "";
       let lastAccounts = [];
+      let requestDetailMap = new Map();
+      let activeRequestDetailId = "";
       const STATE_REFRESH_VISIBLE_MS = 7000;
       const STATE_REFRESH_HIDDEN_MS = 30000;
       const USAGE_AUTO_REFRESH_MIN_MS = 5 * 60 * 1000;
       const AUTO_SAVE_DEBOUNCE_MS = 500;
+      const CONFIG_FIELD_IDS = [
+        "upstreamMode",
+        "upstreamBaseUrl",
+        "defaultModel",
+        "defaultInstructions",
+        "defaultReasoningEffort",
+        "multiAccountStrategy",
+        "preheatCooldownSeconds",
+        "preheatBatchSize",
+        "preheatMinPrimaryRemaining",
+        "preheatMinSecondaryRemaining",
+        "modelRouterEnabled"
+      ];
+      const FX_ENABLED_STORAGE_KEY = "codex_proxy_dashboard_fx_enabled";
+      const FX_LEVEL_STORAGE_KEY = "codex_proxy_dashboard_fx_level";
+      const FX_GUARD_STORAGE_KEY = "codex_proxy_dashboard_fx_guard";
+      const FX_CARD_SELECTOR = ".card, .metric-card, .account-card, .recommend-item";
+      const FX_PROFILE = {
+        low: {
+          sparkIntervalMs: 90,
+          sparkMaxCount: 34,
+          sparkLifeMs: 560,
+          cardTiltMaxDeg: 3.2,
+          orbParallaxStrength: 14,
+          glowOpacity: 0.17,
+          shimmerDurationMs: 920,
+          shimmerAlpha: 0.14,
+          orbScale: 0.92,
+          cursorLerp: 0.14
+        },
+        balanced: {
+          sparkIntervalMs: 62,
+          sparkMaxCount: 54,
+          sparkLifeMs: 700,
+          cardTiltMaxDeg: 4.8,
+          orbParallaxStrength: 20,
+          glowOpacity: 0.23,
+          shimmerDurationMs: 1180,
+          shimmerAlpha: 0.19,
+          orbScale: 0.98,
+          cursorLerp: 0.18
+        },
+        high: {
+          sparkIntervalMs: 42,
+          sparkMaxCount: 72,
+          sparkLifeMs: 820,
+          cardTiltMaxDeg: 6.2,
+          orbParallaxStrength: 24,
+          glowOpacity: 0.28,
+          shimmerDurationMs: 1400,
+          shimmerAlpha: 0.24,
+          orbScale: 1.03,
+          cursorLerp: 0.21
+        }
+      };
+      let fxEnabled = true;
+      let fxLevel = "high";
+      let fxGuardEnabled = true;
+      let fxProfile = FX_PROFILE.high;
+      let fxQuality = "normal";
+      let fxActiveCard = null;
+      let fxActiveButton = null;
+      let fxTrailRow = null;
+      let fxTargetX = window.innerWidth / 2;
+      let fxTargetY = window.innerHeight / 2;
+      let fxCursorX = fxTargetX;
+      let fxCursorY = fxTargetY;
+      let fxRafId = 0;
+      let fxLastFrameAt = 0;
+      const fxFrameWindow = [];
+      let fxAvgFrameMs = 16;
+      let fxLastSparkAt = 0;
+      let fxLastSparkX = fxCursorX;
+      let fxLastSparkY = fxCursorY;
+      const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+      const fxOrbA = $("fxOrbA");
+      const fxOrbB = $("fxOrbB");
+      const fxOrbC = $("fxOrbC");
+      const fxSparkLayer = $("fxSparkLayer");
+      const fxLevelSelect = $("fxLevelSelect");
+      const fxGuardToggle = $("fxGuardToggle");
+
+      function clamp(value, min, max) {
+        if (!Number.isFinite(value)) return min;
+        if (value < min) return min;
+        if (value > max) return max;
+        return value;
+      }
+
+      function readStoredString(key) {
+        try {
+          return localStorage.getItem(key);
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function readStoredBool(key) {
+        const raw = readStoredString(key);
+        if (raw === null) return null;
+        return raw === "1";
+      }
+
+      function writeStoredString(key, value) {
+        try {
+          localStorage.setItem(key, value);
+        } catch (_) {
+          // ignore storage errors
+        }
+      }
+
+      function sanitizeFxLevel(value) {
+        const v = String(value || "").toLowerCase();
+        if (v === "low" || v === "balanced" || v === "high") return v;
+        return "high";
+      }
+
+      function qualityMultipliers() {
+        if (!fxGuardEnabled) return { sparkInterval: 1, sparkMax: 1, sparkLife: 1, tilt: 1, glow: 1, orb: 1 };
+        if (fxQuality === "minimal") {
+          return { sparkInterval: 1.95, sparkMax: 0.46, sparkLife: 0.72, tilt: 0.34, glow: 0.55, orb: 0.82 };
+        }
+        if (fxQuality === "degraded") {
+          return { sparkInterval: 1.32, sparkMax: 0.74, sparkLife: 0.84, tilt: 0.68, glow: 0.78, orb: 0.92 };
+        }
+        return { sparkInterval: 1, sparkMax: 1, sparkLife: 1, tilt: 1, glow: 1, orb: 1 };
+      }
+
+      function applyFxStyleVars() {
+        const m = qualityMultipliers();
+        const root = document.documentElement;
+        root.style.setProperty("--fx-glow-opacity", (fxProfile.glowOpacity * m.glow).toFixed(3));
+        root.style.setProperty("--fx-shimmer-duration", `${Math.round(fxProfile.shimmerDurationMs)}ms`);
+        root.style.setProperty("--fx-shimmer-alpha", (fxProfile.shimmerAlpha * m.glow).toFixed(3));
+        root.style.setProperty("--fx-orb-scale", (fxProfile.orbScale * m.orb).toFixed(3));
+        document.body.classList.toggle("fx-quality-degraded", fxQuality === "degraded");
+        document.body.classList.toggle("fx-quality-minimal", fxQuality === "minimal");
+      }
+
+      function syncFxControls() {
+        const button = $("fxToggleBtn");
+        if (button) button.textContent = `FX: ${fxEnabled ? "ON" : "OFF"}`;
+        if (fxLevelSelect) fxLevelSelect.value = fxLevel;
+        if (fxGuardToggle) fxGuardToggle.checked = fxGuardEnabled;
+        const disabled = prefersReducedMotion.matches;
+        if (button) {
+          button.disabled = disabled;
+          button.title = disabled
+            ? "Disabled by system reduced-motion preference"
+            : fxEnabled
+              ? "Disable interactive effects"
+              : "Enable interactive effects";
+        }
+        if (fxLevelSelect) fxLevelSelect.disabled = disabled;
+        if (fxGuardToggle) fxGuardToggle.disabled = disabled;
+      }
+
+      function clearCardFx(card) {
+        if (!card) return;
+        card.classList.remove("fx-active", "fx-shimmer");
+        card.style.removeProperty("--card-mx");
+        card.style.removeProperty("--card-my");
+        card.style.transform = "";
+      }
+
+      function clearButtonFx(button) {
+        if (!button) return;
+        button.style.removeProperty("--btn-mx");
+        button.style.removeProperty("--btn-my");
+      }
+
+      function clearTableTrail() {
+        if (!fxTrailRow) return;
+        fxTrailRow.classList.remove("fx-trail");
+        fxTrailRow = null;
+      }
+
+      function setFxLevel(nextLevel, options = {}) {
+        fxLevel = sanitizeFxLevel(nextLevel);
+        fxProfile = FX_PROFILE[fxLevel] || FX_PROFILE.high;
+        applyFxStyleVars();
+        syncFxControls();
+        if (options.persist !== false) writeStoredString(FX_LEVEL_STORAGE_KEY, fxLevel);
+        if (fxEnabled) requestFxFrame();
+      }
+
+      function setFxGuardEnabled(nextGuard, options = {}) {
+        fxGuardEnabled = Boolean(nextGuard);
+        if (!fxGuardEnabled) fxQuality = "normal";
+        applyFxStyleVars();
+        syncFxControls();
+        if (options.persist !== false) writeStoredString(FX_GUARD_STORAGE_KEY, fxGuardEnabled ? "1" : "0");
+      }
+
+      function setFxEnabled(nextEnabled, options = {}) {
+        const persist = options.persist !== false;
+        const allowed = !prefersReducedMotion.matches;
+        fxEnabled = Boolean(nextEnabled) && allowed;
+        document.body.classList.toggle("fx-off", !fxEnabled);
+        applyFxStyleVars();
+        syncFxControls();
+        if (persist) writeStoredString(FX_ENABLED_STORAGE_KEY, fxEnabled ? "1" : "0");
+
+        if (!fxEnabled) {
+          clearCardFx(fxActiveCard);
+          clearButtonFx(fxActiveButton);
+          clearTableTrail();
+          fxActiveCard = null;
+          fxActiveButton = null;
+          if (fxSparkLayer) fxSparkLayer.innerHTML = "";
+          if (fxRafId) {
+            cancelAnimationFrame(fxRafId);
+            fxRafId = 0;
+          }
+          fxLastFrameAt = 0;
+          fxFrameWindow.length = 0;
+        } else {
+          requestFxFrame();
+        }
+      }
+
+      function resolveSparkRuntime() {
+        const m = qualityMultipliers();
+        return {
+          intervalMs: Math.round(fxProfile.sparkIntervalMs * m.sparkInterval),
+          maxCount: Math.max(12, Math.round(fxProfile.sparkMaxCount * m.sparkMax)),
+          lifeMs: Math.max(240, Math.round(fxProfile.sparkLifeMs * m.sparkLife))
+        };
+      }
+
+      function recordFrameMs(deltaMs) {
+        if (!Number.isFinite(deltaMs) || deltaMs <= 0 || deltaMs > 80) return;
+        fxFrameWindow.push(deltaMs);
+        if (fxFrameWindow.length > 60) fxFrameWindow.shift();
+        const sum = fxFrameWindow.reduce((acc, n) => acc + n, 0);
+        fxAvgFrameMs = fxFrameWindow.length > 0 ? sum / fxFrameWindow.length : 16;
+      }
+
+      function updateFxQualityFromPerf() {
+        if (!fxGuardEnabled || !fxEnabled) return;
+        let nextQuality = "normal";
+        if (fxAvgFrameMs > 24) nextQuality = "minimal";
+        else if (fxAvgFrameMs > 18) nextQuality = "degraded";
+        if (nextQuality === fxQuality) return;
+        fxQuality = nextQuality;
+        applyFxStyleVars();
+      }
+
+      function maybeSpawnSpark(x, y) {
+        if (!fxEnabled || !fxSparkLayer) return;
+        const runtime = resolveSparkRuntime();
+        const now = performance.now();
+        const dx = x - fxLastSparkX;
+        const dy = y - fxLastSparkY;
+        const distanceSq = dx * dx + dy * dy;
+        if (now - fxLastSparkAt < runtime.intervalMs || distanceSq < 64) return;
+
+        fxLastSparkAt = now;
+        fxLastSparkX = x;
+        fxLastSparkY = y;
+
+        const spark = document.createElement("span");
+        spark.className = "fx-spark";
+        spark.style.left = `${x}px`;
+        spark.style.top = `${y}px`;
+        spark.style.setProperty("--dx", `${(Math.random() * 36 - 18).toFixed(1)}px`);
+        spark.style.setProperty("--dy", `${(-12 - Math.random() * 28).toFixed(1)}px`);
+        spark.style.setProperty("--spark-life", `${runtime.lifeMs}ms`);
+        spark.style.width = `${(3.8 + Math.random() * 3.6).toFixed(1)}px`;
+        spark.style.height = spark.style.width;
+        fxSparkLayer.appendChild(spark);
+        spark.addEventListener("animationend", () => spark.remove(), { once: true });
+
+        while (fxSparkLayer.childElementCount > runtime.maxCount) {
+          fxSparkLayer.firstElementChild?.remove();
+        }
+      }
+
+      function applyCardFxFromMouse(mouseX, mouseY, target) {
+        const card = target instanceof Element ? target.closest(FX_CARD_SELECTOR) : null;
+        if (fxActiveCard && fxActiveCard !== card) {
+          clearCardFx(fxActiveCard);
+          fxActiveCard = null;
+        }
+        if (!card || !fxEnabled) return;
+
+        const rect = card.getBoundingClientRect();
+        if (rect.width < 40 || rect.height < 40) return;
+
+        const px = clamp(((mouseX - rect.left) / rect.width) * 100, 0, 100);
+        const py = clamp(((mouseY - rect.top) / rect.height) * 100, 0, 100);
+        const nx = clamp((mouseX - rect.left) / rect.width, 0, 1) - 0.5;
+        const ny = clamp((mouseY - rect.top) / rect.height, 0, 1) - 0.5;
+        const tiltMax = fxProfile.cardTiltMaxDeg * qualityMultipliers().tilt;
+        const tiltX = clamp(-ny * tiltMax * 2, -tiltMax, tiltMax);
+        const tiltY = clamp(nx * tiltMax * 2, -tiltMax, tiltMax);
+
+        card.style.setProperty("--card-mx", `${px}%`);
+        card.style.setProperty("--card-my", `${py}%`);
+        card.style.transform =
+          `perspective(960px) rotateX(${tiltX.toFixed(2)}deg) rotateY(${tiltY.toFixed(2)}deg) translateY(-2px)`;
+        card.classList.add("fx-active");
+        fxActiveCard = card;
+      }
+
+      function applyButtonFxFromMouse(mouseX, mouseY, target) {
+        const button = target instanceof Element ? target.closest("button") : null;
+        if (fxActiveButton && fxActiveButton !== button) {
+          clearButtonFx(fxActiveButton);
+          fxActiveButton = null;
+        }
+        if (!button || !fxEnabled) return;
+
+        const rect = button.getBoundingClientRect();
+        const localX = clamp(mouseX - rect.left, 0, rect.width);
+        const localY = clamp(mouseY - rect.top, 0, rect.height);
+        button.style.setProperty("--btn-mx", `${localX}px`);
+        button.style.setProperty("--btn-my", `${localY}px`);
+        fxActiveButton = button;
+      }
+
+      function updateTableTrail(target) {
+        const row = target instanceof Element ? target.closest(".req-row") : null;
+        if (fxTrailRow && fxTrailRow !== row) fxTrailRow.classList.remove("fx-trail");
+        if (row instanceof HTMLElement) {
+          row.classList.remove("fx-trail");
+          void row.offsetWidth;
+          row.classList.add("fx-trail");
+          fxTrailRow = row;
+        } else {
+          fxTrailRow = null;
+        }
+      }
+
+      function requestFxFrame() {
+        if (fxRafId || !fxEnabled || document.hidden) return;
+        fxRafId = requestAnimationFrame(runFxFrame);
+      }
+
+      function runFxFrame(timestamp) {
+        fxRafId = 0;
+        if (!fxEnabled) return;
+        if (fxLastFrameAt > 0) {
+          recordFrameMs(timestamp - fxLastFrameAt);
+          updateFxQualityFromPerf();
+        }
+        fxLastFrameAt = timestamp;
+
+        const m = qualityMultipliers();
+        const lerp = clamp(fxProfile.cursorLerp * (m.tilt > 0.5 ? 1 : 0.7), 0.08, 0.28);
+        fxCursorX += (fxTargetX - fxCursorX) * lerp;
+        fxCursorY += (fxTargetY - fxCursorY) * lerp;
+
+        const vw = Math.max(window.innerWidth, 1);
+        const vh = Math.max(window.innerHeight, 1);
+        const nx = fxCursorX / vw - 0.5;
+        const ny = fxCursorY / vh - 0.5;
+        const parallax = fxProfile.orbParallaxStrength * m.orb;
+
+        if (fxOrbA) fxOrbA.style.transform = `translate3d(${(-parallax * 0.9 * nx).toFixed(2)}px, ${(-parallax * 0.65 * ny).toFixed(2)}px, 0) scale(var(--fx-orb-scale))`;
+        if (fxOrbB) fxOrbB.style.transform = `translate3d(${(parallax * 0.75 * nx).toFixed(2)}px, ${(parallax * 0.58 * ny).toFixed(2)}px, 0) scale(var(--fx-orb-scale))`;
+        if (fxOrbC) fxOrbC.style.transform = `translate3d(${(-parallax * 0.55 * nx).toFixed(2)}px, ${(parallax * 0.45 * ny).toFixed(2)}px, 0) scale(var(--fx-orb-scale))`;
+
+        const stillMoving =
+          Math.abs(fxTargetX - fxCursorX) > 0.2 || Math.abs(fxTargetY - fxCursorY) > 0.2;
+        if (stillMoving) requestFxFrame();
+      }
+
+      function handleGlobalMouseMove(event) {
+        if (!fxEnabled) return;
+        const x = Number(event.clientX);
+        const y = Number(event.clientY);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+        document.documentElement.style.setProperty("--mx", `${x}px`);
+        document.documentElement.style.setProperty("--my", `${y}px`);
+        fxTargetX = x;
+        fxTargetY = y;
+
+        applyCardFxFromMouse(x, y, event.target);
+        applyButtonFxFromMouse(x, y, event.target);
+        updateTableTrail(event.target);
+        maybeSpawnSpark(x, y);
+        requestFxFrame();
+      }
+
+      function pulseElement(el) {
+        if (!(el instanceof HTMLElement)) return;
+        el.classList.remove("fx-pulse");
+        void el.offsetWidth;
+        el.classList.add("fx-pulse");
+        setTimeout(() => el.classList.remove("fx-pulse"), 700);
+      }
+
+      function setTextAndPulse(id, value, pulse = true) {
+        const el = $(id);
+        if (!el) return;
+        const next = String(value);
+        const prev = String(el.dataset.fxValue ?? "");
+        el.textContent = next;
+        el.dataset.fxValue = next;
+        if (pulse && fxEnabled && prev !== "" && prev !== next) {
+          pulseElement(el);
+        }
+      }
+
+      function initInteractiveFx() {
+        const storedEnabled = readStoredBool(FX_ENABLED_STORAGE_KEY);
+        const storedLevel = readStoredString(FX_LEVEL_STORAGE_KEY);
+        const storedGuard = readStoredBool(FX_GUARD_STORAGE_KEY);
+        fxLevel = sanitizeFxLevel(storedLevel || "high");
+        fxProfile = FX_PROFILE[fxLevel] || FX_PROFILE.high;
+        fxGuardEnabled = storedGuard === null ? true : storedGuard;
+        applyFxStyleVars();
+        setFxEnabled(storedEnabled === null ? !prefersReducedMotion.matches : storedEnabled, { persist: false });
+        syncFxControls();
+
+        $("fxToggleBtn").addEventListener("click", () => setFxEnabled(!fxEnabled));
+        if (fxLevelSelect) {
+          fxLevelSelect.addEventListener("change", () => {
+            setFxLevel(fxLevelSelect.value || "high");
+          });
+        }
+        if (fxGuardToggle) {
+          fxGuardToggle.addEventListener("change", () => {
+            setFxGuardEnabled(fxGuardToggle.checked);
+          });
+        }
+
+        document.addEventListener("mousemove", handleGlobalMouseMove, { passive: true });
+        document.addEventListener("mouseout", (event) => {
+          if (event.relatedTarget) return;
+          clearCardFx(fxActiveCard);
+          clearButtonFx(fxActiveButton);
+          clearTableTrail();
+          fxActiveCard = null;
+          fxActiveButton = null;
+        });
+        document.addEventListener("visibilitychange", () => {
+          if (document.hidden) {
+            if (fxRafId) {
+              cancelAnimationFrame(fxRafId);
+              fxRafId = 0;
+            }
+            fxLastFrameAt = 0;
+            return;
+          }
+          requestFxFrame();
+        });
+        window.addEventListener(
+          "resize",
+          () => {
+            requestFxFrame();
+          },
+          { passive: true }
+        );
+
+        const motionHandler = () => {
+          if (prefersReducedMotion.matches) {
+            setFxEnabled(false, { persist: false });
+          } else if (readStoredBool(FX_ENABLED_STORAGE_KEY) === null) {
+            setFxEnabled(true, { persist: false });
+          }
+          syncFxControls();
+        };
+        if (typeof prefersReducedMotion.addEventListener === "function") {
+          prefersReducedMotion.addEventListener("change", motionHandler);
+        } else if (typeof prefersReducedMotion.addListener === "function") {
+          prefersReducedMotion.addListener(motionHandler);
+        }
+      }
 
       function escapeHtml(text) {
         return String(text ?? "")
@@ -986,11 +1956,111 @@
         return `${v.slice(0, 8)}...${v.slice(-6)}`;
       }
 
+      function safeCodeText(value) {
+        const text = String(value || "");
+        return text.length > 0 ? text : "(empty)";
+      }
+
+      function getProtocolLabel(row) {
+        const explicit = String(row?.protocolType || "").trim();
+        if (explicit.length > 0) return explicit;
+        const fallback = String(row?.upstreamMode || "").trim();
+        return fallback.length > 0 ? displayUpstreamMode(fallback) : "-";
+      }
+
+      function getModelDisplay(row) {
+        const requested = String(row?.requestedModel || "").trim();
+        const mapped = String(row?.mappedModel || "").trim();
+        if (requested && mapped && requested !== mapped) return `${requested} → ${mapped}`;
+        if (requested) return requested;
+        if (mapped) return mapped;
+        return "-";
+      }
+
+      function getAccountDisplay(row) {
+        const label = String(row?.authAccountLabel || "").trim();
+        const accountId = String(row?.authAccountId || "").trim();
+        if (label && accountId) return `${label} (${shortId(accountId)})`;
+        if (label) return label;
+        if (!accountId) return "-";
+        const match = lastAccounts.find(
+          (acc) =>
+            String(acc?.entryId || "").trim() === accountId ||
+            String(acc?.accountId || "").trim() === accountId
+        );
+        if (match) {
+          const mappedLabel = String(match.label || "").trim() || "unnamed-account";
+          return `${mappedLabel} (${shortId(accountId)})`;
+        }
+        return shortId(accountId);
+      }
+
+      function buildReqDetailMetaItems(row) {
+        const timeText = row?.ts ? new Date(Number(row.ts)).toLocaleString() : "-";
+        const latencyText = Number.isFinite(Number(row?.durationMs)) ? `${Number(row.durationMs)} ms` : "-";
+        const tokenText = `I ${fmtToken(row?.inputTokens)} / O ${fmtToken(row?.outputTokens)}`;
+        const totalText = fmtToken(row?.totalTokens);
+        const protocolText = getProtocolLabel(row);
+        const modelText = getModelDisplay(row);
+        const accountText = getAccountDisplay(row);
+        const pathText = `${String(row?.method || "-")} ${String(row?.path || "-")}`;
+        const statusText = String(row?.status ?? "-");
+
+        return [
+          { key: "Request Time", value: timeText },
+          { key: "Latency", value: latencyText },
+          { key: "Token Usage", value: tokenText },
+          { key: "Total Tokens", value: totalText },
+          { key: "Protocol", value: protocolText },
+          { key: "Model", value: modelText },
+          { key: "Account", value: accountText },
+          { key: "Path", value: pathText },
+          { key: "Status", value: statusText }
+        ];
+      }
+
+      function openRequestDetailModal(requestId) {
+        const id = String(requestId || "").trim();
+        if (!id) return;
+        const row = requestDetailMap.get(id);
+        if (!row) return;
+
+        activeRequestDetailId = id;
+        $("reqDetailTitle").textContent = `Proxy Request Detail · ${String(row.method || "-")} ${String(row.path || "-")}`;
+        const metaItems = buildReqDetailMetaItems(row);
+        $("reqDetailMetaGrid").innerHTML = metaItems
+          .map(
+            (item) =>
+              `<div class="req-detail-meta-item"><div class="k">${escapeHtml(item.key)}</div><div class="v">${escapeHtml(
+                item.value
+              )}</div></div>`
+          )
+          .join("");
+
+        const reqCt = String(row?.requestContentType || "").trim();
+        const resCt = String(row?.responseContentType || "").trim();
+        $("reqDetailReqMeta").textContent = reqCt ? `content-type: ${reqCt}` : "content-type: -";
+        $("reqDetailResMeta").textContent = resCt ? `content-type: ${resCt}` : "content-type: -";
+        $("reqDetailReqCode").textContent = safeCodeText(row?.requestPacket);
+        $("reqDetailResCode").textContent = safeCodeText(row?.responsePacket);
+
+        const backdrop = $("reqDetailBackdrop");
+        backdrop.hidden = false;
+        document.body.style.overflow = "hidden";
+      }
+
+      function closeRequestDetailModal() {
+        activeRequestDetailId = "";
+        $("reqDetailBackdrop").hidden = true;
+        document.body.style.overflow = "";
+      }
+
       function getAccountIdentity(account) {
         return String(account?.entryId || account?.accountId || "");
       }
 
       function safePercent(value) {
+        if (value === null || value === undefined || value === "") return null;
         const n = Number(value);
         if (!Number.isFinite(n)) return null;
         return Math.max(0, Math.min(100, n));
@@ -1018,11 +2088,27 @@
         const inCooldown = cooldownUntil > nowSec;
         const expired = expiresAt > 0 && expiresAt <= nowSec;
         const expiringSoon = expiresAt > nowSec && expiresAt - nowSec < 180;
+        const usageView = resolveUsageWindows(account);
+        const planType = String(usageView?.usage?.plan_type || "").trim().toLowerCase();
+        const lowQuotaThreshold =
+          usageView?.singleWindowMode || planType === "free" ? 30 : 20;
+        const primaryRemaining = usageView?.primaryRemaining;
+        const secondaryRemaining = usageView?.secondaryRemaining;
+        const hardLimited =
+          Number.isFinite(primaryRemaining) &&
+          (!Number.isFinite(secondaryRemaining)
+            ? primaryRemaining <= 0
+            : primaryRemaining <= 0 && secondaryRemaining <= 0);
+        const lowQuota =
+          (Number.isFinite(primaryRemaining) && primaryRemaining <= lowQuotaThreshold) ||
+          (Number.isFinite(secondaryRemaining) && secondaryRemaining <= 20);
 
         if (!enabled) return { label: "disabled", tone: "bad", isActive };
         if (expired) return { label: "expired", tone: "bad", isActive };
         if (inCooldown) return { label: "cooldown", tone: "warn", isActive };
+        if (hardLimited) return { label: "limited-hard", tone: "bad", isActive };
         if (expiringSoon) return { label: "expiring", tone: "warn", isActive };
+        if (lowQuota) return { label: "limited", tone: "warn", isActive };
         return { label: "healthy", tone: "ok", isActive };
       }
 
@@ -1043,6 +2129,8 @@
         if (health.label === "expired") score -= 80;
         if (health.label === "cooldown") score -= 35;
         if (health.label === "expiring") score -= 15;
+        if (health.label === "limited-hard") score -= 28;
+        if (health.label === "limited") score -= 12;
         if (primaryUsed !== null) score -= Math.round(primaryUsed * 0.35);
         if (secondaryUsed !== null) score -= Math.round(secondaryUsed * 0.15);
         score -= Math.min(55, failureCount * 11);
@@ -1070,12 +2158,67 @@
         return "bad";
       }
 
+      function windowMinutesOrNull(windowObj) {
+        const n = Number(windowObj?.window_minutes);
+        if (!Number.isFinite(n) || n <= 0) return null;
+        return n;
+      }
+
+      function hasUsageWindow(windowObj) {
+        if (!windowObj || typeof windowObj !== "object") return false;
+        const minutes = windowMinutesOrNull(windowObj);
+        if (minutes !== null) return true;
+
+        const resetAt = Number(windowObj.reset_at);
+        if (Number.isFinite(resetAt) && resetAt > 0) return true;
+
+        const resetAfter = Number(windowObj.reset_after_seconds);
+        if (Number.isFinite(resetAfter) && resetAfter > 0) return true;
+
+        const used = safePercent(windowObj.used_percent);
+        if (used !== null && used > 0) return true;
+
+        const remaining = safePercent(windowObj.remaining_percent);
+        if (remaining !== null && remaining < 100) return true;
+
+        return false;
+      }
+
+      function longWindowLabel(minutes, fallbackLabel) {
+        if (!Number.isFinite(minutes) || minutes <= 0) return fallbackLabel;
+        if (minutes >= 9000) return "Weekly limit";
+        if (minutes >= 295 && minutes <= 305) return "5h limit";
+        if (minutes % 60 === 0) {
+          const hours = minutes / 60;
+          if (hours >= 1 && hours <= 24) return `${hours}h limit`;
+        }
+        return `${minutes}m limit`;
+      }
+
+      function shortWindowLabel(minutes, fallbackLabel) {
+        if (!Number.isFinite(minutes) || minutes <= 0) return fallbackLabel;
+        if (minutes >= 9000) return "W";
+        if (minutes >= 295 && minutes <= 305) return "5h";
+        if (minutes % 60 === 0) {
+          const hours = minutes / 60;
+          if (hours >= 1 && hours <= 24) return `${hours}h`;
+        }
+        return `${minutes}m`;
+      }
+
       function resolveUsageWindows(account) {
         const usage = account?.usageSnapshot || null;
-        const primaryUsed = safePercent(usage?.primary?.used_percent);
-        const secondaryUsed = safePercent(usage?.secondary?.used_percent);
-        const primaryRemainingRaw = safePercent(account?.primaryRemaining ?? usage?.primary?.remaining_percent);
-        const secondaryRemainingRaw = safePercent(account?.secondaryRemaining ?? usage?.secondary?.remaining_percent);
+        const primaryHasWindow = hasUsageWindow(usage?.primary) || Number.isFinite(safePercent(account?.primaryRemaining));
+        const secondaryHasWindow =
+          hasUsageWindow(usage?.secondary) || Number.isFinite(safePercent(account?.secondaryRemaining));
+        const primaryUsed = primaryHasWindow ? safePercent(usage?.primary?.used_percent) : null;
+        const secondaryUsed = secondaryHasWindow ? safePercent(usage?.secondary?.used_percent) : null;
+        const primaryRemainingRaw = primaryHasWindow
+          ? safePercent(account?.primaryRemaining ?? usage?.primary?.remaining_percent)
+          : null;
+        const secondaryRemainingRaw = secondaryHasWindow
+          ? safePercent(account?.secondaryRemaining ?? usage?.secondary?.remaining_percent)
+          : null;
         const primaryRemaining =
           primaryRemainingRaw !== null
             ? primaryRemainingRaw
@@ -1088,7 +2231,25 @@
             : secondaryUsed !== null
               ? Math.max(0, Math.min(100, 100 - secondaryUsed))
               : null;
-        return { usage, primaryUsed, secondaryUsed, primaryRemaining, secondaryRemaining };
+        const primaryWindowMinutes = windowMinutesOrNull(usage?.primary);
+        const secondaryWindowMinutes = windowMinutesOrNull(usage?.secondary);
+        const singleWindowMode = primaryHasWindow && !secondaryHasWindow;
+        const primaryLabel = longWindowLabel(primaryWindowMinutes, singleWindowMode ? "Primary limit" : "5h limit");
+        const secondaryLabel = longWindowLabel(secondaryWindowMinutes, "Weekly limit");
+        const primaryShortLabel = shortWindowLabel(primaryWindowMinutes, singleWindowMode ? "P" : "5h");
+        const secondaryShortLabel = shortWindowLabel(secondaryWindowMinutes, "W");
+        return {
+          usage,
+          singleWindowMode,
+          primaryLabel,
+          secondaryLabel,
+          primaryShortLabel,
+          secondaryShortLabel,
+          primaryUsed,
+          secondaryUsed,
+          primaryRemaining,
+          secondaryRemaining
+        };
       }
 
       function limitPairTone(primaryRemaining, secondaryRemaining, fallbackScore) {
@@ -1097,10 +2258,13 @@
         return remainingTone(Math.min(...values));
       }
 
-      function fmtLimitPair(primaryRemaining, secondaryRemaining) {
-        const p = Number.isFinite(primaryRemaining) ? primaryRemaining : "-";
-        const w = Number.isFinite(secondaryRemaining) ? secondaryRemaining : "-";
-        return `5h/W ${p}/${w}`;
+      function fmtLimitPair(usageView) {
+        const p = Number.isFinite(usageView?.primaryRemaining) ? usageView.primaryRemaining : "-";
+        const w = Number.isFinite(usageView?.secondaryRemaining) ? usageView.secondaryRemaining : "-";
+        if (usageView?.singleWindowMode) {
+          return `${usageView.primaryShortLabel} ${p}/100`;
+        }
+        return `${usageView?.primaryShortLabel || "5h"}/${usageView?.secondaryShortLabel || "W"} ${p}/${w}`;
       }
 
       function getAccountSlotNumber(account, fallbackIndex = 0) {
@@ -1127,11 +2291,21 @@
         const slotNumber = getAccountSlotNumber(account);
         const pills = [`<span class="pill ${health.tone}">${health.label}</span>`];
         if (health.isActive) pills.push(`<span class="pill neutral">active</span>`);
-        const { usage, primaryUsed, secondaryUsed, primaryRemaining, secondaryRemaining } = resolveUsageWindows(account);
+        const usageView = resolveUsageWindows(account);
+        const {
+          usage,
+          singleWindowMode,
+          primaryLabel,
+          secondaryLabel,
+          primaryUsed,
+          secondaryUsed,
+          primaryRemaining,
+          secondaryRemaining
+        } = usageView;
         const primaryTone = remainingTone(primaryRemaining);
         const secondaryTone = remainingTone(secondaryRemaining);
         const pairTone = limitPairTone(primaryRemaining, secondaryRemaining, score);
-        const pairText = fmtLimitPair(primaryRemaining, secondaryRemaining);
+        const pairText = fmtLimitPair(usageView);
         const usageHtml =
           primaryUsed === null && secondaryUsed === null && primaryRemaining === null && secondaryRemaining === null
             ? `<div class="account-empty account-empty--compact">Usage snapshot not fetched yet.</div>`
@@ -1140,15 +2314,15 @@
                   primaryUsed === null && primaryRemaining === null
                     ? ""
                     : `<div class="usage-item">
-                        <div class="label"><span>5h limit</span><span class="v">${primaryRemaining ?? "-"}% remaining${primaryUsed !== null ? ` · ${primaryUsed}% used` : ""}</span></div>
+                        <div class="label"><span>${escapeHtml(primaryLabel)}</span><span class="v">${primaryRemaining ?? "-"}% remaining${primaryUsed !== null ? ` · ${primaryUsed}% used` : ""}</span></div>
                         <div class="usage-track"><div class="usage-fill ${primaryTone}" style="width:${primaryRemaining ?? 0}%"></div></div>
                       </div>`
                 }
                 ${
-                  secondaryUsed === null && secondaryRemaining === null
+                  singleWindowMode || (secondaryUsed === null && secondaryRemaining === null)
                     ? ""
                     : `<div class="usage-item">
-                        <div class="label"><span>Weekly limit</span><span class="v">${secondaryRemaining ?? "-"}% remaining${secondaryUsed !== null ? ` · ${secondaryUsed}% used` : ""}</span></div>
+                        <div class="label"><span>${escapeHtml(secondaryLabel)}</span><span class="v">${secondaryRemaining ?? "-"}% remaining${secondaryUsed !== null ? ` · ${secondaryUsed}% used` : ""}</span></div>
                         <div class="usage-track"><div class="usage-fill ${secondaryTone}" style="width:${secondaryRemaining ?? 0}%"></div></div>
                       </div>`
                 }
@@ -1272,6 +2446,36 @@
         }
       }
 
+      function getConfigFieldElements() {
+        return CONFIG_FIELD_IDS.map((id) => $(id)).filter(Boolean);
+      }
+
+      function isConfigFieldFocused() {
+        const active = document.activeElement;
+        if (!active) return false;
+        return getConfigFieldElements().some((el) => el === active);
+      }
+
+      function hasPendingConfigSave() {
+        return Boolean(autoSaveTimer) || autoSaveInFlight || autoSaveQueued;
+      }
+
+      function hasUnsavedConfigChanges() {
+        if (!autoSaveReady) return false;
+        try {
+          return JSON.stringify(buildConfigPayload()) !== autoSaveSnapshot;
+        } catch {
+          return false;
+        }
+      }
+
+      function shouldSyncConfigFromServer() {
+        if (isConfigFieldFocused()) return false;
+        if (hasPendingConfigSave()) return false;
+        if (hasUnsavedConfigChanges()) return false;
+        return true;
+      }
+
       function buildConfigPayload() {
         return {
           upstreamMode: $("upstreamMode").value,
@@ -1368,9 +2572,7 @@
           `run=${lastRun} complete=${completed} duration=${Number(preheat.lastDurationMs || 0)}ms${errorText}`;
       }
 
-      function renderState(state) {
-        $("mode").textContent = `${state.config.authMode} | ${displayUpstreamMode(state.config.upstreamMode)}`;
-        $("uptime").textContent = fmtUptime(state.uptimeMs);
+      function applyServerConfigToForm(state) {
         $("upstreamMode").value = state.config.upstreamMode;
         $("upstreamBaseUrl").value = state.config.upstreamBaseUrl;
         $("defaultModel").value = state.config.defaultModel;
@@ -1385,17 +2587,33 @@
         currentMappings = { ...(state.config.modelMappings || {}) };
         renderMappingsTable();
         renderModelOptions();
+      }
+
+      function renderState(state, options = {}) {
+        const syncConfigFromServer = options.syncConfigFromServer !== false;
+        $("mode").textContent = `${state.config.authMode} | ${displayUpstreamMode(state.config.upstreamMode)}`;
+        $("uptime").textContent = fmtUptime(state.uptimeMs);
+        if (syncConfigFromServer) {
+          applyServerConfigToForm(state);
+          autoSaveSnapshot = JSON.stringify(buildConfigPayload());
+        }
         renderPreheatStatus(state.preheat || null);
-        autoSaveSnapshot = JSON.stringify(buildConfigPayload());
         if (!autoSaveReady) {
           autoSaveReady = true;
           setAutoSaveStatus("Auto-save enabled.");
+        } else if (!syncConfigFromServer && hasPendingConfigSave()) {
+          setAutoSaveStatus("Auto-save pending...");
         }
 
         const authOk = Boolean(state.auth?.authenticated);
         const badge = $("authBadge");
         badge.className = `status ${authOk ? "ok" : "bad"}`;
         badge.textContent = authOk ? "AUTHENTICATED" : "NOT AUTHENTICATED";
+        const prevBadge = String(badge.dataset.fxBadge || "");
+        if (fxEnabled && prevBadge && prevBadge !== badge.textContent) {
+          pulseElement(badge);
+        }
+        badge.dataset.fxBadge = badge.textContent;
 
         const accounts = Array.isArray(state.auth?.accounts) ? state.auth.accounts : [];
         lastAccounts = accounts;
@@ -1434,17 +2652,17 @@
             ? Number(poolMetrics.lowQuotaCount)
             : decorated.filter((x) => x.lowQuota === true).length;
 
-        $("poolTotal").textContent = String(accounts.length);
-        $("poolHealthyRatio").textContent = `${healthyRatio}%`;
-        $("poolPrimaryAvg").textContent = avgPrimaryRemaining === null ? "-" : `${avgPrimaryRemaining}%`;
-        $("poolSecondaryAvg").textContent = avgSecondaryRemaining === null ? "-" : `${avgSecondaryRemaining}%`;
-        $("poolCooldownCount").textContent = String(cooldownCount);
-        $("poolRiskCount").textContent = String(riskCount);
-        $("poolLowQuotaCount").textContent = String(lowQuotaCount);
+        setTextAndPulse("poolTotal", String(accounts.length));
+        setTextAndPulse("poolHealthyRatio", `${healthyRatio}%`);
+        setTextAndPulse("poolPrimaryAvg", avgPrimaryRemaining === null ? "-" : `${avgPrimaryRemaining}%`);
+        setTextAndPulse("poolSecondaryAvg", avgSecondaryRemaining === null ? "-" : `${avgSecondaryRemaining}%`);
+        setTextAndPulse("poolCooldownCount", String(cooldownCount));
+        setTextAndPulse("poolRiskCount", String(riskCount));
+        setTextAndPulse("poolLowQuotaCount", String(lowQuotaCount));
         $("poolRiskHint").textContent = poolEnabled
           ? `${enabledCount}/${accounts.length} enabled`
           : "multi-account disabled";
-        $("poolStrategy").textContent = poolEnabled ? strategy : "disabled";
+        setTextAndPulse("poolStrategy", poolEnabled ? strategy : "disabled");
         $("poolAuthState").textContent = authOk ? "auth: connected" : "auth: disconnected";
         $("allAccountsTitle").textContent = `All Accounts (${decorated.length})`;
 
@@ -1475,14 +2693,23 @@
         }
         $("recommendList").innerHTML =
           recommendations.length === 0
-            ? `<div class="account-empty">No recommendation available.</div>`
-            : recommendations
+                ? `<div class="account-empty">No recommendation available.</div>`
+                : recommendations
                 .map((acc) => {
-                  const { primaryRemaining, secondaryRemaining } = resolveUsageWindows(acc);
+                  const usageView = resolveUsageWindows(acc);
+                  const {
+                    singleWindowMode,
+                    primaryShortLabel,
+                    secondaryShortLabel,
+                    primaryRemaining,
+                    secondaryRemaining
+                  } = usageView;
                   const tone = limitPairTone(primaryRemaining, secondaryRemaining, acc._score);
-                  const pairText = fmtLimitPair(primaryRemaining, secondaryRemaining);
+                  const pairText = fmtLimitPair(usageView);
+                  const planTypeRaw = String(acc?.usageSnapshot?.plan_type || "").trim();
+                  const planType = planTypeRaw.length > 0 ? planTypeRaw : null;
                   const statusLine = acc.healthStatus
-                    ? `${escapeHtml(acc.healthStatus)}${Number.isFinite(primaryRemaining) ? ` · 5h ${primaryRemaining}%` : ""}${Number.isFinite(secondaryRemaining) ? ` · W ${secondaryRemaining}%` : ""}`
+                    ? `${planType ? `${escapeHtml(planType)} · ` : ""}${escapeHtml(acc.healthStatus)}${Number.isFinite(primaryRemaining) ? ` · ${primaryShortLabel} ${primaryRemaining}%` : ""}${!singleWindowMode && Number.isFinite(secondaryRemaining) ? ` · ${secondaryShortLabel} ${secondaryRemaining}%` : ""}`
                     : escapeHtml(shortId(acc.accountId || "-"));
                   return `<div class="recommend-item">
                     <div>
@@ -1502,15 +2729,18 @@
                 .join("");
 
         const rows = (state.stats?.recentRequests || []).slice(0, 80);
+        requestDetailMap = new Map();
         $("reqTable").innerHTML = rows
-          .map((r) => {
+          .map((r, idx) => {
+            const requestId = String(r?.id || `${r?.ts || Date.now()}-${idx}`);
+            requestDetailMap.set(requestId, r);
             const t = new Date(r.ts).toLocaleTimeString();
             const statusClass = r.status >= 400 ? "req-status-bad" : "req-status-ok";
             const routeText =
               r.requestedModel && r.mappedModel
                 ? `${escapeHtml(r.requestedModel)} → ${escapeHtml(r.mappedModel)}`
                 : "";
-            return `<tr>
+            return `<tr class="req-row" tabindex="0" data-req-id="${escapeHtml(requestId)}">
               <td>${t}</td>
               <td>${r.method}</td>
               <td class="mono">${escapeHtml(r.path)}${routeText ? `<br><span class="req-route">${routeText}</span>` : ""}</td>
@@ -1535,7 +2765,8 @@
         stateRefreshInFlight = true;
         try {
           const state = await api("/admin/state");
-          renderState(state);
+          const syncConfigFromServer = shouldSyncConfigFromServer();
+          renderState(state, { syncConfigFromServer });
           lastStateRefreshAtMs = Date.now();
         } finally {
           stateRefreshInFlight = false;
@@ -1559,7 +2790,7 @@
           await api("/admin/auth-pool/refresh-usage", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({})
+            body: JSON.stringify({ includeDisabled: true })
           });
           lastUsageRefreshAtMs = Date.now();
           return true;
@@ -1704,8 +2935,40 @@
           alert(`Refresh usage failed: ${err.message}`);
         }
       });
+      $("reqTable").addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const row = target.closest("tr[data-req-id]");
+        if (!(row instanceof HTMLElement)) return;
+        const id = row.getAttribute("data-req-id");
+        openRequestDetailModal(id);
+      });
+      $("reqTable").addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const row = target.closest("tr[data-req-id]");
+        if (!(row instanceof HTMLElement)) return;
+        event.preventDefault();
+        const id = row.getAttribute("data-req-id");
+        openRequestDetailModal(id);
+      });
+      $("reqDetailCloseBtn").addEventListener("click", closeRequestDetailModal);
+      $("reqDetailBackdrop").addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (target.id === "reqDetailBackdrop") closeRequestDetailModal();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        if (!$("reqDetailBackdrop").hidden && activeRequestDetailId) {
+          closeRequestDetailModal();
+        }
+      });
       $("runTestBtn").addEventListener("click", runTest);
       $("runPreheatBtn").addEventListener("click", () => runPreheatNow(true));
+
+      initInteractiveFx();
 
       Promise.all([loadModelCandidates(), refreshState()]).catch((err) => {
         $("testResult").textContent = `Init failed: ${err.message}`;

@@ -27,6 +27,8 @@ const DEFAULT_CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || "2026.2
 const VALID_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh"]);
 const VALID_REASONING_EFFORT_MODES = new Set(["none", "low", "medium", "high", "xhigh", "adaptive"]);
 const VALID_MULTI_ACCOUNT_STRATEGIES = new Set(["smart", "round-robin", "random", "sticky"]);
+const LOW_QUOTA_THRESHOLD_DUAL_WINDOW = 20;
+const LOW_QUOTA_THRESHOLD_SINGLE_WINDOW = 30;
 const OFFICIAL_OPENAI_MODELS = [
   "gpt-5.3-codex",
   "gpt-5-codex",
@@ -293,6 +295,9 @@ const runtimeStats = {
   errorRequests: 0,
   recentRequests: []
 };
+let runtimeRequestSeq = 0;
+const RUNTIME_AUDIT_MAX_BODY_BYTES = 96 * 1024;
+const RUNTIME_AUDIT_MAX_TEXT_CHARS = 12000;
 
 let codexPreheatHistory = { accounts: {} };
 try {
@@ -398,6 +403,104 @@ function getCodexUsageProbeBaseUrl() {
     return DEFAULT_CODEX_UPSTREAM_BASE_URL;
   }
   return selected;
+}
+
+function isProxyApiPath(pathName) {
+  const path = String(pathName || "");
+  return path.startsWith("/v1") || path.startsWith("/v1beta");
+}
+
+function toChunkBuffer(chunk, encoding = "utf8") {
+  if (chunk === undefined || chunk === null) return Buffer.alloc(0);
+  if (Buffer.isBuffer(chunk)) return chunk;
+  if (chunk instanceof Uint8Array) return Buffer.from(chunk);
+  if (typeof chunk === "string") return Buffer.from(chunk, encoding || "utf8");
+  return Buffer.from(String(chunk), encoding || "utf8");
+}
+
+function parseContentType(value) {
+  if (Array.isArray(value)) return parseContentType(value[0] || "");
+  if (typeof value !== "string") return "";
+  return value.split(";")[0].trim().toLowerCase();
+}
+
+function sanitizeAuditPayload(text) {
+  let out = String(text || "");
+  out = out.replace(
+    /(authorization"\s*:\s*"Bearer\s+)([^"]+)(")/gi,
+    (_m, p1, _token, p3) => `${p1}[REDACTED]${p3}`
+  );
+  out = out.replace(
+    /("?(?:access_token|refresh_token|id_token|api_key|x-api-key|x-goog-api-key)"?\s*:\s*")([^"]+)(")/gi,
+    (_m, p1, _token, p3) => `${p1}[REDACTED]${p3}`
+  );
+  out = out.replace(/(Bearer\s+)[A-Za-z0-9._\-~+/=]+/gi, "$1[REDACTED]");
+  return out;
+}
+
+function formatPayloadForAudit(raw, contentType) {
+  let text = "";
+  if (Buffer.isBuffer(raw)) {
+    if (raw.length === 0) return "";
+    text = raw.toString("utf8");
+  } else {
+    text = String(raw || "");
+  }
+  if (!text) return "";
+
+  const ct = parseContentType(contentType);
+  const looksJson = ct.includes("json") || /^[\s]*[\[{]/.test(text);
+  if (looksJson) {
+    try {
+      text = JSON.stringify(JSON.parse(text), null, 2);
+    } catch {
+      // keep original when non-standard JSON
+    }
+  }
+
+  text = sanitizeAuditPayload(text);
+  if (text.length > RUNTIME_AUDIT_MAX_TEXT_CHARS) {
+    const hidden = text.length - RUNTIME_AUDIT_MAX_TEXT_CHARS;
+    text = `${text.slice(0, RUNTIME_AUDIT_MAX_TEXT_CHARS)}\n\n... [truncated ${hidden} chars]`;
+  }
+  return text;
+}
+
+function inferProtocolType(pathName, localProtocolType = "") {
+  const hinted = String(localProtocolType || "").trim();
+  if (hinted) return hinted;
+  const path = String(pathName || "");
+  if (path.startsWith("/v1beta/")) return "gemini-v1beta";
+  if (path.startsWith("/v1/messages")) return "anthropic-v1";
+  if (/^\/v1\/models\/.+:(generateContent|streamGenerateContent)/.test(path)) return "gemini-v1beta";
+  if (path.startsWith("/v1/")) return "openai-v1";
+  return config.upstreamMode;
+}
+
+function resolveAuditAccountLabel(accountRef = "") {
+  const needle = String(accountRef || "").trim();
+  if (!needle) return "";
+  const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
+  codexOAuthStore = normalized.store;
+  const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], needle);
+  if (!target) return needle;
+  const label = String(target.label || "").trim();
+  return label || target.account_id || needle;
+}
+
+function sanitizeAuditPath(urlLike) {
+  const raw = String(urlLike || "");
+  if (!raw) return raw;
+  try {
+    const parsed = new URL(raw, "http://localhost");
+    parsed.searchParams.delete("key");
+    parsed.searchParams.delete("api_key");
+    parsed.searchParams.delete("x-api-key");
+    const search = parsed.search || "";
+    return `${parsed.pathname}${search}`;
+  } catch {
+    return raw;
+  }
 }
 
 app.use((req, _res, next) => {
@@ -928,24 +1031,26 @@ app.post("/admin/auth-pool/refresh-usage", async (req, res) => {
   let refreshed = 0;
   for (let i = 0; i < targets.length; i += 1) {
     const target = targets[i];
-    try {
-      const snapshot = await fetchCodexUsageSnapshotForAccount(target, config.codexOAuth);
-      applyCodexUsageSnapshotToStore(codexOAuthStore, getCodexPoolEntryId(target), snapshot);
-      target.last_error = "";
+    const probe = await refreshCodexUsageSnapshotInStore(
+      codexOAuthStore,
+      getCodexPoolEntryId(target),
+      config.codexOAuth,
+      { includeDisabled }
+    );
+    if (probe.ok) {
       refreshed += 1;
       results.push({
-        entryId: getCodexPoolEntryId(target),
-        accountId: target.account_id,
+        entryId: probe.entryId,
+        accountId: probe.accountId,
         ok: true,
-        usage: snapshot
+        usage: probe.snapshot
       });
-    } catch (err) {
-      target.last_error = String(err.message || err);
+    } else {
       results.push({
-        entryId: getCodexPoolEntryId(target),
-        accountId: target.account_id,
+        entryId: probe.entryId || getCodexPoolEntryId(target),
+        accountId: probe.accountId || target.account_id || null,
         ok: false,
-        error: String(err.message || err)
+        error: String(probe.error || probe.skipped || "usage_probe_failed")
       });
     }
     if (i < targets.length - 1) {
@@ -1027,7 +1132,10 @@ app.post("/admin/config", async (req, res) => {
     if (typeof body.defaultModel === "string" && body.defaultModel.trim().length > 0) {
       config.codex.defaultModel = body.defaultModel.trim();
     }
-    if (typeof body.defaultInstructions === "string" && body.defaultInstructions.trim().length > 0) {
+    // Allow empty string (or null) so UI can intentionally clear default instructions.
+    if (body.defaultInstructions === null) {
+      config.codex.defaultInstructions = "";
+    } else if (typeof body.defaultInstructions === "string") {
       config.codex.defaultInstructions = body.defaultInstructions.trim();
     }
     if (typeof body.defaultReasoningEffort === "string") {
@@ -1157,27 +1265,63 @@ app.get("/v1/models", async (req, res) => {
   });
 });
 
-app.use("/v1beta", async (req, res) => {
-  await handleGeminiNativeProxy(req, res);
-});
+app.use((req, res, next) => {
+  const pathName = String(req.path || req.originalUrl || req.url || "");
+  if (!isProxyApiPath(pathName)) {
+    next();
+    return;
+  }
 
-app.use("/v1/messages", async (req, res) => {
-  await handleAnthropicNativeProxy(req, res);
-});
-
-app.use("/v1", (req, res, next) => {
   const startedAt = Date.now();
+  const reqContentType = parseContentType(req.headers?.["content-type"]);
+  const requestPacket = formatPayloadForAudit(req.rawBody, reqContentType);
+
+  const responseChunks = [];
+  let responseBytes = 0;
+  const originalWrite = res.write.bind(res);
+  const originalEnd = res.end.bind(res);
+
+  function captureResponseChunk(chunk, encoding) {
+    if (chunk === undefined || chunk === null) return;
+    if (responseBytes >= RUNTIME_AUDIT_MAX_BODY_BYTES) return;
+    const buffer = toChunkBuffer(chunk, encoding);
+    if (!buffer || buffer.length === 0) return;
+    const remaining = RUNTIME_AUDIT_MAX_BODY_BYTES - responseBytes;
+    if (remaining <= 0) return;
+    const clipped = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer;
+    responseChunks.push(clipped);
+    responseBytes += clipped.length;
+  }
+
+  res.write = function patchedWrite(chunk, encoding, cb) {
+    captureResponseChunk(chunk, encoding);
+    return originalWrite(chunk, encoding, cb);
+  };
+  res.end = function patchedEnd(chunk, encoding, cb) {
+    captureResponseChunk(chunk, encoding);
+    return originalEnd(chunk, encoding, cb);
+  };
+
   res.on("finish", () => {
     const tokenUsage = normalizeTokenUsage(res.locals?.tokenUsage);
     const modelRoute = res.locals?.modelRoute || null;
     const authAccountId = res.locals?.authAccountId || null;
+    const authAccountLabel = resolveAuditAccountLabel(authAccountId);
+    const responseContentType = parseContentType(res.getHeader("content-type"));
+    const responsePacket = formatPayloadForAudit(Buffer.concat(responseChunks), responseContentType);
+    const rawPath = req.originalUrl || req.url || "";
+    const safePath = sanitizeAuditPath(rawPath);
+    const protocolType = inferProtocolType(safePath, res.locals?.protocolType);
+
     runtimeStats.totalRequests += 1;
     if (res.statusCode >= 200 && res.statusCode < 400) runtimeStats.okRequests += 1;
     else runtimeStats.errorRequests += 1;
+
     runtimeStats.recentRequests.unshift({
+      id: `req_${Date.now().toString(36)}_${(runtimeRequestSeq += 1).toString(36)}`,
       ts: Date.now(),
       method: req.method,
-      path: req.originalUrl,
+      path: safePath,
       status: res.statusCode,
       durationMs: Date.now() - startedAt,
       inputTokens: tokenUsage?.inputTokens ?? null,
@@ -1187,14 +1331,32 @@ app.use("/v1", (req, res, next) => {
       mappedModel: modelRoute?.mappedModel ?? null,
       routeType: modelRoute?.routeType ?? null,
       routeRule: modelRoute?.routeRule ?? null,
-      authAccountId
+      protocolType,
+      upstreamMode: config.upstreamMode,
+      authAccountId,
+      authAccountLabel: authAccountLabel || null,
+      requestContentType: reqContentType || null,
+      responseContentType: responseContentType || null,
+      requestPacket: requestPacket || "",
+      responsePacket: responsePacket || ""
     });
+
     if (runtimeStats.recentRequests.length > 120) runtimeStats.recentRequests.length = 120;
   });
+
   next();
 });
 
+app.use("/v1beta", async (req, res) => {
+  await handleGeminiNativeProxy(req, res);
+});
+
+app.use("/v1/messages", async (req, res) => {
+  await handleAnthropicNativeProxy(req, res);
+});
+
 app.use("/v1", async (req, res) => {
+  res.locals.protocolType = "openai-v1";
   if (config.upstreamMode === "gemini-v1beta") {
     await handleGeminiProtocol(req, res);
     return;
@@ -2732,6 +2894,26 @@ function parsePercentOrNull(value) {
   return Math.max(0, Math.min(100, n));
 }
 
+function hasCodexUsageWindow(usageWindow) {
+  if (!usageWindow || typeof usageWindow !== "object") return false;
+  const windowMinutes = Number(usageWindow.window_minutes);
+  if (Number.isFinite(windowMinutes) && windowMinutes > 0) return true;
+
+  const resetAt = Number(usageWindow.reset_at);
+  if (Number.isFinite(resetAt) && resetAt > 0) return true;
+
+  const resetAfterSec = Number(usageWindow.reset_after_seconds);
+  if (Number.isFinite(resetAfterSec) && resetAfterSec > 0) return true;
+
+  const usedPercent = parsePercentOrNull(usageWindow.used_percent);
+  if (usedPercent !== null && usedPercent > 0) return true;
+
+  const remainingPercent = parsePercentOrNull(usageWindow.remaining_percent);
+  if (remainingPercent !== null && remainingPercent < 100) return true;
+
+  return false;
+}
+
 function readUsageRemainingPercent(usageWindow) {
   const direct = parsePercentOrNull(usageWindow?.remaining_percent);
   if (direct !== null) return direct;
@@ -2750,16 +2932,35 @@ function readUsageUsedPercent(usageWindow) {
 
 function getCodexUsageWindowStats(account) {
   const usage = account?.usage_snapshot || null;
-  const primaryRemaining = readUsageRemainingPercent(usage?.primary);
-  const secondaryRemaining = readUsageRemainingPercent(usage?.secondary);
-  const primaryUsed = readUsageUsedPercent(usage?.primary);
-  const secondaryUsed = readUsageUsedPercent(usage?.secondary);
+  const primaryHasWindow = hasCodexUsageWindow(usage?.primary);
+  const secondaryHasWindow = hasCodexUsageWindow(usage?.secondary);
+  const primaryRemaining = primaryHasWindow ? readUsageRemainingPercent(usage?.primary) : null;
+  const secondaryRemaining = secondaryHasWindow ? readUsageRemainingPercent(usage?.secondary) : null;
+  const primaryUsed = primaryHasWindow ? readUsageUsedPercent(usage?.primary) : null;
+  const secondaryUsed = secondaryHasWindow ? readUsageUsedPercent(usage?.secondary) : null;
+  const primaryWindowMinutes = Number(usage?.primary?.window_minutes);
+  const secondaryWindowMinutes = Number(usage?.secondary?.window_minutes);
+  const planType = String(usage?.plan_type || "").trim().toLowerCase();
+  const isSingleWindow = primaryHasWindow && !secondaryHasWindow;
   return {
+    planType,
+    isSingleWindow,
+    primaryHasWindow,
+    secondaryHasWindow,
+    primaryWindowMinutes: Number.isFinite(primaryWindowMinutes) ? primaryWindowMinutes : null,
+    secondaryWindowMinutes: Number.isFinite(secondaryWindowMinutes) ? secondaryWindowMinutes : null,
     primaryRemaining,
     secondaryRemaining,
     primaryUsed,
     secondaryUsed
   };
+}
+
+function resolveCodexLowQuotaThreshold(usageStats) {
+  if (!usageStats || typeof usageStats !== "object") return LOW_QUOTA_THRESHOLD_DUAL_WINDOW;
+  if (usageStats.isSingleWindow) return LOW_QUOTA_THRESHOLD_SINGLE_WINDOW;
+  if (usageStats.planType === "free") return LOW_QUOTA_THRESHOLD_SINGLE_WINDOW;
+  return LOW_QUOTA_THRESHOLD_DUAL_WINDOW;
 }
 
 function classifyCodexPoolHealth(account, nowSec = Math.floor(Date.now() / 1000), usage = null) {
@@ -2772,11 +2973,13 @@ function classifyCodexPoolHealth(account, nowSec = Math.floor(Date.now() / 1000)
   const usageStats = usage || getCodexUsageWindowStats(account);
   const primaryRemaining = usageStats.primaryRemaining;
   const secondaryRemaining = usageStats.secondaryRemaining;
+  const lowQuotaThreshold = resolveCodexLowQuotaThreshold(usageStats);
   const hardLimited =
-    primaryRemaining !== null && secondaryRemaining !== null && primaryRemaining <= 0 && secondaryRemaining <= 0;
+    primaryRemaining !== null &&
+    (secondaryRemaining === null ? primaryRemaining <= 0 : primaryRemaining <= 0 && secondaryRemaining <= 0);
   const lowQuota =
-    (primaryRemaining !== null && primaryRemaining <= 20) ||
-    (secondaryRemaining !== null && secondaryRemaining <= 20);
+    (primaryRemaining !== null && primaryRemaining <= lowQuotaThreshold) ||
+    (secondaryRemaining !== null && secondaryRemaining <= LOW_QUOTA_THRESHOLD_DUAL_WINDOW);
 
   if (!enabled) return { status: "disabled", hardLimited, lowQuota };
   if (expired) return { status: "expired", hardLimited, lowQuota };
@@ -2806,7 +3009,10 @@ function computeCodexPoolHealthScore(
   if (healthMeta.status === "expired") score -= 80;
   if (healthMeta.status === "cooldown") score -= 35;
   if (healthMeta.status === "expiring") score -= 15;
-  if (healthMeta.status === "limited") score -= healthMeta.hardLimited ? 28 : 12;
+  if (healthMeta.status === "limited") {
+    if (healthMeta.hardLimited) score -= 28;
+    else score -= usageStats.isSingleWindow ? 20 : 12;
+  }
   if (usageStats.primaryUsed !== null) score -= Math.round(usageStats.primaryUsed * 0.35);
   if (usageStats.secondaryUsed !== null) score -= Math.round(usageStats.secondaryUsed * 0.15);
   score -= Math.min(55, failureCount * 11);
@@ -2898,7 +3104,10 @@ function getCodexEnabledAccounts(store) {
     (x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec
   );
   if (eligible.length === 0) return [];
-  const preferred = eligible.filter((x) => !classifyCodexPoolHealth(x, nowSec).hardLimited);
+  const preferred = eligible.filter((x) => {
+    const health = classifyCodexPoolHealth(x, nowSec);
+    return health.status !== "limited" && !health.hardLimited;
+  });
   return preferred.length > 0 ? preferred : eligible;
 }
 
@@ -3200,6 +3409,64 @@ function applyCodexUsageSnapshotToStore(store, accountRef, snapshot) {
   target.usage_snapshot = snapshot;
   target.usage_updated_at = Number(snapshot.fetched_at || Math.floor(Date.now() / 1000));
   return true;
+}
+
+async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, options = {}) {
+  if (!store || !Array.isArray(store.accounts)) {
+    return {
+      ok: false,
+      skipped: "invalid_store",
+      error: "Account store is unavailable."
+    };
+  }
+
+  const includeDisabled = options.includeDisabled === true;
+  const target = findCodexPoolAccountByRef(store.accounts, accountRef);
+  if (!target) {
+    return {
+      ok: false,
+      skipped: "not_found",
+      error: `Account not found: ${accountRef}`
+    };
+  }
+
+  const entryId = getCodexPoolEntryId(target);
+  const accountId = target.account_id || null;
+  if (!includeDisabled && target.enabled === false) {
+    return {
+      ok: false,
+      skipped: "disabled",
+      entryId,
+      accountId,
+      error: "Account is disabled."
+    };
+  }
+
+  try {
+    const snapshot = await fetchCodexUsageSnapshotForAccount(target, oauthConfig);
+    const applied = applyCodexUsageSnapshotToStore(store, entryId || accountId, snapshot);
+    if (applied) {
+      target.last_error = "";
+    }
+    return {
+      ok: true,
+      entryId,
+      accountId,
+      snapshot,
+      applied,
+      planType: String(snapshot?.plan_type || "").trim().toLowerCase() || null,
+      usageUpdatedAt: Number(snapshot?.fetched_at || 0) || Math.floor(Date.now() / 1000)
+    };
+  } catch (err) {
+    const message = String(err?.message || err || "usage_probe_failed");
+    target.last_error = message;
+    return {
+      ok: false,
+      entryId,
+      accountId,
+      error: message
+    };
+  }
 }
 
 async function maybeCaptureCodexUsageFromHeaders(authContext, headers, source = "response") {
@@ -4092,6 +4359,7 @@ function sendGeminiError(res, { httpStatus = 400, message, status }) {
 }
 
 async function handleGeminiNativeProxy(req, res) {
+  res.locals.protocolType = "gemini-v1beta-native";
   const apiKey = resolveGeminiApiKey(req);
   if (!apiKey) {
     await handleGeminiNativeCompat(req, res);
@@ -4177,6 +4445,7 @@ function mapGeminiNativePath(pathname, res) {
 }
 
 async function handleAnthropicNativeProxy(req, res) {
+  res.locals.protocolType = "anthropic-v1-native";
   const apiKey = resolveAnthropicApiKey(req);
   if (!apiKey) {
     await handleAnthropicNativeCompat(req, res);
@@ -4249,8 +4518,10 @@ async function handleAnthropicNativeProxy(req, res) {
 }
 
 async function handleGeminiProtocol(req, res) {
+  res.locals.protocolType = "gemini-v1beta-openai-compat";
   const incoming = new URL(req.originalUrl, "http://localhost");
   if (incoming.pathname === "/v1/models" || incoming.pathname === "/v1/models/" || incoming.pathname.startsWith("/v1/models/")) {
+    res.locals.protocolType = "gemini-v1beta-native";
     const aliasedOriginalUrl = req.originalUrl.replace(/^\/v1\/models/, "/v1beta/models");
     const previousOriginalUrl = req.originalUrl;
     req.originalUrl = aliasedOriginalUrl;
@@ -4400,6 +4671,7 @@ async function handleGeminiProtocol(req, res) {
 }
 
 async function handleAnthropicProtocol(req, res) {
+  res.locals.protocolType = "anthropic-v1-openai-compat";
   const incoming = new URL(req.originalUrl, "http://localhost");
   if (incoming.pathname !== "/v1/chat/completions") {
     res.status(400).json({
@@ -5165,6 +5437,7 @@ async function runCodexConversationViaOAuth({
 }
 
 async function handleGeminiNativeCompat(req, res) {
+  res.locals.protocolType = "gemini-v1beta-native";
   const incoming = new URL(req.originalUrl, "http://localhost");
   const pathname = incoming.pathname;
 
@@ -5255,6 +5528,7 @@ async function handleGeminiNativeCompat(req, res) {
 }
 
 async function handleAnthropicNativeCompat(req, res) {
+  res.locals.protocolType = "anthropic-v1-native";
   const incoming = new URL(req.originalUrl, "http://localhost");
   if (incoming.pathname !== "/v1/messages") {
     res.status(400).json({
@@ -5836,6 +6110,35 @@ async function completeOAuthCallback({ code, state }) {
       slot: upsert.slot,
       action: upsert.action
     };
+
+    if (callbackSummary.entryId) {
+      let probe = null;
+      try {
+        probe = await withTimeout(
+          refreshCodexUsageSnapshotInStore(
+            oauthRuntime.store,
+            callbackSummary.entryId,
+            oauthRuntime.oauth,
+            { includeDisabled: true }
+          ),
+          12000,
+          "Usage probe timed out."
+        );
+      } catch (err) {
+        probe = {
+          ok: false,
+          error: String(err?.message || err || "usage_probe_failed")
+        };
+      }
+
+      if (probe?.ok) {
+        callbackSummary.planType = probe.planType || null;
+        callbackSummary.usageFetched = true;
+      } else if (probe) {
+        callbackSummary.usageFetched = false;
+        callbackSummary.usageFetchError = probe.error || probe.skipped || "usage_probe_failed";
+      }
+    }
   }
 
   await saveTokenStore(oauthRuntime.oauth.tokenStorePath, oauthRuntime.store);
@@ -5971,14 +6274,23 @@ function buildOAuthCallbackMessage(summary) {
   const email = summary?.email || "";
   const action = summary?.action || "updated";
   const slot = summary?.slot || "-";
+  const planType = String(summary?.planType || "").trim();
+  const usageFetched = summary?.usageFetched === true;
+  const usageFetchError = String(summary?.usageFetchError || "").trim();
   const actionLabel = describeOAuthUpsertAction(action);
   const emailLine = email ? `<p>Email: ${escapeHtml(email)}</p>` : "";
   const entryLine = entryId ? `<p>Entry: ${escapeHtml(truncate(String(entryId), 80))}</p>` : "";
+  const planLine = planType ? `<p>Detected Plan: ${escapeHtml(planType)}</p>` : "";
+  const usageLine = usageFetched
+    ? `<p>Usage Snapshot: refreshed</p>`
+    : usageFetchError
+      ? `<p style="color:#b45309"><strong>Usage probe:</strong> ${escapeHtml(usageFetchError)}</p>`
+      : "";
   const warning =
     action === "already_exists_same_account"
       ? `<p style="color:#b45309"><strong>Notice:</strong> This login returned the same ChatGPT account ID, so no new account was added.</p><p style="color:#b45309">Use another browser profile/incognito and login with a different account.</p>`
       : "";
-  return `<p>Account: ${escapeHtml(accountId)}</p>${entryLine}${emailLine}<p>Action: ${escapeHtml(actionLabel)}</p><p>Slot: ${escapeHtml(String(slot))}</p>${warning}`;
+  return `<p>Account: ${escapeHtml(accountId)}</p>${entryLine}${emailLine}<p>Action: ${escapeHtml(actionLabel)}</p><p>Slot: ${escapeHtml(String(slot))}</p>${planLine}${usageLine}${warning}`;
 }
 
 function escapeHtml(text) {
