@@ -85,6 +85,15 @@ function parseBooleanEnv(value, fallback = false) {
   return fallback;
 }
 
+function parseSlotValue(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const n = Number(String(value).trim());
+  if (!Number.isFinite(n)) return null;
+  const slot = Math.floor(n);
+  if (slot < 1 || slot > 64) return null;
+  return slot;
+}
+
 function sanitizeModelMappings(input) {
   const out = {};
   if (!input || typeof input !== "object" || Array.isArray(input)) return out;
@@ -426,7 +435,9 @@ app.get("/auth/login", async (req, res) => {
     verifier,
     createdAt: Date.now(),
     mode: config.authMode,
-    label: typeof req.query.label === "string" ? req.query.label.trim() : ""
+    label: typeof req.query.label === "string" ? req.query.label.trim() : "",
+    slot: parseSlotValue(req.query.slot),
+    force: String(req.query.force || "").trim() === "1"
   });
   cleanupPendingStates();
 
@@ -480,10 +491,11 @@ app.get("/auth/callback", async (req, res) => {
   }
 
   try {
-    await completeOAuthCallback({ code, state });
+    const summary = await completeOAuthCallback({ code, state });
 
+    const msg = `<p>Account: ${escapeHtml(summary?.accountId || "unknown")}</p><p>Action: ${escapeHtml(summary?.action || "updated")}</p><p>Slot: ${escapeHtml(String(summary?.slot || "-"))}</p>`;
     res.setHeader("content-type", "text/html; charset=utf-8");
-    res.end(OAUTH_CALLBACK_SUCCESS_HTML);
+    res.end(OAUTH_CALLBACK_SUCCESS_HTML.replace("</body>", `${msg}</body>`));
   } catch (err) {
     console.error("OAuth callback exchange failed:", err);
     res.status(500).send(`Token exchange failed: ${err.message}`);
@@ -587,6 +599,7 @@ app.get("/admin/auth-pool", async (_req, res) => {
     accounts: (codexOAuthStore.accounts || []).map((x) => ({
       accountId: x.account_id,
       label: x.label || "",
+      slot: Number(x.slot || 0) || null,
       enabled: x.enabled !== false,
       expiresAt: x.token?.expires_at || null,
       lastUsedAt: x.last_used_at || 0,
@@ -1290,6 +1303,7 @@ async function getAuthStatus() {
       accounts: accounts.map((x) => ({
         accountId: x.account_id,
         label: x.label || "",
+        slot: Number(x.slot || 0) || null,
         enabled: x.enabled !== false,
         expiresAt: x.token?.expires_at || null,
         lastUsedAt: x.last_used_at || 0,
@@ -2274,6 +2288,7 @@ function sanitizeCodexAccountEntry(raw) {
   return {
     account_id: accountId,
     label: typeof raw.label === "string" ? raw.label : "",
+    slot: parseSlotValue(raw.slot),
     enabled: raw.enabled !== false,
     token: normalizeToken(token, token),
     created_at: Number(raw.created_at || raw.createdAt || Math.floor(Date.now() / 1000)),
@@ -2313,6 +2328,7 @@ function ensureCodexOAuthStoreShape(store) {
       out.accounts.push({
         account_id: accountId,
         label: "",
+        slot: null,
         enabled: true,
         token: tokenNormalized,
         created_at: Math.floor(Date.now() / 1000),
@@ -2391,22 +2407,37 @@ function pickCodexAccountCandidates(store) {
 function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
   const accountId = deriveCodexAccountIdFromToken(normalizedToken);
   const label = typeof options.label === "string" ? options.label.trim() : "";
+  const slot = parseSlotValue(options.slot);
   const nowSec = Math.floor(Date.now() / 1000);
   if (!Array.isArray(store.accounts)) store.accounts = [];
 
-  const idx = store.accounts.findIndex((x) => x.account_id === accountId);
-  if (idx >= 0) {
-    store.accounts[idx] = {
-      ...store.accounts[idx],
-      token: normalizeToken(normalizedToken, store.accounts[idx].token),
+  const existingIdx = store.accounts.findIndex((x) => x.account_id === accountId);
+  const slotIdx = slot ? store.accounts.findIndex((x) => Number(x.slot || 0) === slot) : -1;
+
+  // Prefer updating existing account identity to avoid duplicate same-account entries.
+  let targetIdx = existingIdx;
+  if (targetIdx < 0 && slotIdx >= 0) {
+    targetIdx = slotIdx;
+  }
+
+  let action = "created";
+  if (targetIdx >= 0) {
+    action = existingIdx >= 0 ? "updated_existing_account" : "replaced_slot";
+    store.accounts[targetIdx] = {
+      ...store.accounts[targetIdx],
+      account_id: accountId,
+      token: normalizeToken(normalizedToken, store.accounts[targetIdx].token),
       enabled: true,
-      label: label || store.accounts[idx].label || "",
-      last_error: ""
+      label: label || store.accounts[targetIdx].label || "",
+      slot: slot ?? store.accounts[targetIdx].slot ?? null,
+      last_error: "",
+      cooldown_until: 0
     };
   } else {
     store.accounts.push({
       account_id: accountId,
       label,
+      slot: slot ?? null,
       enabled: true,
       token: normalizeToken(normalizedToken, normalizedToken),
       created_at: nowSec,
@@ -2424,7 +2455,7 @@ function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
   store.rotation = store.rotation || { next_index: 0 };
   if (!Number.isFinite(store.rotation.next_index)) store.rotation.next_index = 0;
 
-  return accountId;
+  return { accountId, slot: slot ?? null, action };
 }
 
 function shouldRotateCodexAccountForStatus(statusCode) {
@@ -4869,16 +4900,31 @@ async function completeOAuthCallback({ code, state }) {
   const token = await exchangeCodeForToken(code, pending.verifier, oauthRuntime.oauth);
   const normalizedToken = normalizeToken(token, oauthRuntime.store.token);
   oauthRuntime.store.token = normalizedToken;
+
+  let callbackSummary = {
+    accountId: extractOpenAICodexAccountId(normalizedToken.access_token || "") || null,
+    slot: parseSlotValue(pending.slot),
+    action: "updated"
+  };
+
   if (config.authMode === "codex-oauth") {
     const shaped = ensureCodexOAuthStoreShape(oauthRuntime.store);
     Object.keys(oauthRuntime.store).forEach((key) => delete oauthRuntime.store[key]);
     Object.assign(oauthRuntime.store, shaped.store);
-    upsertCodexOAuthAccount(oauthRuntime.store, normalizedToken, {
-      label: pending.label || ""
+    const upsert = upsertCodexOAuthAccount(oauthRuntime.store, normalizedToken, {
+      label: pending.label || "",
+      slot: pending.slot
     });
+    callbackSummary = {
+      accountId: upsert.accountId,
+      slot: upsert.slot,
+      action: upsert.action
+    };
   }
+
   await saveTokenStore(oauthRuntime.oauth.tokenStorePath, oauthRuntime.store);
   clearAuthContextCache();
+  return callbackSummary;
 }
 
 async function ensureCodexOAuthCallbackServer() {
@@ -4923,10 +4969,11 @@ async function ensureCodexOAuthCallbackServer() {
         }
 
         try {
-          await completeOAuthCallback({ code, state });
+          const summary = await completeOAuthCallback({ code, state });
           res.statusCode = 200;
           res.setHeader("content-type", "text/html; charset=utf-8");
-          res.end(OAUTH_CALLBACK_SUCCESS_HTML);
+          const msg = `<p>Account: ${escapeHtml(summary?.accountId || "unknown")}</p><p>Action: ${escapeHtml(summary?.action || "updated")}</p><p>Slot: ${escapeHtml(String(summary?.slot || "-"))}</p>`;
+          res.end(OAUTH_CALLBACK_SUCCESS_HTML.replace("</body>", `${msg}</body>`));
         } catch (err) {
           console.error("Codex OAuth callback handling failed:", err);
           res.statusCode = 500;

@@ -923,6 +923,7 @@
             </div>
           </div>
           <div class="account-meta">
+            <div class="meta-item"><div class="k">Slot</div><div class="v">${Number(account.slot || 0) || "-"}</div></div>
             <div class="meta-item"><div class="k">Expires</div><div class="v">${fmtUnixSec(Number(account.expiresAt || 0))}</div></div>
             <div class="meta-item"><div class="k">Last Used</div><div class="v">${fmtUnixSec(Number(account.lastUsedAt || 0))}</div></div>
             <div class="meta-item"><div class="k">Failures</div><div class="v">${Number(account.failureCount || 0)}</div></div>
@@ -1181,10 +1182,10 @@
       $("refreshBtn").addEventListener("click", refreshState);
       $("loginBtn").addEventListener("click", () => window.open("/auth/login", "_blank"));
       $("addAccount2Btn").addEventListener("click", () =>
-        window.open("/auth/login?label=acc2&prompt=login", "_blank")
+        window.open("/auth/login?slot=2&label=acc2&prompt=login", "_blank")
       );
       $("addAccount3Btn").addEventListener("click", () =>
-        window.open("/auth/login?label=acc3&prompt=login", "_blank")
+        window.open("/auth/login?slot=3&label=acc3&prompt=login", "_blank")
       );
       $("logoutBtn").addEventListener("click", async () => {
         try {
