@@ -186,12 +186,6 @@ const config = {
     )
   },
   codexPreheat: {
-    enabled: parseBooleanEnv(process.env.CODEX_PREHEAT_ENABLED, true),
-    intervalSeconds: parseNumberEnv(process.env.CODEX_PREHEAT_INTERVAL_SECONDS, 600, {
-      min: 30,
-      max: 86400,
-      integer: true
-    }),
     cooldownSeconds: parseNumberEnv(process.env.CODEX_PREHEAT_COOLDOWN_SECONDS, 1200, {
       min: 30,
       max: 86400,
@@ -315,7 +309,6 @@ if (!codexPreheatHistory.accounts || typeof codexPreheatHistory.accounts !== "ob
 
 const codexPreheatRuntime = {
   running: false,
-  timer: null,
   lastRunAt: 0,
   lastCompletedAt: 0,
   lastReason: "",
@@ -651,8 +644,6 @@ app.get("/admin/state", async (_req, res) => {
         sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
         multiAccountEnabled: isCodexMultiAccountEnabled(),
         multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
-        preheatEnabled: config.codexPreheat.enabled,
-        preheatIntervalSeconds: config.codexPreheat.intervalSeconds,
         preheatCooldownSeconds: config.codexPreheat.cooldownSeconds,
         preheatBatchSize: config.codexPreheat.batchSize,
         preheatMinPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
@@ -1058,20 +1049,6 @@ app.post("/admin/config", async (req, res) => {
       }
       config.codexOAuth.multiAccountStrategy = strategy;
     }
-    if (typeof body.preheatEnabled === "boolean") {
-      config.codexPreheat.enabled = body.preheatEnabled;
-    }
-    if (body.preheatIntervalSeconds !== undefined) {
-      const parsed = parseNumberEnv(body.preheatIntervalSeconds, NaN, {
-        min: 30,
-        max: 86400,
-        integer: true
-      });
-      if (!Number.isFinite(parsed)) {
-        throw new Error("preheatIntervalSeconds must be a number between 30 and 86400.");
-      }
-      config.codexPreheat.intervalSeconds = parsed;
-    }
     if (body.preheatCooldownSeconds !== undefined) {
       const parsed = parseNumberEnv(body.preheatCooldownSeconds, NaN, {
         min: 30,
@@ -1122,7 +1099,6 @@ app.post("/admin/config", async (req, res) => {
     if (body.modelMappings !== undefined) {
       config.modelRouter.customMappings = sanitizeModelMappings(body.modelMappings);
     }
-    restartCodexPreheatScheduler();
     res.json({
       ok: true,
       config: {
@@ -1135,8 +1111,6 @@ app.post("/admin/config", async (req, res) => {
         sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
         multiAccountEnabled: isCodexMultiAccountEnabled(),
         multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
-        preheatEnabled: config.codexPreheat.enabled,
-        preheatIntervalSeconds: config.codexPreheat.intervalSeconds,
         preheatCooldownSeconds: config.codexPreheat.cooldownSeconds,
         preheatBatchSize: config.codexPreheat.batchSize,
         preheatMinPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
@@ -1504,17 +1478,7 @@ app.listen(config.port, config.host, () => {
   console.log(`status:          http://${config.host}:${config.port}/auth/status`);
   console.log(`dashboard:       http://${config.host}:${config.port}/dashboard/`);
   console.log(`proxy:           http://${config.host}:${config.port}/v1/*`);
-  if (config.authMode === "codex-oauth") {
-    console.log(
-      `preheat:         ${config.codexPreheat.enabled ? "enabled" : "disabled"} every ${config.codexPreheat.intervalSeconds}s (batch=${config.codexPreheat.batchSize}, cooldown=${config.codexPreheat.cooldownSeconds}s)`
-    );
-  }
-  restartCodexPreheatScheduler();
-  if (config.authMode === "codex-oauth" && config.codexPreheat.enabled) {
-    setTimeout(() => {
-      runCodexPreheat("startup").catch(() => {});
-    }, 4000);
-  }
+  console.log(`preheat:         manual trigger only (dashboard button)`);
 });
 
 async function getAuthStatus() {
@@ -3374,9 +3338,7 @@ function getCodexPreheatAccountHistory(entryId) {
 
 function getCodexPreheatState() {
   return {
-    enabled: config.codexPreheat.enabled,
     running: codexPreheatRuntime.running,
-    intervalSeconds: config.codexPreheat.intervalSeconds,
     cooldownSeconds: config.codexPreheat.cooldownSeconds,
     batchSize: config.codexPreheat.batchSize,
     minPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
@@ -3605,28 +3567,6 @@ async function runCodexPreheat(reason = "manual", options = {}) {
   } finally {
     codexPreheatRuntime.running = false;
   }
-}
-
-function stopCodexPreheatScheduler() {
-  if (codexPreheatRuntime.timer) {
-    clearInterval(codexPreheatRuntime.timer);
-    codexPreheatRuntime.timer = null;
-  }
-}
-
-function restartCodexPreheatScheduler() {
-  stopCodexPreheatScheduler();
-  if (config.authMode !== "codex-oauth") return;
-  if (!isCodexMultiAccountEnabled()) return;
-  if (!config.codexPreheat.enabled) return;
-
-  const intervalMs = Math.max(30, Number(config.codexPreheat.intervalSeconds || 600)) * 1000;
-  codexPreheatRuntime.timer = setInterval(() => {
-    runCodexPreheat("scheduled").catch((err) => {
-      codexPreheatRuntime.lastStatus = "failed";
-      codexPreheatRuntime.lastError = String(err?.message || err || "preheat_failed");
-    });
-  }, intervalMs);
 }
 
 function isExpiredOrNearExpirySec(expiresAtSec) {

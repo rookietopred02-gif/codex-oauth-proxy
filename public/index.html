@@ -308,7 +308,7 @@
 
       .preheat-grid {
         display: grid;
-        grid-template-columns: 1.2fr repeat(5, minmax(96px, 1fr)) auto;
+        grid-template-columns: repeat(4, minmax(96px, 1fr)) auto;
         gap: 8px;
         align-items: end;
       }
@@ -319,19 +319,6 @@
 
       .preheat-grid input {
         margin-bottom: 0;
-      }
-
-      .preheat-check {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 0;
-        color: var(--muted);
-      }
-
-      .preheat-check input {
-        width: auto;
-        margin: 0;
       }
 
       .preheat-status {
@@ -799,10 +786,6 @@
           <div class="preheat-panel">
             <h4>Preheat</h4>
             <div class="preheat-grid">
-              <label class="preheat-check" for="preheatEnabled"
-                ><input id="preheatEnabled" type="checkbox" />Enable scheduler</label
-              >
-              <label for="preheatIntervalSeconds">Interval(s)<input id="preheatIntervalSeconds" type="number" min="30" step="30" /></label>
               <label for="preheatCooldownSeconds">Cooldown(s)<input id="preheatCooldownSeconds" type="number" min="30" step="30" /></label>
               <label for="preheatBatchSize">Batch<input id="preheatBatchSize" type="number" min="1" max="32" step="1" /></label>
               <label for="preheatMinPrimaryRemaining">Min 5h%<input id="preheatMinPrimaryRemaining" type="number" min="0" max="100" step="1" /></label>
@@ -1297,8 +1280,6 @@
           defaultInstructions: $("defaultInstructions").value,
           defaultReasoningEffort: $("defaultReasoningEffort").value,
           multiAccountStrategy: $("multiAccountStrategy").value,
-          preheatEnabled: $("preheatEnabled").checked,
-          preheatIntervalSeconds: Number($("preheatIntervalSeconds").value || 0),
           preheatCooldownSeconds: Number($("preheatCooldownSeconds").value || 0),
           preheatBatchSize: Number($("preheatBatchSize").value || 0),
           preheatMinPrimaryRemaining: Number($("preheatMinPrimaryRemaining").value || 0),
@@ -1396,8 +1377,6 @@
         $("defaultInstructions").value = state.config.defaultInstructions;
         $("defaultReasoningEffort").value = state.config.defaultReasoningEffort || "medium";
         $("multiAccountStrategy").value = state.config.multiAccountStrategy || "smart";
-        $("preheatEnabled").checked = state.config.preheatEnabled !== false;
-        $("preheatIntervalSeconds").value = Number(state.config.preheatIntervalSeconds || 600);
         $("preheatCooldownSeconds").value = Number(state.config.preheatCooldownSeconds || 1200);
         $("preheatBatchSize").value = Number(state.config.preheatBatchSize || 2);
         $("preheatMinPrimaryRemaining").value = Number(state.config.preheatMinPrimaryRemaining ?? 5);
@@ -1645,8 +1624,7 @@
       const instantSaveFields = [
         "upstreamMode",
         "defaultReasoningEffort",
-        "multiAccountStrategy",
-        "preheatEnabled"
+        "multiAccountStrategy"
       ];
       for (const id of instantSaveFields) {
         $(id).addEventListener("change", () => triggerAutoSaveNow());
@@ -1656,7 +1634,6 @@
         "upstreamBaseUrl",
         "defaultModel",
         "defaultInstructions",
-        "preheatIntervalSeconds",
         "preheatCooldownSeconds",
         "preheatBatchSize",
         "preheatMinPrimaryRemaining",

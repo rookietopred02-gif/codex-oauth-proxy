@@ -27,8 +27,6 @@ AUTH_MODE=codex-oauth
 UPSTREAM_MODE=codex-chatgpt
 UPSTREAM_BASE_URL=https://chatgpt.com/backend-api
 CODEX_DEFAULT_REASONING_EFFORT=adaptive
-CODEX_PREHEAT_ENABLED=true
-CODEX_PREHEAT_INTERVAL_SECONDS=600
 CODEX_PREHEAT_BATCH_SIZE=2
 ```
 
@@ -68,7 +66,7 @@ Use the dashboard to:
 - edit runtime proxy settings
 - edit Model Router mappings (`exact` + `*` wildcard)
 - tune default reasoning effort (`adaptive|none|low|medium|high|xhigh`)
-- configure and run account preheat scheduler (warmup interval/cooldown/batch)
+- manually run account preheat from dashboard (`Run Preheat Now`)
 - run upstream self-tests (works for `codex-chatgpt`, `gemini-v1beta`, and `anthropic-v1`)
 - inspect recent proxy requests and latencies
 
