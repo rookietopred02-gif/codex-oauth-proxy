@@ -66,17 +66,22 @@
 
       .grid {
         display: grid;
-        gap: 14px;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 16px;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
       }
 
       .card {
+        grid-column: span 4;
         border: 1px solid var(--card-border);
         background: var(--card);
         border-radius: 14px;
-        padding: 14px;
+        padding: 16px;
         backdrop-filter: blur(8px);
         animation: cardIn 420ms ease both;
+      }
+
+      .card.span-12 {
+        grid-column: 1 / -1;
       }
 
       @keyframes cardIn {
@@ -91,7 +96,7 @@
       }
 
       .card h3 {
-        margin: 0 0 12px;
+        margin: 0 0 14px;
         font-size: 14px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
@@ -260,9 +265,104 @@
         font-weight: 500;
       }
 
+      .req-route {
+        color: var(--muted);
+      }
+
+      .req-status-ok {
+        color: var(--ok);
+      }
+
+      .req-status-bad {
+        color: var(--bad);
+      }
+
       .hint {
         font-size: 12px;
         color: var(--warn);
+      }
+
+      .section-hint {
+        margin: 0 0 10px;
+      }
+
+      .section-actions {
+        margin: 0 0 10px;
+      }
+
+      .preheat-panel {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 12px;
+        background: rgba(8, 15, 33, 0.45);
+        padding: 11px;
+        margin-bottom: 12px;
+      }
+
+      .preheat-panel h4 {
+        margin: 0 0 8px;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #d9e4ff;
+      }
+
+      .preheat-grid {
+        display: grid;
+        grid-template-columns: 1.2fr repeat(5, minmax(96px, 1fr)) auto;
+        gap: 8px;
+        align-items: end;
+      }
+
+      .preheat-grid label {
+        margin-bottom: 0;
+      }
+
+      .preheat-grid input {
+        margin-bottom: 0;
+      }
+
+      .preheat-check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 0;
+        color: var(--muted);
+      }
+
+      .preheat-check input {
+        width: auto;
+        margin: 0;
+      }
+
+      .preheat-status {
+        margin-top: 9px;
+        font-size: 11px;
+        font-family: "JetBrains Mono", monospace;
+        color: var(--muted);
+        white-space: pre-wrap;
+      }
+
+      .preheat-status.ok {
+        color: var(--ok);
+      }
+
+      .preheat-status.bad {
+        color: var(--bad);
+      }
+
+      .autosave-status {
+        margin-top: 8px;
+        font-size: 11px;
+        color: var(--muted);
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      .autosave-status.ok {
+        color: var(--ok);
+      }
+
+      .autosave-status.bad {
+        color: var(--bad);
       }
 
       .result {
@@ -314,9 +414,9 @@
 
       .pool-kpis {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
         gap: 10px;
-        margin-bottom: 12px;
+        margin-bottom: 14px;
       }
 
       .metric-card {
@@ -342,6 +442,10 @@
         margin-bottom: 5px;
       }
 
+      .metric-value.metric-value--sm {
+        font-size: 16px;
+      }
+
       .metric-sub {
         color: var(--muted);
         font-size: 11px;
@@ -350,8 +454,10 @@
 
       .pool-layout {
         display: grid;
-        grid-template-columns: 1.15fr 1fr;
-        gap: 12px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        align-items: start;
+        grid-auto-rows: min-content;
       }
 
       .pool-pane {
@@ -359,10 +465,19 @@
         border-radius: 12px;
         background: rgba(8, 15, 33, 0.45);
         padding: 11px;
+        align-self: start;
+      }
+
+      .pool-pane > * + * {
+        margin-top: 10px;
+      }
+
+      .pool-pane.pool-pane--full {
+        margin-top: 14px;
       }
 
       .pool-pane h4 {
-        margin: 0 0 10px;
+        margin: 0;
         font-size: 13px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
@@ -380,9 +495,9 @@
         border-radius: 10px;
         background: rgba(25, 37, 73, 0.62);
         padding: 9px 10px;
-        display: flex;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
-        justify-content: space-between;
         gap: 8px;
       }
 
@@ -406,9 +521,13 @@
 
       .account-grid.compact {
         grid-template-columns: 1fr;
-        max-height: 360px;
+        max-height: clamp(280px, 52vh, 560px);
         overflow: auto;
-        padding-right: 2px;
+        padding-right: 4px;
+      }
+
+      .current-account-shell {
+        min-height: 0;
       }
 
       .account-card {
@@ -449,6 +568,11 @@
         color: var(--muted);
         font-size: 11px;
         font-family: "JetBrains Mono", monospace;
+      }
+
+      .account-id + .account-id {
+        margin-top: 2px;
+        opacity: 0.9;
       }
 
       .pill-row {
@@ -574,9 +698,28 @@
         font-size: 12px;
       }
 
+      .account-empty.account-empty--compact {
+        margin-top: 10px;
+        padding: 8px 10px;
+      }
+
       @media (max-width: 980px) {
+        .card,
+        .card.span-12 {
+          grid-column: 1 / -1;
+        }
+
         .pool-layout {
           grid-template-columns: 1fr;
+        }
+        .account-grid.compact {
+          max-height: none;
+          overflow: visible;
+          padding-right: 0;
+        }
+
+        .preheat-grid {
+          grid-template-columns: 1fr 1fr;
         }
       }
     </style>
@@ -598,61 +741,10 @@
           <div class="btns">
             <button id="refreshBtn">Refresh</button>
             <button id="loginBtn">OAuth Login</button>
-            <button id="addAccount2Btn">Add Account #2</button>
-            <button id="addAccount3Btn">Add Account #3</button>
+            <button id="addAccountBtn">Add Account</button>
             <button id="logoutBtn" class="secondary">Logout</button>
           </div>
-          <div class="hint">If you hav used the Codex CLI before, it will automatically fetch and authenticating.</div>
-        </section>
-
-        <section class="card" style="grid-column: 1 / -1">
-          <h3>Account Pool</h3>
-          <div class="btns" style="margin-top:0;margin-bottom:10px">
-            <button id="refreshUsageBtn">Refresh Usage (All)</button>
-          </div>
-          <div class="pool-kpis">
-            <div class="metric-card">
-              <div class="metric-label">Total Accounts</div>
-              <div id="poolTotal" class="metric-value">0</div>
-              <div class="metric-sub">all pooled identities</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Healthy Ratio</div>
-              <div id="poolHealthyRatio" class="metric-value">0%</div>
-              <div class="metric-sub">ready for request routing</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Cooldown</div>
-              <div id="poolCooldownCount" class="metric-value">0</div>
-              <div class="metric-sub">temporarily paused</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">At Risk</div>
-              <div id="poolRiskCount" class="metric-value">0</div>
-              <div id="poolRiskHint" class="metric-sub">disabled / expired</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label">Strategy</div>
-              <div id="poolStrategy" class="metric-value" style="font-size:16px">-</div>
-              <div id="poolAuthState" class="metric-sub">auth: -</div>
-            </div>
-          </div>
-          <div class="pool-layout">
-            <div class="pool-pane">
-              <h4>Current Account</h4>
-              <div id="currentAccountCard" class="account-empty">No active account selected.</div>
-            </div>
-            <div class="pool-pane">
-              <h4>Best Account Recommendation</h4>
-              <div id="recommendList" class="recommend-list">
-                <div class="account-empty">No recommendation yet.</div>
-              </div>
-              <h4>All Accounts</h4>
-              <div id="accountPoolCards" class="account-grid compact">
-                <div class="account-empty">Loading account pool...</div>
-              </div>
-            </div>
-          </div>
+          <div class="hint">If you have used the Codex CLI before, it will automatically fetch and authenticate.</div>
         </section>
 
         <section class="card">
@@ -678,9 +770,14 @@
             <option value="high">high</option>
             <option value="xhigh">xhigh</option>
           </select>
-          <div class="btns">
-            <button id="saveConfigBtn">Save Runtime Config</button>
-          </div>
+          <label for="multiAccountStrategy">Account Pool Strategy</label>
+          <select id="multiAccountStrategy">
+            <option value="smart">smart (health-aware)</option>
+            <option value="round-robin">round-robin</option>
+            <option value="random">random</option>
+            <option value="sticky">sticky</option>
+          </select>
+          <div class="autosave-status" id="configAutoSaveStatus">Auto-save enabled.</div>
         </section>
 
         <section class="card">
@@ -693,7 +790,90 @@
           <div class="result" id="testResult">No test executed.</div>
         </section>
 
-        <section class="card" style="grid-column: 1 / -1">
+        <section class="card span-12">
+          <h3>Account Pool</h3>
+          <div class="hint section-hint">5h/W badge means 5-hour remaining / weekly remaining quota.</div>
+          <div class="btns section-actions">
+            <button id="refreshUsageBtn">Refresh Usage (All)</button>
+          </div>
+          <div class="preheat-panel">
+            <h4>Preheat</h4>
+            <div class="preheat-grid">
+              <label class="preheat-check" for="preheatEnabled"
+                ><input id="preheatEnabled" type="checkbox" />Enable scheduler</label
+              >
+              <label for="preheatIntervalSeconds">Interval(s)<input id="preheatIntervalSeconds" type="number" min="30" step="30" /></label>
+              <label for="preheatCooldownSeconds">Cooldown(s)<input id="preheatCooldownSeconds" type="number" min="30" step="30" /></label>
+              <label for="preheatBatchSize">Batch<input id="preheatBatchSize" type="number" min="1" max="32" step="1" /></label>
+              <label for="preheatMinPrimaryRemaining">Min 5h%<input id="preheatMinPrimaryRemaining" type="number" min="0" max="100" step="1" /></label>
+              <label for="preheatMinSecondaryRemaining">Min W%<input id="preheatMinSecondaryRemaining" type="number" min="0" max="100" step="1" /></label>
+              <button id="runPreheatBtn">Run Preheat Now</button>
+            </div>
+            <div id="preheatStatus" class="preheat-status">No preheat run yet.</div>
+          </div>
+          <div class="pool-kpis">
+            <div class="metric-card">
+              <div class="metric-label">Total Accounts</div>
+              <div id="poolTotal" class="metric-value">0</div>
+              <div class="metric-sub">all pooled identities</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Healthy Ratio</div>
+              <div id="poolHealthyRatio" class="metric-value">0%</div>
+              <div class="metric-sub">ready for request routing</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Primary Avg Remaining</div>
+              <div id="poolPrimaryAvg" class="metric-value">-</div>
+              <div class="metric-sub">5-hour usage window</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Secondary Avg Remaining</div>
+              <div id="poolSecondaryAvg" class="metric-value">-</div>
+              <div class="metric-sub">weekly usage window</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Cooldown</div>
+              <div id="poolCooldownCount" class="metric-value">0</div>
+              <div class="metric-sub">temporarily paused</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">At Risk</div>
+              <div id="poolRiskCount" class="metric-value">0</div>
+              <div id="poolRiskHint" class="metric-sub">disabled / expired</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Low Quota</div>
+              <div id="poolLowQuotaCount" class="metric-value">0</div>
+              <div class="metric-sub">remaining ≤ 20%</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">Strategy</div>
+              <div id="poolStrategy" class="metric-value metric-value--sm">-</div>
+              <div id="poolAuthState" class="metric-sub">auth: -</div>
+            </div>
+          </div>
+          <div class="pool-layout">
+            <div class="pool-pane">
+              <h4>Current Account</h4>
+              <div id="currentAccountCard" class="account-empty">No active account selected.</div>
+            </div>
+            <div class="pool-pane">
+              <h4>Best Account Recommendation</h4>
+              <div id="recommendList" class="recommend-list">
+                <div class="account-empty">No recommendation yet.</div>
+              </div>
+            </div>
+          </div>
+          <div class="pool-pane pool-pane--full">
+            <h4 id="allAccountsTitle">All Accounts</h4>
+            <div id="accountPoolCards" class="account-grid compact">
+              <div class="account-empty">Loading account pool...</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card span-12">
           <h3>Model Router</h3>
           <div class="hint">Priority: exact mapping &gt; wildcard (`*`) &gt; system fallback mapping.</div>
           <label class="checkline"
@@ -705,10 +885,10 @@
             <button id="addMappingBtn">Add Mapping</button>
           </div>
           <div class="btns">
-            <button id="saveMappingsBtn">Save Model Router</button>
             <button id="resetMappingsBtn" class="secondary">Reset Mappings</button>
             <button id="reloadModelOptionsBtn" class="secondary">Reload Model Options</button>
           </div>
+          <div class="autosave-status" id="routerAutoSaveStatus">Auto-save enabled.</div>
           <div class="log">
             <table>
               <thead>
@@ -723,7 +903,7 @@
           </div>
         </section>
 
-        <section class="card" style="grid-column: 1 / -1">
+        <section class="card span-12">
           <h3>Recent Proxy Requests</h3>
           <div class="btns">
             <button id="refreshReqBtn">Refresh Requests</button>
@@ -755,9 +935,21 @@
       let currentMappings = {};
       let modelCandidates = [];
       let wildcardPresets = [];
+      let stateRefreshInFlight = false;
+      let stateRefreshQueued = false;
+      let lastStateRefreshAtMs = 0;
       let usageRefreshInFlight = false;
       let lastUsageRefreshAtMs = 0;
+      let autoSaveTimer = null;
+      let autoSaveInFlight = false;
+      let autoSaveQueued = false;
+      let autoSaveReady = false;
+      let autoSaveSnapshot = "";
+      let lastAccounts = [];
+      const STATE_REFRESH_VISIBLE_MS = 7000;
+      const STATE_REFRESH_HIDDEN_MS = 30000;
       const USAGE_AUTO_REFRESH_MIN_MS = 5 * 60 * 1000;
+      const AUTO_SAVE_DEBOUNCE_MS = 500;
 
       function escapeHtml(text) {
         return String(text ?? "")
@@ -811,6 +1003,10 @@
         return `${v.slice(0, 8)}...${v.slice(-6)}`;
       }
 
+      function getAccountIdentity(account) {
+        return String(account?.entryId || account?.accountId || "");
+      }
+
       function safePercent(value) {
         const n = Number(value);
         if (!Number.isFinite(n)) return null;
@@ -820,7 +1016,20 @@
       function resolveAccountHealth(account, activeAccountId) {
         const nowSec = Math.floor(Date.now() / 1000);
         const enabled = account?.enabled !== false;
-        const isActive = String(account?.accountId || "") === String(activeAccountId || "");
+        const isActive = getAccountIdentity(account) === String(activeAccountId || "");
+        const serverStatus = String(account?.healthStatus || "").trim().toLowerCase();
+        if (serverStatus) {
+          if (serverStatus === "healthy") return { label: "healthy", tone: "ok", isActive };
+          if (serverStatus === "limited") {
+            const tone = account?.hardLimited ? "bad" : "warn";
+            const label = account?.hardLimited ? "limited-hard" : "limited";
+            return { label, tone, isActive };
+          }
+          if (serverStatus === "cooldown") return { label: "cooldown", tone: "warn", isActive };
+          if (serverStatus === "expiring") return { label: "expiring", tone: "warn", isActive };
+          if (serverStatus === "expired") return { label: "expired", tone: "bad", isActive };
+          if (serverStatus === "disabled") return { label: "disabled", tone: "bad", isActive };
+        }
         const cooldownUntil = Number(account?.cooldownUntil || 0);
         const expiresAt = Number(account?.expiresAt || 0);
         const inCooldown = cooldownUntil > nowSec;
@@ -835,6 +1044,9 @@
       }
 
       function computeAccountScore(account, activeAccountId) {
+        if (Number.isFinite(Number(account?.healthScore))) {
+          return Math.max(0, Math.min(100, Math.round(Number(account.healthScore))));
+        }
         const nowSec = Math.floor(Date.now() / 1000);
         const health = resolveAccountHealth(account, activeAccountId);
         const failureCount = Number(account?.failureCount || 0);
@@ -868,41 +1080,93 @@
         return "bad";
       }
 
-      function percentTone(percent) {
-        if (!Number.isFinite(percent)) return "neutral";
-        if (percent <= 60) return "ok";
-        if (percent <= 85) return "warn";
+      function remainingTone(percentRemaining) {
+        if (!Number.isFinite(percentRemaining)) return "neutral";
+        if (percentRemaining >= 70) return "ok";
+        if (percentRemaining >= 35) return "warn";
         return "bad";
+      }
+
+      function resolveUsageWindows(account) {
+        const usage = account?.usageSnapshot || null;
+        const primaryUsed = safePercent(usage?.primary?.used_percent);
+        const secondaryUsed = safePercent(usage?.secondary?.used_percent);
+        const primaryRemainingRaw = safePercent(account?.primaryRemaining ?? usage?.primary?.remaining_percent);
+        const secondaryRemainingRaw = safePercent(account?.secondaryRemaining ?? usage?.secondary?.remaining_percent);
+        const primaryRemaining =
+          primaryRemainingRaw !== null
+            ? primaryRemainingRaw
+            : primaryUsed !== null
+              ? Math.max(0, Math.min(100, 100 - primaryUsed))
+              : null;
+        const secondaryRemaining =
+          secondaryRemainingRaw !== null
+            ? secondaryRemainingRaw
+            : secondaryUsed !== null
+              ? Math.max(0, Math.min(100, 100 - secondaryUsed))
+              : null;
+        return { usage, primaryUsed, secondaryUsed, primaryRemaining, secondaryRemaining };
+      }
+
+      function limitPairTone(primaryRemaining, secondaryRemaining, fallbackScore) {
+        const values = [primaryRemaining, secondaryRemaining].filter(Number.isFinite);
+        if (values.length === 0) return scoreTone(fallbackScore);
+        return remainingTone(Math.min(...values));
+      }
+
+      function fmtLimitPair(primaryRemaining, secondaryRemaining) {
+        const p = Number.isFinite(primaryRemaining) ? primaryRemaining : "-";
+        const w = Number.isFinite(secondaryRemaining) ? secondaryRemaining : "-";
+        return `5h/W ${p}/${w}`;
+      }
+
+      function getAccountSlotNumber(account, fallbackIndex = 0) {
+        const raw = Number(account?.slot || account?._slot || 0);
+        if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+        const idx = Number(fallbackIndex);
+        return Number.isFinite(idx) && idx >= 0 ? idx + 1 : null;
+      }
+
+      function getNextAccountSlot(minSlot = 2) {
+        const occupied = new Set();
+        for (let i = 0; i < lastAccounts.length; i += 1) {
+          const slot = getAccountSlotNumber(lastAccounts[i], i);
+          if (Number.isFinite(slot) && slot > 0) occupied.add(slot);
+        }
+        let slot = Math.max(1, Number(minSlot) || 1);
+        while (occupied.has(slot)) slot += 1;
+        return slot;
       }
 
       function buildAccountCardHtml(account, activeAccountId, compact = false) {
         const health = resolveAccountHealth(account, activeAccountId);
         const score = computeAccountScore(account, activeAccountId);
+        const slotNumber = getAccountSlotNumber(account);
         const pills = [`<span class="pill ${health.tone}">${health.label}</span>`];
         if (health.isActive) pills.push(`<span class="pill neutral">active</span>`);
-        const usage = account?.usageSnapshot || null;
-        const primaryUsed = safePercent(usage?.primary?.used_percent);
-        const secondaryUsed = safePercent(usage?.secondary?.used_percent);
-        const primaryTone = percentTone(primaryUsed);
-        const secondaryTone = percentTone(secondaryUsed);
+        const { usage, primaryUsed, secondaryUsed, primaryRemaining, secondaryRemaining } = resolveUsageWindows(account);
+        const primaryTone = remainingTone(primaryRemaining);
+        const secondaryTone = remainingTone(secondaryRemaining);
+        const pairTone = limitPairTone(primaryRemaining, secondaryRemaining, score);
+        const pairText = fmtLimitPair(primaryRemaining, secondaryRemaining);
         const usageHtml =
-          primaryUsed === null && secondaryUsed === null
-            ? `<div class="account-empty" style="margin-top:10px;padding:8px 10px">Usage snapshot not fetched yet.</div>`
+          primaryUsed === null && secondaryUsed === null && primaryRemaining === null && secondaryRemaining === null
+            ? `<div class="account-empty account-empty--compact">Usage snapshot not fetched yet.</div>`
             : `<div class="usage-stack">
                 ${
-                  primaryUsed === null
+                  primaryUsed === null && primaryRemaining === null
                     ? ""
                     : `<div class="usage-item">
-                        <div class="label"><span>Primary Window</span><span class="v">${primaryUsed}% used</span></div>
-                        <div class="usage-track"><div class="usage-fill ${primaryTone}" style="width:${primaryUsed}%"></div></div>
+                        <div class="label"><span>5h limit</span><span class="v">${primaryRemaining ?? "-"}% remaining${primaryUsed !== null ? ` · ${primaryUsed}% used` : ""}</span></div>
+                        <div class="usage-track"><div class="usage-fill ${primaryTone}" style="width:${primaryRemaining ?? 0}%"></div></div>
                       </div>`
                 }
                 ${
-                  secondaryUsed === null
+                  secondaryUsed === null && secondaryRemaining === null
                     ? ""
                     : `<div class="usage-item">
-                        <div class="label"><span>Secondary Window</span><span class="v">${secondaryUsed}% used</span></div>
-                        <div class="usage-track"><div class="usage-fill ${secondaryTone}" style="width:${secondaryUsed}%"></div></div>
+                        <div class="label"><span>Weekly limit</span><span class="v">${secondaryRemaining ?? "-"}% remaining${secondaryUsed !== null ? ` · ${secondaryUsed}% used` : ""}</span></div>
+                        <div class="usage-track"><div class="usage-fill ${secondaryTone}" style="width:${secondaryRemaining ?? 0}%"></div></div>
                       </div>`
                 }
               </div>`;
@@ -916,14 +1180,15 @@
             <div>
               <div class="account-name">${escapeHtml(account.label || "unnamed-account")}</div>
               <div class="account-id" title="${escapeHtml(account.accountId || "-")}">${escapeHtml(shortId(account.accountId || "-"))}</div>
+              <div class="account-id" title="${escapeHtml(account.entryId || "-")}">entry ${escapeHtml(shortId(account.entryId || "-"))}</div>
             </div>
             <div class="pill-row">
               ${pills.join("")}
-              <span class="pill ${scoreTone(score)}">${score}%</span>
+              <span class="pill ${pairTone}" title="5-hour / weekly remaining quota">${escapeHtml(pairText)}</span>
             </div>
           </div>
           <div class="account-meta">
-            <div class="meta-item"><div class="k">Slot</div><div class="v">${Number(account.slot || 0) || "-"}</div></div>
+            <div class="meta-item"><div class="k">Slot</div><div class="v">${slotNumber ? `#${slotNumber}` : "-"}</div></div>
             <div class="meta-item"><div class="k">Expires</div><div class="v">${fmtUnixSec(Number(account.expiresAt || 0))}</div></div>
             <div class="meta-item"><div class="k">Last Used</div><div class="v">${fmtUnixSec(Number(account.lastUsedAt || 0))}</div></div>
             <div class="meta-item"><div class="k">Failures</div><div class="v">${Number(account.failureCount || 0)}</div></div>
@@ -1015,6 +1280,113 @@
         return data;
       }
 
+      function setAutoSaveStatus(message, tone = "") {
+        for (const id of ["configAutoSaveStatus", "routerAutoSaveStatus"]) {
+          const el = $(id);
+          if (!el) continue;
+          el.className = tone ? `autosave-status ${tone}` : "autosave-status";
+          el.textContent = message;
+        }
+      }
+
+      function buildConfigPayload() {
+        return {
+          upstreamMode: $("upstreamMode").value,
+          upstreamBaseUrl: $("upstreamBaseUrl").value,
+          defaultModel: $("defaultModel").value,
+          defaultInstructions: $("defaultInstructions").value,
+          defaultReasoningEffort: $("defaultReasoningEffort").value,
+          multiAccountStrategy: $("multiAccountStrategy").value,
+          preheatEnabled: $("preheatEnabled").checked,
+          preheatIntervalSeconds: Number($("preheatIntervalSeconds").value || 0),
+          preheatCooldownSeconds: Number($("preheatCooldownSeconds").value || 0),
+          preheatBatchSize: Number($("preheatBatchSize").value || 0),
+          preheatMinPrimaryRemaining: Number($("preheatMinPrimaryRemaining").value || 0),
+          preheatMinSecondaryRemaining: Number($("preheatMinSecondaryRemaining").value || 0),
+          modelRouterEnabled: $("modelRouterEnabled").checked,
+          modelMappings: currentMappings
+        };
+      }
+
+      async function persistAutoSave(force = false) {
+        if (!autoSaveReady) return false;
+        const payload = buildConfigPayload();
+        const snapshot = JSON.stringify(payload);
+        if (!force && snapshot === autoSaveSnapshot) return false;
+        if (autoSaveInFlight) {
+          autoSaveQueued = true;
+          return false;
+        }
+        autoSaveInFlight = true;
+        setAutoSaveStatus("Auto-saving...");
+        try {
+          await api("/admin/config", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          autoSaveSnapshot = snapshot;
+          setAutoSaveStatus("Auto-saved.", "ok");
+          return true;
+        } catch (err) {
+          console.warn("Auto-save failed:", err.message);
+          setAutoSaveStatus(`Auto-save failed: ${err.message}`, "bad");
+          return false;
+        } finally {
+          autoSaveInFlight = false;
+          if (autoSaveQueued) {
+            autoSaveQueued = false;
+            setTimeout(() => {
+              persistAutoSave(false).catch(() => {});
+            }, 120);
+          }
+        }
+      }
+
+      function scheduleAutoSave(delayMs = AUTO_SAVE_DEBOUNCE_MS) {
+        if (!autoSaveReady) return;
+        if (autoSaveTimer) clearTimeout(autoSaveTimer);
+        setAutoSaveStatus("Auto-save pending...");
+        autoSaveTimer = setTimeout(() => {
+          autoSaveTimer = null;
+          persistAutoSave(false).catch(() => {});
+        }, delayMs);
+      }
+
+      function triggerAutoSaveNow() {
+        if (!autoSaveReady) return;
+        if (autoSaveTimer) {
+          clearTimeout(autoSaveTimer);
+          autoSaveTimer = null;
+        }
+        persistAutoSave(false).catch(() => {});
+      }
+
+      function renderPreheatStatus(preheat) {
+        const el = $("preheatStatus");
+        if (!el) return;
+        if (!preheat) {
+          el.className = "preheat-status";
+          el.textContent = "No preheat state available.";
+          return;
+        }
+        const lastRun = fmtUnixSec(Number(preheat.lastRunAt || 0));
+        const completed = fmtUnixSec(Number(preheat.lastCompletedAt || 0));
+        const summary = preheat.lastSummary || null;
+        const summaryText = summary
+          ? `last=${summary.status || "-"} success=${summary.success ?? 0} failed=${summary.failed ?? 0} selected=${summary.selected ?? 0}`
+          : "last=none";
+        const runningText = preheat.running ? "running" : "idle";
+        const errorText =
+          typeof preheat.lastError === "string" && preheat.lastError.trim().length > 0
+            ? ` error=${preheat.lastError.trim()}`
+            : "";
+        el.className = `preheat-status ${preheat.lastStatus === "failed" ? "bad" : preheat.lastStatus === "ok" || preheat.lastStatus === "partial" ? "ok" : ""}`;
+        el.textContent =
+          `status=${preheat.lastStatus || "idle"} (${runningText}) | ${summaryText}\n` +
+          `run=${lastRun} complete=${completed} duration=${Number(preheat.lastDurationMs || 0)}ms${errorText}`;
+      }
+
       function renderState(state) {
         $("mode").textContent = `${state.config.authMode} | ${displayUpstreamMode(state.config.upstreamMode)}`;
         $("uptime").textContent = fmtUptime(state.uptimeMs);
@@ -1023,10 +1395,23 @@
         $("defaultModel").value = state.config.defaultModel;
         $("defaultInstructions").value = state.config.defaultInstructions;
         $("defaultReasoningEffort").value = state.config.defaultReasoningEffort || "medium";
+        $("multiAccountStrategy").value = state.config.multiAccountStrategy || "smart";
+        $("preheatEnabled").checked = state.config.preheatEnabled !== false;
+        $("preheatIntervalSeconds").value = Number(state.config.preheatIntervalSeconds || 600);
+        $("preheatCooldownSeconds").value = Number(state.config.preheatCooldownSeconds || 1200);
+        $("preheatBatchSize").value = Number(state.config.preheatBatchSize || 2);
+        $("preheatMinPrimaryRemaining").value = Number(state.config.preheatMinPrimaryRemaining ?? 5);
+        $("preheatMinSecondaryRemaining").value = Number(state.config.preheatMinSecondaryRemaining ?? 5);
         $("modelRouterEnabled").checked = state.config.modelRouterEnabled !== false;
         currentMappings = { ...(state.config.modelMappings || {}) };
         renderMappingsTable();
         renderModelOptions();
+        renderPreheatStatus(state.preheat || null);
+        autoSaveSnapshot = JSON.stringify(buildConfigPayload());
+        if (!autoSaveReady) {
+          autoSaveReady = true;
+          setAutoSaveStatus("Auto-save enabled.");
+        }
 
         const authOk = Boolean(state.auth?.authenticated);
         const badge = $("authBadge");
@@ -1034,15 +1419,21 @@
         badge.textContent = authOk ? "AUTHENTICATED" : "NOT AUTHENTICATED";
 
         const accounts = Array.isArray(state.auth?.accounts) ? state.auth.accounts : [];
+        lastAccounts = accounts;
         const strategy = state.auth?.multiAccountStrategy || "-";
         const enabledCount = Number(state.auth?.enabledAccountCount || 0);
-        const activeAccount = state.auth?.activeAccountId || "";
+        const activeAccount = state.auth?.activeEntryId || state.auth?.activeAccountId || "";
         const poolEnabled = state.auth?.multiAccountEnabled === true;
-        const decorated = accounts.map((a) => {
-          const health = resolveAccountHealth(a, activeAccount);
-          const score = computeAccountScore(a, activeAccount);
-          return { ...a, _health: health, _score: score };
-        });
+        const decorated = accounts
+          .map((a, idx) => {
+            const health = resolveAccountHealth(a, activeAccount);
+            const score = computeAccountScore(a, activeAccount);
+            return { ...a, _health: health, _score: score, _slot: getAccountSlotNumber(a, idx) || 999 };
+          })
+          .sort((a, b) => {
+            if (a._slot !== b._slot) return a._slot - b._slot;
+            return String(a.label || a.accountId || "").localeCompare(String(b.label || b.accountId || ""));
+          });
         const healthyCount = decorated.filter((x) => x._health.label === "healthy").length;
         const cooldownCount = decorated.filter((x) => x._health.label === "cooldown").length;
         const riskCount = decorated.filter((x) =>
@@ -1050,48 +1441,83 @@
         ).length;
         const healthyRatio =
           enabledCount > 0 ? Math.round((healthyCount / enabledCount) * 100) : 0;
+        const poolMetrics = state.auth?.poolMetrics || {};
+        const avgPrimaryRemaining =
+          Number.isFinite(Number(poolMetrics.avgPrimaryRemaining))
+            ? Math.round(Number(poolMetrics.avgPrimaryRemaining))
+            : null;
+        const avgSecondaryRemaining =
+          Number.isFinite(Number(poolMetrics.avgSecondaryRemaining))
+            ? Math.round(Number(poolMetrics.avgSecondaryRemaining))
+            : null;
+        const lowQuotaCount =
+          Number.isFinite(Number(poolMetrics.lowQuotaCount))
+            ? Number(poolMetrics.lowQuotaCount)
+            : decorated.filter((x) => x.lowQuota === true).length;
 
         $("poolTotal").textContent = String(accounts.length);
         $("poolHealthyRatio").textContent = `${healthyRatio}%`;
+        $("poolPrimaryAvg").textContent = avgPrimaryRemaining === null ? "-" : `${avgPrimaryRemaining}%`;
+        $("poolSecondaryAvg").textContent = avgSecondaryRemaining === null ? "-" : `${avgSecondaryRemaining}%`;
         $("poolCooldownCount").textContent = String(cooldownCount);
         $("poolRiskCount").textContent = String(riskCount);
+        $("poolLowQuotaCount").textContent = String(lowQuotaCount);
         $("poolRiskHint").textContent = poolEnabled
           ? `${enabledCount}/${accounts.length} enabled`
           : "multi-account disabled";
         $("poolStrategy").textContent = poolEnabled ? strategy : "disabled";
         $("poolAuthState").textContent = authOk ? "auth: connected" : "auth: disconnected";
+        $("allAccountsTitle").textContent = `All Accounts (${decorated.length})`;
 
         const activeItem =
-          decorated.find((x) => String(x.accountId || "") === String(activeAccount || "")) ||
+          decorated.find((x) => getAccountIdentity(x) === String(activeAccount || "")) ||
           decorated[0] ||
           null;
-        $("currentAccountCard").innerHTML = activeItem
-          ? buildAccountCardHtml(activeItem, activeAccount)
-          : `<div class="account-empty">No active account selected.</div>`;
+        const currentCard = $("currentAccountCard");
+        if (activeItem) {
+          currentCard.className = "current-account-shell";
+          currentCard.innerHTML = buildAccountCardHtml(activeItem, activeAccount);
+        } else {
+          currentCard.className = "account-empty";
+          currentCard.textContent = "No active account selected.";
+        }
 
-        const recommendations = decorated
-          .filter((x) => x.enabled !== false)
-          .sort((a, b) => b._score - a._score)
-          .slice(0, 3);
+        let recommendations = [];
+        if (Array.isArray(poolMetrics.recommendedEntryIds) && poolMetrics.recommendedEntryIds.length > 0) {
+          recommendations = poolMetrics.recommendedEntryIds
+            .map((id) => decorated.find((x) => getAccountIdentity(x) === String(id)))
+            .filter(Boolean)
+            .slice(0, 3);
+        } else {
+          recommendations = decorated
+            .filter((x) => x.enabled !== false)
+            .sort((a, b) => b._score - a._score)
+            .slice(0, 3);
+        }
         $("recommendList").innerHTML =
           recommendations.length === 0
             ? `<div class="account-empty">No recommendation available.</div>`
             : recommendations
                 .map((acc) => {
-                  const tone = scoreTone(acc._score);
+                  const { primaryRemaining, secondaryRemaining } = resolveUsageWindows(acc);
+                  const tone = limitPairTone(primaryRemaining, secondaryRemaining, acc._score);
+                  const pairText = fmtLimitPair(primaryRemaining, secondaryRemaining);
+                  const statusLine = acc.healthStatus
+                    ? `${escapeHtml(acc.healthStatus)}${Number.isFinite(primaryRemaining) ? ` · 5h ${primaryRemaining}%` : ""}${Number.isFinite(secondaryRemaining) ? ` · W ${secondaryRemaining}%` : ""}`
+                    : escapeHtml(shortId(acc.accountId || "-"));
                   return `<div class="recommend-item">
                     <div>
                       <div class="recommend-name">${escapeHtml(acc.label || "unnamed-account")}</div>
-                      <div class="recommend-sub">${escapeHtml(shortId(acc.accountId || "-"))}</div>
+                      <div class="recommend-sub">${statusLine}</div>
                     </div>
-                    <span class="pill ${tone}">${acc._score}%</span>
+                    <span class="pill ${tone}" title="5-hour / weekly remaining quota">${escapeHtml(pairText)}</span>
                   </div>`;
                 })
                 .join("");
 
         $("accountPoolCards").innerHTML =
           decorated.length === 0
-            ? `<div class="account-empty">No pooled accounts yet. Use OAuth Login / Add Account #2 / #3.</div>`
+            ? `<div class="account-empty">No pooled accounts yet. Use OAuth Login / Add Account.</div>`
             : decorated
                 .map((a) => buildAccountCardHtml(a, activeAccount, true))
                 .join("");
@@ -1100,7 +1526,7 @@
         $("reqTable").innerHTML = rows
           .map((r) => {
             const t = new Date(r.ts).toLocaleTimeString();
-            const statusColor = r.status >= 400 ? "var(--bad)" : "var(--ok)";
+            const statusClass = r.status >= 400 ? "req-status-bad" : "req-status-ok";
             const routeText =
               r.requestedModel && r.mappedModel
                 ? `${escapeHtml(r.requestedModel)} → ${escapeHtml(r.mappedModel)}`
@@ -1108,20 +1534,39 @@
             return `<tr>
               <td>${t}</td>
               <td>${r.method}</td>
-              <td class="mono">${escapeHtml(r.path)}${routeText ? `<br><span style="color:var(--muted)">${routeText}</span>` : ""}</td>
+              <td class="mono">${escapeHtml(r.path)}${routeText ? `<br><span class="req-route">${routeText}</span>` : ""}</td>
               <td>${fmtToken(r.inputTokens)}</td>
               <td>${fmtToken(r.outputTokens)}</td>
               <td>${fmtToken(r.totalTokens)}</td>
-              <td style="color:${statusColor}">${r.status}</td>
+              <td class="${statusClass}">${r.status}</td>
               <td>${r.durationMs} ms</td>
             </tr>`;
           })
           .join("");
       }
 
-      async function refreshState() {
-        const state = await api("/admin/state");
-        renderState(state);
+      async function refreshState(force = false) {
+        if (stateRefreshInFlight) {
+          stateRefreshQueued = true;
+          return;
+        }
+        if (!force && document.hidden && Date.now() - lastStateRefreshAtMs < STATE_REFRESH_HIDDEN_MS) {
+          return;
+        }
+        stateRefreshInFlight = true;
+        try {
+          const state = await api("/admin/state");
+          renderState(state);
+          lastStateRefreshAtMs = Date.now();
+        } finally {
+          stateRefreshInFlight = false;
+          if (stateRefreshQueued) {
+            stateRefreshQueued = false;
+            setTimeout(() => {
+              refreshState(true).catch(() => {});
+            }, 120);
+          }
+        }
       }
 
       async function refreshUsage(force = false) {
@@ -1147,23 +1592,6 @@
         }
       }
 
-      async function saveConfig() {
-        await api("/admin/config", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            upstreamMode: $("upstreamMode").value,
-            upstreamBaseUrl: $("upstreamBaseUrl").value,
-            defaultModel: $("defaultModel").value,
-            defaultInstructions: $("defaultInstructions").value,
-            defaultReasoningEffort: $("defaultReasoningEffort").value,
-            modelRouterEnabled: $("modelRouterEnabled").checked,
-            modelMappings: currentMappings
-          })
-        });
-        await refreshState();
-      }
-
       async function runTest() {
         $("testResult").textContent = "Running test...";
         try {
@@ -1179,14 +1607,32 @@
         }
       }
 
+      async function runPreheatNow(force = true) {
+        const statusEl = $("preheatStatus");
+        statusEl.className = "preheat-status";
+        statusEl.textContent = "Running preheat...";
+        try {
+          const result = await api("/admin/preheat/run", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ force })
+          });
+          renderPreheatStatus(result.preheat || null);
+          await refreshState(true);
+        } catch (err) {
+          statusEl.className = "preheat-status bad";
+          statusEl.textContent = `Preheat failed: ${err.message}`;
+        }
+      }
+
       $("refreshBtn").addEventListener("click", refreshState);
-      $("loginBtn").addEventListener("click", () => window.open("/auth/login", "_blank"));
-      $("addAccount2Btn").addEventListener("click", () =>
-        window.open("/auth/login?slot=2&label=acc2&prompt=login", "_blank")
+      $("loginBtn").addEventListener("click", () =>
+        window.open("/auth/login?prompt=login", "_blank")
       );
-      $("addAccount3Btn").addEventListener("click", () =>
-        window.open("/auth/login?slot=3&label=acc3&prompt=login", "_blank")
-      );
+      $("addAccountBtn").addEventListener("click", () => {
+        const slot = getNextAccountSlot(2);
+        window.open(`/auth/login?slot=${slot}&label=acc${slot}&prompt=login`, "_blank");
+      });
       $("logoutBtn").addEventListener("click", async () => {
         try {
           await api("/auth/logout", { method: "POST" });
@@ -1195,13 +1641,34 @@
           alert(`Logout failed: ${err.message}`);
         }
       });
-      $("saveConfigBtn").addEventListener("click", async () => {
-        try {
-          await saveConfig();
-        } catch (err) {
-          alert(`Save config failed: ${err.message}`);
-        }
-      });
+
+      const instantSaveFields = [
+        "upstreamMode",
+        "defaultReasoningEffort",
+        "multiAccountStrategy",
+        "preheatEnabled"
+      ];
+      for (const id of instantSaveFields) {
+        $(id).addEventListener("change", () => triggerAutoSaveNow());
+      }
+
+      const debouncedSaveFields = [
+        "upstreamBaseUrl",
+        "defaultModel",
+        "defaultInstructions",
+        "preheatIntervalSeconds",
+        "preheatCooldownSeconds",
+        "preheatBatchSize",
+        "preheatMinPrimaryRemaining",
+        "preheatMinSecondaryRemaining"
+      ];
+      for (const id of debouncedSaveFields) {
+        $(id).addEventListener("input", () => scheduleAutoSave());
+        $(id).addEventListener("blur", () => triggerAutoSaveNow());
+      }
+
+      $("modelRouterEnabled").addEventListener("change", () => triggerAutoSaveNow());
+
       $("addMappingBtn").addEventListener("click", () => {
         const from = $("mapFrom").value;
         const to = $("mapTo").value;
@@ -1214,6 +1681,7 @@
         $("mapTo").value = "";
         renderMappingsTable();
         renderModelOptions();
+        triggerAutoSaveNow();
       });
       $("mapTable").addEventListener("click", (event) => {
         const target = event.target;
@@ -1222,27 +1690,14 @@
         if (!key) return;
         delete currentMappings[key];
         renderMappingsTable();
-      });
-      $("saveMappingsBtn").addEventListener("click", async () => {
-        try {
-          await api("/admin/config", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              modelRouterEnabled: $("modelRouterEnabled").checked,
-              modelMappings: currentMappings
-            })
-          });
-          await refreshState();
-        } catch (err) {
-          alert(`Save model router failed: ${err.message}`);
-        }
+        triggerAutoSaveNow();
       });
       $("resetMappingsBtn").addEventListener("click", () => {
         if (!confirm("Reset all custom model mappings?")) return;
         currentMappings = {};
         renderMappingsTable();
         renderModelOptions();
+        triggerAutoSaveNow();
       });
       $("reloadModelOptionsBtn").addEventListener("click", async () => {
         await loadModelCandidates(true);
@@ -1273,6 +1728,7 @@
         }
       });
       $("runTestBtn").addEventListener("click", runTest);
+      $("runPreheatBtn").addEventListener("click", () => runPreheatNow(true));
 
       Promise.all([loadModelCandidates(), refreshState()]).catch((err) => {
         $("testResult").textContent = `Init failed: ${err.message}`;
@@ -1281,9 +1737,16 @@
         .then((did) => (did ? refreshState() : null))
         .catch(() => {});
       setInterval(() => {
-        refreshState().catch(() => {});
-      }, 5000);
+        if (document.hidden) {
+          if (Date.now() - lastStateRefreshAtMs >= STATE_REFRESH_HIDDEN_MS) {
+            refreshState(false).catch(() => {});
+          }
+          return;
+        }
+        refreshState(false).catch(() => {});
+      }, STATE_REFRESH_VISIBLE_MS);
       setInterval(() => {
+        if (document.hidden) return;
         refreshUsage(false)
           .then((did) => {
             if (did) return refreshState();
@@ -1291,6 +1754,14 @@
           })
           .catch(() => {});
       }, 45000);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) {
+          refreshState(true).catch(() => {});
+          refreshUsage(false)
+            .then((did) => (did ? refreshState(true) : null))
+            .catch(() => {});
+        }
+      });
     </script>
   </body>
 </html>

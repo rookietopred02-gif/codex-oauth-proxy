@@ -2,7 +2,7 @@
 
 Localhost OpenAI-compatible proxy for Codex/ChatGPT OAuth, with a built-in control dashboard.
 
-This now defaults to `AUTH_MODE=codex-oauth`, so you can authenticate directly from this project and no longer need to run:
+This now defaults to `AUTH_MODE=codex-oauth`, so you can authenticate directly from this project.
 
 The dashboard style and control surface are inspired by the operational flow in [Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager): auth control, runtime config, health checks, and request monitoring in one UI.
 
@@ -27,6 +27,9 @@ AUTH_MODE=codex-oauth
 UPSTREAM_MODE=codex-chatgpt
 UPSTREAM_BASE_URL=https://chatgpt.com/backend-api
 CODEX_DEFAULT_REASONING_EFFORT=adaptive
+CODEX_PREHEAT_ENABLED=true
+CODEX_PREHEAT_INTERVAL_SECONDS=600
+CODEX_PREHEAT_BATCH_SIZE=2
 ```
 
 Protocol quick switch examples:
@@ -65,6 +68,7 @@ Use the dashboard to:
 - edit runtime proxy settings
 - edit Model Router mappings (`exact` + `*` wildcard)
 - tune default reasoning effort (`adaptive|none|low|medium|high|xhigh`)
+- configure and run account preheat scheduler (warmup interval/cooldown/batch)
 - run upstream self-tests (works for `codex-chatgpt`, `gemini-v1beta`, and `anthropic-v1`)
 - inspect recent proxy requests and latencies
 
@@ -136,7 +140,7 @@ Priority:
   - built-in ChatGPT OAuth (default)
   - callback listener: `http://localhost:1455/auth/callback`
   - token store at `CODEX_TOKEN_STORE_PATH`
-- `openclaw`:
-  - reuses OpenClaw `auth-profiles.json`
+- `profile-store`:
+  - reuses a local/shared `auth-profiles.json` source
 - `custom-oauth`:
   - bring-your-own OAuth provider config

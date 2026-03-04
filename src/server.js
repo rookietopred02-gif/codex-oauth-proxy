@@ -26,7 +26,7 @@ const DEFAULT_ANTHROPIC_UPSTREAM_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || "2026.2.26";
 const VALID_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh"]);
 const VALID_REASONING_EFFORT_MODES = new Set(["none", "low", "medium", "high", "xhigh", "adaptive"]);
-const VALID_MULTI_ACCOUNT_STRATEGIES = new Set(["round-robin", "random", "sticky"]);
+const VALID_MULTI_ACCOUNT_STRATEGIES = new Set(["smart", "round-robin", "random", "sticky"]);
 const OFFICIAL_OPENAI_MODELS = [
   "gpt-5.3-codex",
   "gpt-5-codex",
@@ -94,6 +94,16 @@ function parseSlotValue(value) {
   return slot;
 }
 
+function parseNumberEnv(value, fallback, options = {}) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  let out = n;
+  if (Number.isFinite(options.min)) out = Math.max(options.min, out);
+  if (Number.isFinite(options.max)) out = Math.min(options.max, out);
+  if (options.integer) out = Math.floor(out);
+  return out;
+}
+
 function sanitizeModelMappings(input) {
   const out = {};
   if (!input || typeof input !== "object" || Array.isArray(input)) return out;
@@ -121,7 +131,7 @@ function parseModelMappingsEnv(value) {
 const config = {
   host: process.env.HOST || "127.0.0.1",
   port: Number(process.env.PORT || 8787),
-  authMode, // openclaw | codex-oauth | custom-oauth
+  authMode, // profile-store | codex-oauth | custom-oauth
   upstreamMode: normalizeUpstreamMode(process.env.UPSTREAM_MODE || defaultUpstreamMode), // codex-chatgpt | gemini-v1beta | anthropic-v1
   upstreamBaseUrl: process.env.UPSTREAM_BASE_URL || defaultUpstreamBaseUrl,
   gemini: {
@@ -135,12 +145,12 @@ const config = {
     version: process.env.ANTHROPIC_API_VERSION || "2023-06-01",
     defaultModel: process.env.ANTHROPIC_DEFAULT_MODEL || "claude-sonnet-4-20250514"
   },
-  openclaw: {
+  profileStore: {
     authStorePath: path.resolve(
-      process.env.OPENCLAW_AUTH_STORE_PATH ||
-        path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "auth-profiles.json")
+      process.env.PROFILE_AUTH_STORE_PATH ||
+        path.join(os.homedir(), ".codex-oauth-proxy", "auth-profiles.json")
     ),
-    profileId: process.env.OPENCLAW_PROFILE_ID || "openai-codex:default"
+    profileId: process.env.PROFILE_AUTH_ID || "openai-codex:default"
   },
   customOAuth: {
     authorizeUrl: process.env.OAUTH_AUTHORIZE_URL || "",
@@ -168,10 +178,42 @@ const config = {
     scopes: OPENAI_CODEX_SCOPES,
     originator: process.env.CODEX_OAUTH_ORIGINATOR || "pi",
     multiAccountEnabled: parseBooleanEnv(process.env.CODEX_MULTI_ACCOUNT_ENABLED, true),
-    multiAccountStrategy: String(process.env.CODEX_MULTI_ACCOUNT_STRATEGY || "round-robin").trim().toLowerCase(),
+    multiAccountStrategy: String(process.env.CODEX_MULTI_ACCOUNT_STRATEGY || "smart").trim().toLowerCase(),
     sharedApiKey: String(process.env.LOCAL_API_KEY || process.env.PROXY_API_KEY || "").trim(),
+    usageBaseUrl: process.env.CODEX_USAGE_BASE_URL || DEFAULT_CODEX_UPSTREAM_BASE_URL,
     tokenStorePath: path.resolve(
       process.env.CODEX_TOKEN_STORE_PATH || path.join(rootDir, "data", "codex-oauth-store.json")
+    )
+  },
+  codexPreheat: {
+    enabled: parseBooleanEnv(process.env.CODEX_PREHEAT_ENABLED, true),
+    intervalSeconds: parseNumberEnv(process.env.CODEX_PREHEAT_INTERVAL_SECONDS, 600, {
+      min: 30,
+      max: 86400,
+      integer: true
+    }),
+    cooldownSeconds: parseNumberEnv(process.env.CODEX_PREHEAT_COOLDOWN_SECONDS, 1200, {
+      min: 30,
+      max: 86400,
+      integer: true
+    }),
+    batchSize: parseNumberEnv(process.env.CODEX_PREHEAT_BATCH_SIZE, 2, {
+      min: 1,
+      max: 32,
+      integer: true
+    }),
+    minPrimaryRemaining: parseNumberEnv(process.env.CODEX_PREHEAT_MIN_PRIMARY_REMAINING, 5, {
+      min: 0,
+      max: 100,
+      integer: true
+    }),
+    minSecondaryRemaining: parseNumberEnv(process.env.CODEX_PREHEAT_MIN_SECONDARY_REMAINING, 5, {
+      min: 0,
+      max: 100,
+      integer: true
+    }),
+    historyPath: path.resolve(
+      process.env.CODEX_PREHEAT_HISTORY_PATH || path.join(rootDir, "data", "codex-preheat-history.json")
     )
   },
   codex: {
@@ -189,8 +231,8 @@ const config = {
   }
 };
 
-if (config.authMode !== "openclaw" && config.authMode !== "codex-oauth" && config.authMode !== "custom-oauth") {
-  console.error("AUTH_MODE must be one of: openclaw, codex-oauth, custom-oauth");
+if (config.authMode !== "profile-store" && config.authMode !== "codex-oauth" && config.authMode !== "custom-oauth") {
+  console.error("AUTH_MODE must be one of: profile-store, codex-oauth, custom-oauth");
   process.exit(1);
 }
 
@@ -212,9 +254,9 @@ if (config.authMode === "custom-oauth") {
 
 if (!VALID_MULTI_ACCOUNT_STRATEGIES.has(config.codexOAuth.multiAccountStrategy)) {
   console.warn(
-    `Invalid CODEX_MULTI_ACCOUNT_STRATEGY="${config.codexOAuth.multiAccountStrategy}", fallback to round-robin.`
+    `Invalid CODEX_MULTI_ACCOUNT_STRATEGY="${config.codexOAuth.multiAccountStrategy}", fallback to smart.`
   );
-  config.codexOAuth.multiAccountStrategy = "round-robin";
+  config.codexOAuth.multiAccountStrategy = "smart";
 }
 
 const pendingAuth = new Map();
@@ -256,6 +298,31 @@ const runtimeStats = {
   okRequests: 0,
   errorRequests: 0,
   recentRequests: []
+};
+
+let codexPreheatHistory = { accounts: {} };
+try {
+  codexPreheatHistory = await loadJsonStore(config.codexPreheat.historyPath, { accounts: {} });
+} catch {
+  codexPreheatHistory = { accounts: {} };
+}
+if (!codexPreheatHistory || typeof codexPreheatHistory !== "object") {
+  codexPreheatHistory = { accounts: {} };
+}
+if (!codexPreheatHistory.accounts || typeof codexPreheatHistory.accounts !== "object") {
+  codexPreheatHistory.accounts = {};
+}
+
+const codexPreheatRuntime = {
+  running: false,
+  timer: null,
+  lastRunAt: 0,
+  lastCompletedAt: 0,
+  lastReason: "",
+  lastStatus: "idle",
+  lastError: "",
+  lastDurationMs: 0,
+  lastSummary: null
 };
 
 const authContextCache = {
@@ -306,6 +373,38 @@ function setActiveUpstreamBaseUrl(nextBaseUrl) {
     return;
   }
   config.upstreamBaseUrl = nextBaseUrl;
+}
+
+function isSelfProxyBaseUrl(urlValue) {
+  try {
+    const parsed = new URL(String(urlValue || ""));
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== "http:" && protocol !== "https:") return false;
+
+    const parsedPort = Number(parsed.port || (protocol === "https:" ? 443 : 80));
+    if (parsedPort !== Number(config.port)) return false;
+
+    const host = String(parsed.hostname || "").toLowerCase();
+    const selfHosts = new Set([
+      String(config.host || "").toLowerCase(),
+      "127.0.0.1",
+      "localhost",
+      "::1",
+      "0.0.0.0"
+    ]);
+    return selfHosts.has(host);
+  } catch {
+    return false;
+  }
+}
+
+function getCodexUsageProbeBaseUrl() {
+  const configured = String(config.codexOAuth.usageBaseUrl || "").trim();
+  const selected = configured || DEFAULT_CODEX_UPSTREAM_BASE_URL;
+  if (isSelfProxyBaseUrl(selected)) {
+    return DEFAULT_CODEX_UPSTREAM_BASE_URL;
+  }
+  return selected;
 }
 
 app.use((req, _res, next) => {
@@ -369,8 +468,8 @@ app.get("/", async (_req, res) => {
     authenticated: status.authenticated,
     status: "/auth/status",
     login:
-      config.authMode === "openclaw"
-        ? "login via OpenClaw"
+      config.authMode === "profile-store"
+        ? "login via profile store"
         : `http://${config.host}:${config.port}/auth/login`,
     proxyBase: "/v1/*",
     dashboard: `http://${config.host}:${config.port}/dashboard/`
@@ -396,12 +495,12 @@ app.get("/auth/status", async (_req, res) => {
 });
 
 app.get("/auth/login", async (req, res) => {
-  if (config.authMode === "openclaw") {
+  if (config.authMode === "profile-store") {
     res.status(400).json({
-      mode: "openclaw",
-      message: "This mode uses OpenClaw's existing OAuth session.",
-      action: "Run: openclaw models auth login --provider openai-codex",
-      authStorePath: config.openclaw.authStorePath
+      mode: "profile-store",
+      message: "This mode uses Profile Store's existing OAuth session.",
+      action: "Run: your external auth tool login flow",
+      authStorePath: config.profileStore.authStorePath
     });
     return;
   }
@@ -410,7 +509,7 @@ app.get("/auth/login", async (req, res) => {
   if (!oauthRuntime) {
     res.status(400).json({
       error: "oauth_unavailable",
-      message: "AUTH_MODE is openclaw; use OpenClaw login flow."
+      message: "AUTH_MODE is profile-store; use Profile Store login flow."
     });
     return;
   }
@@ -453,18 +552,22 @@ app.get("/auth/login", async (req, res) => {
     authUrl.searchParams.set("id_token_add_organizations", "true");
     authUrl.searchParams.set("codex_cli_simplified_flow", "true");
     authUrl.searchParams.set("originator", config.codexOAuth.originator);
+    authUrl.searchParams.set("max_age", "0");
   }
 
   if (req.query.prompt) {
     authUrl.searchParams.set("prompt", String(req.query.prompt));
+  } else if (config.authMode === "codex-oauth" && isCodexMultiAccountEnabled()) {
+    // OpenAI OAuth does not support select_account; use login to re-prompt account auth.
+    authUrl.searchParams.set("prompt", "login");
   }
 
   res.redirect(authUrl.toString());
 });
 
 app.get("/auth/callback", async (req, res) => {
-  if (config.authMode === "openclaw") {
-    res.status(400).send("Callback is not used in AUTH_MODE=openclaw.");
+  if (config.authMode === "profile-store") {
+    res.status(400).send("Callback is not used in AUTH_MODE=profile-store.");
     return;
   }
   if (config.authMode === "codex-oauth") {
@@ -493,7 +596,7 @@ app.get("/auth/callback", async (req, res) => {
   try {
     const summary = await completeOAuthCallback({ code, state });
 
-    const msg = `<p>Account: ${escapeHtml(summary?.accountId || "unknown")}</p><p>Action: ${escapeHtml(summary?.action || "updated")}</p><p>Slot: ${escapeHtml(String(summary?.slot || "-"))}</p>`;
+    const msg = buildOAuthCallbackMessage(summary);
     res.setHeader("content-type", "text/html; charset=utf-8");
     res.end(OAUTH_CALLBACK_SUCCESS_HTML.replace("</body>", `${msg}</body>`));
   } catch (err) {
@@ -503,10 +606,10 @@ app.get("/auth/callback", async (req, res) => {
 });
 
 app.post("/auth/logout", async (_req, res) => {
-  if (config.authMode === "openclaw") {
+  if (config.authMode === "profile-store") {
     res.status(400).json({
-      mode: "openclaw",
-      message: "Managed by OpenClaw. Run `openclaw models auth login --provider openai-codex` to change account."
+      mode: "profile-store",
+      message: "Managed by Profile Store. Run `your external auth tool login flow` to change account."
     });
     return;
   }
@@ -548,10 +651,17 @@ app.get("/admin/state", async (_req, res) => {
         sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
         multiAccountEnabled: isCodexMultiAccountEnabled(),
         multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
+        preheatEnabled: config.codexPreheat.enabled,
+        preheatIntervalSeconds: config.codexPreheat.intervalSeconds,
+        preheatCooldownSeconds: config.codexPreheat.cooldownSeconds,
+        preheatBatchSize: config.codexPreheat.batchSize,
+        preheatMinPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
+        preheatMinSecondaryRemaining: config.codexPreheat.minSecondaryRemaining,
         modelRouterEnabled: config.modelRouter.enabled,
         modelMappings: config.modelRouter.customMappings
       },
       auth: authStatus,
+      preheat: getCodexPreheatState(),
       stats: {
         totalRequests: runtimeStats.totalRequests,
         okRequests: runtimeStats.okRequests,
@@ -589,26 +699,42 @@ app.get("/admin/auth-pool", async (_req, res) => {
     await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
   }
 
+  const activeEntryId = codexOAuthStore.active_account_id || null;
+  const metrics = buildCodexPoolMetrics(codexOAuthStore.accounts || [], activeEntryId || "");
   res.json({
     ok: true,
     multiAccountEnabled: isCodexMultiAccountEnabled(),
     strategy: config.codexOAuth.multiAccountStrategy,
     sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
-    activeAccountId: codexOAuthStore.active_account_id || null,
+    activeEntryId,
+    activeAccountId:
+      (codexOAuthStore.accounts || []).find((x) => getCodexPoolEntryId(x) === String(activeEntryId || ""))
+        ?.account_id || null,
     rotation: codexOAuthStore.rotation || { next_index: 0 },
-    accounts: (codexOAuthStore.accounts || []).map((x) => ({
-      accountId: x.account_id,
-      label: x.label || "",
-      slot: Number(x.slot || 0) || null,
-      enabled: x.enabled !== false,
-      expiresAt: x.token?.expires_at || null,
-      lastUsedAt: x.last_used_at || 0,
-      failureCount: x.failure_count || 0,
-      cooldownUntil: x.cooldown_until || 0,
-      lastError: x.last_error || "",
-      usageSnapshot: x.usage_snapshot || null,
-      usageUpdatedAt: x.usage_updated_at || 0
-    }))
+    poolMetrics: metrics.summary,
+    accounts: (metrics.decorated || []).map((d, idx) => {
+      const x = d.account;
+      return {
+        entryId: d.entryId,
+        accountId: x.account_id,
+        label: x.label || "",
+        slot: Number(x.slot || 0) || idx + 1,
+        enabled: x.enabled !== false,
+        expiresAt: x.token?.expires_at || null,
+        lastUsedAt: x.last_used_at || 0,
+        failureCount: x.failure_count || 0,
+        cooldownUntil: x.cooldown_until || 0,
+        lastError: x.last_error || "",
+        usageSnapshot: x.usage_snapshot || null,
+        usageUpdatedAt: x.usage_updated_at || 0,
+        healthScore: d.healthScore,
+        healthStatus: d.healthStatus,
+        primaryRemaining: d.primaryRemaining,
+        secondaryRemaining: d.secondaryRemaining,
+        lowQuota: d.lowQuota,
+        hardLimited: d.hardLimited
+      };
+    })
   });
 });
 
@@ -622,27 +748,28 @@ app.post("/admin/auth-pool/toggle", async (req, res) => {
   }
 
   const body = parseJsonBody(req);
-  const accountId = String(body.accountId || "").trim();
+  const accountRef = String(body.entryId || body.accountId || "").trim();
   const enabled = body.enabled !== false;
-  if (!accountId) {
-    res.status(400).json({ error: "invalid_request", message: "accountId is required." });
+  if (!accountRef) {
+    res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
     return;
   }
 
   const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
   codexOAuthStore = normalized.store;
-  const target = (codexOAuthStore.accounts || []).find((x) => x.account_id === accountId);
+  const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], accountRef);
   if (!target) {
-    res.status(404).json({ error: "not_found", message: `Account not found: ${accountId}` });
+    res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
     return;
   }
   target.enabled = enabled;
-  if (!enabled && codexOAuthStore.active_account_id === accountId) {
+  const targetEntryId = getCodexPoolEntryId(target);
+  if (!enabled && codexOAuthStore.active_account_id === targetEntryId) {
     codexOAuthStore.active_account_id = null;
   }
   await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
   clearAuthContextCache();
-  res.json({ ok: true, accountId, enabled });
+  res.json({ ok: true, entryId: targetEntryId, accountId: target.account_id, enabled });
 });
 
 app.post("/admin/auth-pool/activate", async (req, res) => {
@@ -655,26 +782,27 @@ app.post("/admin/auth-pool/activate", async (req, res) => {
   }
 
   const body = parseJsonBody(req);
-  const accountId = String(body.accountId || "").trim();
-  if (!accountId) {
-    res.status(400).json({ error: "invalid_request", message: "accountId is required." });
+  const accountRef = String(body.entryId || body.accountId || "").trim();
+  if (!accountRef) {
+    res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
     return;
   }
 
   const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
   codexOAuthStore = normalized.store;
-  const target = (codexOAuthStore.accounts || []).find((x) => x.account_id === accountId);
+  const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], accountRef);
   if (!target) {
-    res.status(404).json({ error: "not_found", message: `Account not found: ${accountId}` });
+    res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
     return;
   }
   target.enabled = true;
   target.cooldown_until = 0;
   target.last_error = "";
-  codexOAuthStore.active_account_id = accountId;
+  const targetEntryId = getCodexPoolEntryId(target);
+  codexOAuthStore.active_account_id = targetEntryId;
   await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
   clearAuthContextCache();
-  res.json({ ok: true, accountId });
+  res.json({ ok: true, entryId: targetEntryId, accountId: target.account_id });
 });
 
 app.post("/admin/auth-pool/remove", async (req, res) => {
@@ -687,28 +815,37 @@ app.post("/admin/auth-pool/remove", async (req, res) => {
   }
 
   const body = parseJsonBody(req);
-  const accountId = String(body.accountId || "").trim();
-  if (!accountId) {
-    res.status(400).json({ error: "invalid_request", message: "accountId is required." });
+  const accountRef = String(body.entryId || body.accountId || "").trim();
+  if (!accountRef) {
+    res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
     return;
   }
 
   const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
   codexOAuthStore = normalized.store;
-  const before = (codexOAuthStore.accounts || []).length;
-  codexOAuthStore.accounts = (codexOAuthStore.accounts || []).filter((x) => x.account_id !== accountId);
-  const removed = before !== codexOAuthStore.accounts.length;
-  if (!removed) {
-    res.status(404).json({ error: "not_found", message: `Account not found: ${accountId}` });
+  const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], accountRef);
+  if (!target) {
+    res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
     return;
   }
-  if (codexOAuthStore.active_account_id === accountId) {
-    codexOAuthStore.active_account_id = codexOAuthStore.accounts[0]?.account_id || null;
+  const targetEntryId = getCodexPoolEntryId(target);
+  const before = (codexOAuthStore.accounts || []).length;
+  codexOAuthStore.accounts = (codexOAuthStore.accounts || []).filter(
+    (x) => getCodexPoolEntryId(x) !== targetEntryId
+  );
+  const removed = before !== codexOAuthStore.accounts.length;
+  if (!removed) {
+    res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
+    return;
+  }
+  if (codexOAuthStore.active_account_id === targetEntryId) {
+    codexOAuthStore.active_account_id =
+      getCodexPoolEntryId(codexOAuthStore.accounts[0]) || null;
   }
   codexOAuthStore.token = codexOAuthStore.accounts[0]?.token || null;
   await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
   clearAuthContextCache();
-  res.json({ ok: true, accountId, removed: true });
+  res.json({ ok: true, entryId: targetEntryId, accountId: target.account_id, removed: true });
 });
 
 app.post("/admin/auth-pool/import", async (req, res) => {
@@ -771,7 +908,7 @@ app.post("/admin/auth-pool/refresh-usage", async (req, res) => {
   }
 
   const body = parseJsonBody(req);
-  const accountId = String(body.accountId || "").trim();
+  const accountRef = String(body.entryId || body.accountId || "").trim();
   const includeDisabled = body.includeDisabled === true;
 
   const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
@@ -781,14 +918,16 @@ app.post("/admin/auth-pool/refresh-usage", async (req, res) => {
   if (!includeDisabled) {
     targets = targets.filter((x) => x.enabled !== false);
   }
-  if (accountId) {
-    targets = targets.filter((x) => x.account_id === accountId);
+  if (accountRef) {
+    targets = targets.filter(
+      (x) => getCodexPoolEntryId(x) === accountRef || String(x.account_id || "") === accountRef
+    );
   }
   if (targets.length === 0) {
     res.status(404).json({
       error: "not_found",
-      message: accountId
-        ? `No matching account to refresh: ${accountId}`
+      message: accountRef
+        ? `No matching account to refresh: ${accountRef}`
         : "No eligible accounts to refresh usage."
     });
     return;
@@ -800,10 +939,11 @@ app.post("/admin/auth-pool/refresh-usage", async (req, res) => {
     const target = targets[i];
     try {
       const snapshot = await fetchCodexUsageSnapshotForAccount(target, config.codexOAuth);
-      applyCodexUsageSnapshotToStore(codexOAuthStore, target.account_id, snapshot);
+      applyCodexUsageSnapshotToStore(codexOAuthStore, getCodexPoolEntryId(target), snapshot);
       target.last_error = "";
       refreshed += 1;
       results.push({
+        entryId: getCodexPoolEntryId(target),
         accountId: target.account_id,
         ok: true,
         usage: snapshot
@@ -811,6 +951,7 @@ app.post("/admin/auth-pool/refresh-usage", async (req, res) => {
     } catch (err) {
       target.last_error = String(err.message || err);
       results.push({
+        entryId: getCodexPoolEntryId(target),
         accountId: target.account_id,
         ok: false,
         error: String(err.message || err)
@@ -832,6 +973,46 @@ app.post("/admin/auth-pool/refresh-usage", async (req, res) => {
     total: targets.length,
     results
   });
+});
+
+app.get("/admin/preheat/state", (_req, res) => {
+  if (config.authMode !== "codex-oauth") {
+    res.status(400).json({
+      error: "unsupported_mode",
+      message: "Preheat is only available in AUTH_MODE=codex-oauth."
+    });
+    return;
+  }
+  res.json({
+    ok: true,
+    preheat: getCodexPreheatState()
+  });
+});
+
+app.post("/admin/preheat/run", async (req, res) => {
+  if (config.authMode !== "codex-oauth") {
+    res.status(400).json({
+      error: "unsupported_mode",
+      message: "Preheat is only available in AUTH_MODE=codex-oauth."
+    });
+    return;
+  }
+  try {
+    const body = parseJsonBody(req);
+    const force = body.force === true;
+    const summary = await runCodexPreheat("manual", { force });
+    res.json({
+      ok: true,
+      summary,
+      preheat: getCodexPreheatState()
+    });
+  } catch (err) {
+    res.status(400).json({
+      error: "preheat_failed",
+      message: err.message,
+      preheat: getCodexPreheatState()
+    });
+  }
 });
 
 app.post("/admin/requests/clear", (_req, res) => {
@@ -873,9 +1054,67 @@ app.post("/admin/config", async (req, res) => {
     if (typeof body.multiAccountStrategy === "string") {
       const strategy = body.multiAccountStrategy.trim().toLowerCase();
       if (!VALID_MULTI_ACCOUNT_STRATEGIES.has(strategy)) {
-        throw new Error("multiAccountStrategy must be one of: round-robin, random, sticky");
+        throw new Error("multiAccountStrategy must be one of: smart, round-robin, random, sticky");
       }
       config.codexOAuth.multiAccountStrategy = strategy;
+    }
+    if (typeof body.preheatEnabled === "boolean") {
+      config.codexPreheat.enabled = body.preheatEnabled;
+    }
+    if (body.preheatIntervalSeconds !== undefined) {
+      const parsed = parseNumberEnv(body.preheatIntervalSeconds, NaN, {
+        min: 30,
+        max: 86400,
+        integer: true
+      });
+      if (!Number.isFinite(parsed)) {
+        throw new Error("preheatIntervalSeconds must be a number between 30 and 86400.");
+      }
+      config.codexPreheat.intervalSeconds = parsed;
+    }
+    if (body.preheatCooldownSeconds !== undefined) {
+      const parsed = parseNumberEnv(body.preheatCooldownSeconds, NaN, {
+        min: 30,
+        max: 86400,
+        integer: true
+      });
+      if (!Number.isFinite(parsed)) {
+        throw new Error("preheatCooldownSeconds must be a number between 30 and 86400.");
+      }
+      config.codexPreheat.cooldownSeconds = parsed;
+    }
+    if (body.preheatBatchSize !== undefined) {
+      const parsed = parseNumberEnv(body.preheatBatchSize, NaN, {
+        min: 1,
+        max: 32,
+        integer: true
+      });
+      if (!Number.isFinite(parsed)) {
+        throw new Error("preheatBatchSize must be a number between 1 and 32.");
+      }
+      config.codexPreheat.batchSize = parsed;
+    }
+    if (body.preheatMinPrimaryRemaining !== undefined) {
+      const parsed = parseNumberEnv(body.preheatMinPrimaryRemaining, NaN, {
+        min: 0,
+        max: 100,
+        integer: true
+      });
+      if (!Number.isFinite(parsed)) {
+        throw new Error("preheatMinPrimaryRemaining must be a number between 0 and 100.");
+      }
+      config.codexPreheat.minPrimaryRemaining = parsed;
+    }
+    if (body.preheatMinSecondaryRemaining !== undefined) {
+      const parsed = parseNumberEnv(body.preheatMinSecondaryRemaining, NaN, {
+        min: 0,
+        max: 100,
+        integer: true
+      });
+      if (!Number.isFinite(parsed)) {
+        throw new Error("preheatMinSecondaryRemaining must be a number between 0 and 100.");
+      }
+      config.codexPreheat.minSecondaryRemaining = parsed;
     }
     if (typeof body.modelRouterEnabled === "boolean") {
       config.modelRouter.enabled = body.modelRouterEnabled;
@@ -883,6 +1122,7 @@ app.post("/admin/config", async (req, res) => {
     if (body.modelMappings !== undefined) {
       config.modelRouter.customMappings = sanitizeModelMappings(body.modelMappings);
     }
+    restartCodexPreheatScheduler();
     res.json({
       ok: true,
       config: {
@@ -895,6 +1135,12 @@ app.post("/admin/config", async (req, res) => {
         sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
         multiAccountEnabled: isCodexMultiAccountEnabled(),
         multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
+        preheatEnabled: config.codexPreheat.enabled,
+        preheatIntervalSeconds: config.codexPreheat.intervalSeconds,
+        preheatCooldownSeconds: config.codexPreheat.cooldownSeconds,
+        preheatBatchSize: config.codexPreheat.batchSize,
+        preheatMinPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
+        preheatMinSecondaryRemaining: config.codexPreheat.minSecondaryRemaining,
         modelRouterEnabled: config.modelRouter.enabled,
         modelMappings: config.modelRouter.customMappings
       }
@@ -994,8 +1240,8 @@ app.use("/v1", async (req, res) => {
       error: "unauthorized",
       message: err.message,
       hint:
-        config.authMode === "openclaw"
-          ? "Run `openclaw models auth login --provider openai-codex` first."
+        config.authMode === "profile-store"
+          ? "Run `your external auth tool login flow` first."
           : "Open /auth/login first."
     });
     return;
@@ -1243,9 +1489,9 @@ app.listen(config.port, config.host, () => {
   console.log(`mode:   ${config.authMode}`);
   console.log(`upstream-mode: ${config.upstreamMode}`);
   console.log(`upstream-url:  ${getActiveUpstreamBaseUrl()}`);
-  if (config.authMode === "openclaw") {
-    console.log(`source: ${config.openclaw.authStorePath}`);
-    console.log(`profile:${config.openclaw.profileId}`);
+  if (config.authMode === "profile-store") {
+    console.log(`source: ${config.profileStore.authStorePath}`);
+    console.log(`profile:${config.profileStore.profileId}`);
   } else if (config.authMode === "codex-oauth") {
     console.log(`oauth-authorize: ${config.codexOAuth.authorizeUrl}`);
     console.log(`oauth-store:     ${config.codexOAuth.tokenStorePath}`);
@@ -1258,13 +1504,24 @@ app.listen(config.port, config.host, () => {
   console.log(`status:          http://${config.host}:${config.port}/auth/status`);
   console.log(`dashboard:       http://${config.host}:${config.port}/dashboard/`);
   console.log(`proxy:           http://${config.host}:${config.port}/v1/*`);
+  if (config.authMode === "codex-oauth") {
+    console.log(
+      `preheat:         ${config.codexPreheat.enabled ? "enabled" : "disabled"} every ${config.codexPreheat.intervalSeconds}s (batch=${config.codexPreheat.batchSize}, cooldown=${config.codexPreheat.cooldownSeconds}s)`
+    );
+  }
+  restartCodexPreheatScheduler();
+  if (config.authMode === "codex-oauth" && config.codexPreheat.enabled) {
+    setTimeout(() => {
+      runCodexPreheat("startup").catch(() => {});
+    }, 4000);
+  }
 });
 
 async function getAuthStatus() {
-  if (config.authMode === "openclaw") {
-    const { store, profileId, profile } = await loadOpenClawProfile();
+  if (config.authMode === "profile-store") {
+    const { store, profileId, profile } = await loadProfileStoreProfile();
     return {
-      mode: "openclaw",
+      mode: "profile-store",
       upstreamMode: config.upstreamMode,
       upstreamBaseUrl: getActiveUpstreamBaseUrl(),
       authenticated: Boolean(profile?.access),
@@ -1273,7 +1530,7 @@ async function getAuthStatus() {
       expiresAt: profile?.expires ?? null,
       hasRefreshToken: Boolean(profile?.refresh),
       accountId: profile?.accountId || extractOpenAICodexAccountId(profile?.access || "") || null,
-      authStorePath: config.openclaw.authStorePath,
+      authStorePath: config.profileStore.authStorePath,
       hasStore: Boolean(store)
     };
   }
@@ -1285,6 +1542,8 @@ async function getAuthStatus() {
     const codexToken = codexOAuthStore.token || null;
     const accounts = Array.isArray(codexOAuthStore.accounts) ? codexOAuthStore.accounts : [];
     const enabledCount = accounts.filter((x) => x.enabled !== false).length;
+    const activeEntryId = codexOAuthStore.active_account_id || null;
+    const metrics = buildCodexPoolMetrics(accounts, activeEntryId || "");
     return {
       mode: "codex-oauth",
       upstreamMode: config.upstreamMode,
@@ -1299,19 +1558,33 @@ async function getAuthStatus() {
       multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
       accountPoolSize: accounts.length,
       enabledAccountCount: enabledCount,
-      activeAccountId: codexOAuthStore.active_account_id || null,
-      accounts: accounts.map((x) => ({
-        accountId: x.account_id,
-        label: x.label || "",
-        slot: Number(x.slot || 0) || null,
-        enabled: x.enabled !== false,
-        expiresAt: x.token?.expires_at || null,
-        lastUsedAt: x.last_used_at || 0,
-        failureCount: x.failure_count || 0,
-        cooldownUntil: x.cooldown_until || 0,
-        usageSnapshot: x.usage_snapshot || null,
-        usageUpdatedAt: x.usage_updated_at || 0
-      }))
+      activeEntryId,
+      activeAccountId:
+        accounts.find((x) => getCodexPoolEntryId(x) === String(activeEntryId || ""))
+          ?.account_id || null,
+      poolMetrics: metrics.summary,
+      accounts: (metrics.decorated || []).map((d, idx) => {
+        const x = d.account;
+        return {
+          entryId: d.entryId,
+          accountId: x.account_id,
+          label: x.label || "",
+          slot: Number(x.slot || 0) || idx + 1,
+          enabled: x.enabled !== false,
+          expiresAt: x.token?.expires_at || null,
+          lastUsedAt: x.last_used_at || 0,
+          failureCount: x.failure_count || 0,
+          cooldownUntil: x.cooldown_until || 0,
+          usageSnapshot: x.usage_snapshot || null,
+          usageUpdatedAt: x.usage_updated_at || 0,
+          healthScore: d.healthScore,
+          healthStatus: d.healthStatus,
+          primaryRemaining: d.primaryRemaining,
+          secondaryRemaining: d.secondaryRemaining,
+          lowQuota: d.lowQuota,
+          hardLimited: d.hardLimited
+        };
+      })
     };
   }
 
@@ -1334,8 +1607,8 @@ async function getValidAuthContext() {
   }
 
   let context;
-  if (config.authMode === "openclaw") {
-    context = await getValidAuthContextFromOpenClawStore();
+  if (config.authMode === "profile-store") {
+    context = await getValidAuthContextFromProfileStore();
   } else if (config.authMode === "codex-oauth") {
     context = await getValidAuthContextFromCodexOAuthStore(codexOAuthStore, config.codexOAuth);
   } else {
@@ -1348,31 +1621,31 @@ async function getValidAuthContext() {
   return context;
 }
 
-async function loadOpenClawProfile() {
+async function loadProfileStoreProfile() {
   let raw;
   try {
-    raw = await fs.readFile(config.openclaw.authStorePath, "utf8");
+    raw = await fs.readFile(config.profileStore.authStorePath, "utf8");
   } catch {
-    throw new Error(`OpenClaw auth store not found: ${config.openclaw.authStorePath}`);
+    throw new Error(`Profile Store auth store not found: ${config.profileStore.authStorePath}`);
   }
 
   const store = JSON.parse(raw);
-  const resolved = resolveOpenClawProfile(store, config.openclaw.profileId);
+  const resolved = resolveProfileStoreProfile(store, config.profileStore.profileId);
   if (!resolved.profile) {
     throw new Error(
-      `No usable oauth profile found. Run: openclaw models auth login --provider openai-codex`
+      `No usable oauth profile found. Run: your external auth tool login flow`
     );
   }
   return { store, profileId: resolved.profileId, profile: resolved.profile };
 }
 
-function resolveOpenClawProfile(store, preferredProfileId) {
+function resolveProfileStoreProfile(store, preferredProfileId) {
   const profiles = store?.profiles ?? {};
   let profileId = preferredProfileId;
   let profile = profiles[profileId];
 
-  if (!isOpenClawCodexOauthProfile(profile)) {
-    const fallbackEntry = Object.entries(profiles).find(([, value]) => isOpenClawCodexOauthProfile(value));
+  if (!isProfileStoreCodexOauthProfile(profile)) {
+    const fallbackEntry = Object.entries(profiles).find(([, value]) => isProfileStoreCodexOauthProfile(value));
     if (fallbackEntry) {
       profileId = fallbackEntry[0];
       profile = fallbackEntry[1];
@@ -1382,7 +1655,7 @@ function resolveOpenClawProfile(store, preferredProfileId) {
   return { profileId, profile };
 }
 
-function isOpenClawCodexOauthProfile(profile) {
+function isProfileStoreCodexOauthProfile(profile) {
   return (
     profile &&
     profile.type === "oauth" &&
@@ -1396,8 +1669,8 @@ function isExpiredOrNearExpiryMs(expiresAtMs) {
   return expiresAtMs - Date.now() < 60_000;
 }
 
-async function getValidAuthContextFromOpenClawStore() {
-  const { store, profileId, profile } = await loadOpenClawProfile();
+async function getValidAuthContextFromProfileStore() {
+  const { store, profileId, profile } = await loadProfileStoreProfile();
   if (!profile.access) {
     throw new Error(`Profile ${profileId} has no access token.`);
   }
@@ -1434,7 +1707,7 @@ async function getValidAuthContextFromOpenClawStore() {
     errorCount: 0
   };
 
-  await fs.writeFile(config.openclaw.authStorePath, JSON.stringify(store, null, 2), "utf8");
+  await fs.writeFile(config.profileStore.authStorePath, JSON.stringify(store, null, 2), "utf8");
   return {
     accessToken: refreshed.access,
     accountId: refreshed.accountId || accountId
@@ -1479,10 +1752,35 @@ async function refreshOpenAICodexToken(refreshToken) {
 }
 
 function extractOpenAICodexAccountId(accessToken) {
-  const payload = decodeJwtPayload(accessToken);
-  const authClaim = payload?.[OPENAI_CODEX_JWT_CLAIM_PATH];
+  const authClaim = extractOpenAICodexAuthClaim(accessToken);
   const accountId = authClaim?.chatgpt_account_id;
   return typeof accountId === "string" && accountId.length > 0 ? accountId : null;
+}
+
+function extractOpenAICodexPrincipalId(accessToken) {
+  const authClaim = extractOpenAICodexAuthClaim(accessToken);
+  const payload = decodeJwtPayload(accessToken);
+  const direct =
+    authClaim?.chatgpt_account_user_id ||
+    authClaim?.chatgpt_user_id ||
+    payload?.sub ||
+    null;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  const email = extractOpenAICodexEmail(accessToken);
+  if (typeof email === "string" && email.length > 0) return `email:${email.toLowerCase()}`;
+  return null;
+}
+
+function extractOpenAICodexEmail(accessToken) {
+  const payload = decodeJwtPayload(accessToken);
+  const profileClaim = payload?.["https://api.openai.com/profile"];
+  const email = profileClaim?.email;
+  return typeof email === "string" && email.length > 0 ? email : null;
+}
+
+function extractOpenAICodexAuthClaim(accessToken) {
+  const payload = decodeJwtPayload(accessToken);
+  return payload?.[OPENAI_CODEX_JWT_CLAIM_PATH] || null;
 }
 
 function decodeJwtPayload(token) {
@@ -2244,6 +2542,20 @@ async function saveTokenStore(tokenStorePath, nextStore) {
   await fs.writeFile(tokenStorePath, JSON.stringify(nextStore, null, 2), "utf8");
 }
 
+async function loadJsonStore(filePath, fallbackValue = {}) {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return fallbackValue;
+  }
+}
+
+async function saveJsonStore(filePath, payload) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
+}
+
 function normalizeToken(tokenResponse, currentToken = null) {
   const nowSec = Math.floor(Date.now() / 1000);
   const expiresIn = Number(tokenResponse.expires_in || 3600);
@@ -2265,6 +2577,22 @@ function deriveCodexAccountIdFromToken(tokenLike) {
   return `acct_${crypto.createHash("sha1").update(fingerprintSource).digest("hex").slice(0, 12)}`;
 }
 
+function deriveCodexPoolEntryIdFromToken(tokenLike) {
+  const accessToken = tokenLike?.access_token || tokenLike?.access || "";
+  const principalId = extractOpenAICodexPrincipalId(accessToken);
+  if (principalId) return principalId;
+  const accountId = extractOpenAICodexAccountId(accessToken);
+  if (accountId) return `acct:${accountId}`;
+  const fingerprintSource = `${accessToken.slice(0, 48)}|${tokenLike?.refresh_token || tokenLike?.refresh || ""}`;
+  return `entry_${crypto.createHash("sha1").update(fingerprintSource).digest("hex").slice(0, 16)}`;
+}
+
+function getCodexPoolEntryId(accountEntry) {
+  if (!accountEntry || typeof accountEntry !== "object") return "";
+  const raw = accountEntry.identity_id || accountEntry.entry_id || accountEntry.account_id || "";
+  return String(raw).trim();
+}
+
 function isCodexMultiAccountEnabled() {
   return config.authMode === "codex-oauth" && config.codexOAuth.multiAccountEnabled === true;
 }
@@ -2282,15 +2610,24 @@ function createDefaultCodexAccountPoolStore() {
 
 function sanitizeCodexAccountEntry(raw) {
   if (!raw || typeof raw !== "object") return null;
-  const accountId = String(raw.account_id || raw.accountId || "").trim();
   const token = raw.token && typeof raw.token === "object" ? raw.token : null;
-  if (!accountId || !token?.access_token) return null;
+  if (!token?.access_token) return null;
+
+  const normalizedToken = normalizeToken(token, token);
+  const tokenAccountId = extractOpenAICodexAccountId(normalizedToken.access_token || "");
+  const tokenEntryId = deriveCodexPoolEntryIdFromToken(normalizedToken);
+  const fallbackAccountId = String(raw.account_id || raw.accountId || "").trim();
+  const fallbackEntryId = String(raw.identity_id || raw.entry_id || raw.account_id || "").trim();
+  const accountId = tokenAccountId || fallbackAccountId;
+  const entryId = tokenEntryId || fallbackEntryId;
+  if (!accountId || !entryId) return null;
   return {
+    identity_id: entryId,
     account_id: accountId,
     label: typeof raw.label === "string" ? raw.label : "",
     slot: parseSlotValue(raw.slot),
     enabled: raw.enabled !== false,
-    token: normalizeToken(token, token),
+    token: normalizedToken,
     created_at: Number(raw.created_at || raw.createdAt || Math.floor(Date.now() / 1000)),
     last_used_at: Number(raw.last_used_at || raw.lastUsedAt || 0),
     failure_count: Number(raw.failure_count || raw.failureCount || 0),
@@ -2300,6 +2637,44 @@ function sanitizeCodexAccountEntry(raw) {
       raw.usage_snapshot && typeof raw.usage_snapshot === "object" ? raw.usage_snapshot : null,
     usage_updated_at: Number(raw.usage_updated_at || raw.usageUpdatedAt || 0)
   };
+}
+
+function normalizeCodexAccountSlots(accounts) {
+  if (!Array.isArray(accounts) || accounts.length === 0) return false;
+
+  let changed = false;
+  const used = new Set();
+  const needsAssignment = [];
+
+  for (const account of accounts) {
+    const slot = parseSlotValue(account?.slot);
+    if (slot && !used.has(slot)) {
+      if (Number(account.slot || 0) !== slot) {
+        account.slot = slot;
+        changed = true;
+      }
+      used.add(slot);
+      continue;
+    }
+
+    if (account.slot !== null) {
+      account.slot = null;
+      changed = true;
+    }
+    needsAssignment.push(account);
+  }
+
+  let cursor = 1;
+  for (const account of needsAssignment) {
+    while (cursor <= 64 && used.has(cursor)) cursor += 1;
+    if (cursor > 64) break;
+    account.slot = cursor;
+    used.add(cursor);
+    changed = true;
+    cursor += 1;
+  }
+
+  return changed;
 }
 
 function ensureCodexOAuthStoreShape(store) {
@@ -2320,12 +2695,16 @@ function ensureCodexOAuthStoreShape(store) {
   if (src.token?.access_token) {
     const tokenNormalized = normalizeToken(src.token, src.token);
     const accountId = deriveCodexAccountIdFromToken(tokenNormalized);
-    const idx = out.accounts.findIndex((x) => x.account_id === accountId);
+    const entryId = deriveCodexPoolEntryIdFromToken(tokenNormalized);
+    const idx = out.accounts.findIndex((x) => getCodexPoolEntryId(x) === entryId);
     if (idx >= 0) {
+      out.accounts[idx].identity_id = entryId;
+      out.accounts[idx].account_id = accountId;
       out.accounts[idx].token = tokenNormalized;
       out.accounts[idx].enabled = out.accounts[idx].enabled !== false;
     } else {
       out.accounts.push({
+        identity_id: entryId,
         account_id: accountId,
         label: "",
         slot: null,
@@ -2340,13 +2719,24 @@ function ensureCodexOAuthStoreShape(store) {
         usage_updated_at: 0
       });
     }
-    if (!out.active_account_id) out.active_account_id = accountId;
+    if (!out.active_account_id) out.active_account_id = entryId;
     changed = true;
   }
 
   if (out.accounts.length > 0 && !out.active_account_id) {
-    out.active_account_id = out.accounts[0].account_id;
+    out.active_account_id = getCodexPoolEntryId(out.accounts[0]);
     changed = true;
+  }
+  if (out.active_account_id && out.accounts.length > 0) {
+    const activeRef = String(out.active_account_id);
+    const hasDirect = out.accounts.some((x) => getCodexPoolEntryId(x) === activeRef);
+    if (!hasDirect) {
+      const byLegacyAccountId = out.accounts.find((x) => String(x.account_id || "") === activeRef);
+      if (byLegacyAccountId) {
+        out.active_account_id = getCodexPoolEntryId(byLegacyAccountId);
+        changed = true;
+      }
+    }
   }
 
   if (out.accounts.length === 0) {
@@ -2365,13 +2755,187 @@ function ensureCodexOAuthStoreShape(store) {
     changed = true;
   }
 
+  if (normalizeCodexAccountSlots(out.accounts)) {
+    changed = true;
+  }
+
   return { store: out, changed };
+}
+
+function parsePercentOrNull(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
+}
+
+function readUsageRemainingPercent(usageWindow) {
+  const direct = parsePercentOrNull(usageWindow?.remaining_percent);
+  if (direct !== null) return direct;
+  const used = parsePercentOrNull(usageWindow?.used_percent);
+  if (used === null) return null;
+  return Math.max(0, Math.min(100, 100 - used));
+}
+
+function readUsageUsedPercent(usageWindow) {
+  const direct = parsePercentOrNull(usageWindow?.used_percent);
+  if (direct !== null) return direct;
+  const remaining = parsePercentOrNull(usageWindow?.remaining_percent);
+  if (remaining === null) return null;
+  return Math.max(0, Math.min(100, 100 - remaining));
+}
+
+function getCodexUsageWindowStats(account) {
+  const usage = account?.usage_snapshot || null;
+  const primaryRemaining = readUsageRemainingPercent(usage?.primary);
+  const secondaryRemaining = readUsageRemainingPercent(usage?.secondary);
+  const primaryUsed = readUsageUsedPercent(usage?.primary);
+  const secondaryUsed = readUsageUsedPercent(usage?.secondary);
+  return {
+    primaryRemaining,
+    secondaryRemaining,
+    primaryUsed,
+    secondaryUsed
+  };
+}
+
+function classifyCodexPoolHealth(account, nowSec = Math.floor(Date.now() / 1000), usage = null) {
+  const enabled = account?.enabled !== false;
+  const cooldownUntil = Number(account?.cooldown_until || 0);
+  const expiresAt = Number(account?.token?.expires_at || 0);
+  const inCooldown = cooldownUntil > nowSec;
+  const expired = expiresAt > 0 && expiresAt <= nowSec;
+  const expiringSoon = expiresAt > nowSec && expiresAt - nowSec < 180;
+  const usageStats = usage || getCodexUsageWindowStats(account);
+  const primaryRemaining = usageStats.primaryRemaining;
+  const secondaryRemaining = usageStats.secondaryRemaining;
+  const hardLimited =
+    primaryRemaining !== null && secondaryRemaining !== null && primaryRemaining <= 0 && secondaryRemaining <= 0;
+  const lowQuota =
+    (primaryRemaining !== null && primaryRemaining <= 20) ||
+    (secondaryRemaining !== null && secondaryRemaining <= 20);
+
+  if (!enabled) return { status: "disabled", hardLimited, lowQuota };
+  if (expired) return { status: "expired", hardLimited, lowQuota };
+  if (inCooldown) return { status: "cooldown", hardLimited, lowQuota };
+  if (hardLimited) return { status: "limited", hardLimited, lowQuota };
+  if (expiringSoon) return { status: "expiring", hardLimited, lowQuota };
+  if (lowQuota) return { status: "limited", hardLimited, lowQuota };
+  return { status: "healthy", hardLimited, lowQuota };
+}
+
+function computeCodexPoolHealthScore(
+  account,
+  activeEntryId = "",
+  nowSec = Math.floor(Date.now() / 1000),
+  usage = null,
+  health = null
+) {
+  const usageStats = usage || getCodexUsageWindowStats(account);
+  const healthMeta = health || classifyCodexPoolHealth(account, nowSec, usageStats);
+  const failureCount = Number(account?.failure_count || 0);
+  const cooldownUntil = Number(account?.cooldown_until || 0);
+  const expiresAt = Number(account?.token?.expires_at || 0);
+  const isActive = getCodexPoolEntryId(account) === String(activeEntryId || "");
+
+  let score = 100;
+  if (account?.enabled === false) score -= 90;
+  if (healthMeta.status === "expired") score -= 80;
+  if (healthMeta.status === "cooldown") score -= 35;
+  if (healthMeta.status === "expiring") score -= 15;
+  if (healthMeta.status === "limited") score -= healthMeta.hardLimited ? 28 : 12;
+  if (usageStats.primaryUsed !== null) score -= Math.round(usageStats.primaryUsed * 0.35);
+  if (usageStats.secondaryUsed !== null) score -= Math.round(usageStats.secondaryUsed * 0.15);
+  score -= Math.min(55, failureCount * 11);
+  if (cooldownUntil > nowSec) {
+    const remain = cooldownUntil - nowSec;
+    score -= Math.min(18, Math.floor(remain / 20));
+  }
+  if (expiresAt > nowSec && expiresAt - nowSec < 180) {
+    score -= 8;
+  }
+  if (isActive) score += 3;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function decorateCodexPoolAccount(account, activeEntryId = "", nowSec = Math.floor(Date.now() / 1000)) {
+  const usage = getCodexUsageWindowStats(account);
+  const health = classifyCodexPoolHealth(account, nowSec, usage);
+  const healthScore = computeCodexPoolHealthScore(account, activeEntryId, nowSec, usage, health);
+  return {
+    account,
+    entryId: getCodexPoolEntryId(account),
+    healthStatus: health.status,
+    healthScore,
+    primaryRemaining: usage.primaryRemaining,
+    secondaryRemaining: usage.secondaryRemaining,
+    primaryUsed: usage.primaryUsed,
+    secondaryUsed: usage.secondaryUsed,
+    hardLimited: health.hardLimited,
+    lowQuota: health.lowQuota
+  };
+}
+
+function buildCodexPoolMetrics(accounts, activeEntryId = "") {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const decorated = (Array.isArray(accounts) ? accounts : []).map((x) =>
+    decorateCodexPoolAccount(x, activeEntryId, nowSec)
+  );
+  const primaryValues = decorated
+    .map((x) => x.primaryRemaining)
+    .filter((x) => Number.isFinite(x));
+  const secondaryValues = decorated
+    .map((x) => x.secondaryRemaining)
+    .filter((x) => Number.isFinite(x));
+  const enabled = decorated.filter((x) => x.account?.enabled !== false);
+  const healthy = decorated.filter((x) => x.healthStatus === "healthy");
+  const cooldown = decorated.filter((x) => x.healthStatus === "cooldown");
+  const atRisk = decorated.filter((x) =>
+    ["disabled", "expired", "cooldown", "expiring", "limited"].includes(x.healthStatus)
+  );
+  const lowQuotaCount = decorated.filter((x) => x.lowQuota).length;
+  const hardLimitedCount = decorated.filter((x) => x.hardLimited).length;
+  const recommended = [...enabled]
+    .sort((a, b) => {
+      if (b.healthScore !== a.healthScore) return b.healthScore - a.healthScore;
+      const aUsed = Number(a.account?.last_used_at || 0);
+      const bUsed = Number(b.account?.last_used_at || 0);
+      if (aUsed !== bUsed) return aUsed - bUsed;
+      return String(a.entryId || "").localeCompare(String(b.entryId || ""));
+    })
+    .slice(0, 3)
+    .map((x) => x.entryId);
+  return {
+    decorated,
+    summary: {
+      totalAccounts: decorated.length,
+      enabledAccounts: enabled.length,
+      healthyRatio: enabled.length > 0 ? Math.round((healthy.length / enabled.length) * 100) : 0,
+      cooldownCount: cooldown.length,
+      atRiskCount: atRisk.length,
+      lowQuotaCount,
+      hardLimitedCount,
+      avgPrimaryRemaining:
+        primaryValues.length > 0
+          ? Math.round(primaryValues.reduce((a, b) => a + b, 0) / primaryValues.length)
+          : null,
+      avgSecondaryRemaining:
+        secondaryValues.length > 0
+          ? Math.round(secondaryValues.reduce((a, b) => a + b, 0) / secondaryValues.length)
+          : null,
+      recommendedEntryIds: recommended
+    }
+  };
 }
 
 function getCodexEnabledAccounts(store) {
   if (!Array.isArray(store?.accounts)) return [];
   const nowSec = Math.floor(Date.now() / 1000);
-  return store.accounts.filter((x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec);
+  const eligible = store.accounts.filter(
+    (x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec
+  );
+  if (eligible.length === 0) return [];
+  const preferred = eligible.filter((x) => !classifyCodexPoolHealth(x, nowSec).hardLimited);
+  return preferred.length > 0 ? preferred : eligible;
 }
 
 function rotateListFromIndex(list, startIndex) {
@@ -2385,10 +2949,28 @@ function pickCodexAccountCandidates(store) {
   if (enabled.length === 0) return [];
 
   const strategy = config.codexOAuth.multiAccountStrategy;
+  if (strategy === "smart") {
+    const decorated = enabled.map((x) => decorateCodexPoolAccount(x, store.active_account_id || ""));
+    decorated.sort((a, b) => {
+      if (b.healthScore !== a.healthScore) return b.healthScore - a.healthScore;
+      if ((b.primaryRemaining ?? -1) !== (a.primaryRemaining ?? -1)) {
+        return (b.primaryRemaining ?? -1) - (a.primaryRemaining ?? -1);
+      }
+      if ((b.secondaryRemaining ?? -1) !== (a.secondaryRemaining ?? -1)) {
+        return (b.secondaryRemaining ?? -1) - (a.secondaryRemaining ?? -1);
+      }
+      const aUsed = Number(a.account?.last_used_at || 0);
+      const bUsed = Number(b.account?.last_used_at || 0);
+      if (aUsed !== bUsed) return aUsed - bUsed;
+      return String(a.entryId || "").localeCompare(String(b.entryId || ""));
+    });
+    return decorated.map((x) => x.account);
+  }
   if (strategy === "sticky" && store.active_account_id) {
-    const primary = enabled.find((x) => x.account_id === store.active_account_id);
+    const primary = enabled.find((x) => getCodexPoolEntryId(x) === String(store.active_account_id));
     if (primary) {
-      return [primary, ...enabled.filter((x) => x.account_id !== primary.account_id)];
+      const primaryId = getCodexPoolEntryId(primary);
+      return [primary, ...enabled.filter((x) => getCodexPoolEntryId(x) !== primaryId)];
     }
   }
   if (strategy === "random") {
@@ -2406,38 +2988,78 @@ function pickCodexAccountCandidates(store) {
 
 function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
   const accountId = deriveCodexAccountIdFromToken(normalizedToken);
+  const entryId = deriveCodexPoolEntryIdFromToken(normalizedToken);
+  const tokenEmail = extractOpenAICodexEmail(normalizedToken?.access_token || "");
   const label = typeof options.label === "string" ? options.label.trim() : "";
   const slot = parseSlotValue(options.slot);
+  const forceReplaceSlot =
+    options.force === true || options.force === 1 || String(options.force || "").trim() === "1";
   const nowSec = Math.floor(Date.now() / 1000);
   if (!Array.isArray(store.accounts)) store.accounts = [];
 
-  const existingIdx = store.accounts.findIndex((x) => x.account_id === accountId);
+  const existingIdx = store.accounts.findIndex((x) => getCodexPoolEntryId(x) === entryId);
   const slotIdx = slot ? store.accounts.findIndex((x) => Number(x.slot || 0) === slot) : -1;
 
   // Prefer updating existing account identity to avoid duplicate same-account entries.
   let targetIdx = existingIdx;
-  if (targetIdx < 0 && slotIdx >= 0) {
+  if (targetIdx < 0 && slotIdx >= 0 && forceReplaceSlot) {
     targetIdx = slotIdx;
   }
 
   let action = "created";
+  let resolvedIncomingSlot = slot;
+  if (existingIdx < 0 && slotIdx >= 0 && !forceReplaceSlot) {
+    // Keep existing slot owner; assign this new account to the next free slot.
+    resolvedIncomingSlot = null;
+    action = "created_reassigned_slot";
+  }
   if (targetIdx >= 0) {
-    action = existingIdx >= 0 ? "updated_existing_account" : "replaced_slot";
+    const isSameAccountUpdate = existingIdx >= 0;
+    if (isSameAccountUpdate) {
+      const currentSlot = Number(store.accounts[targetIdx].slot || 0) || null;
+      const requestedDifferentSlot =
+        resolvedIncomingSlot !== null && currentSlot !== null && resolvedIncomingSlot !== currentSlot;
+      action =
+        requestedDifferentSlot && !forceReplaceSlot
+          ? "already_exists_same_account"
+          : "updated_existing_account";
+    } else {
+      action = "replaced_slot";
+    }
+
+    const currentLabel =
+      typeof store.accounts[targetIdx].label === "string" && store.accounts[targetIdx].label.trim().length > 0
+        ? store.accounts[targetIdx].label.trim()
+        : "";
+    const currentSlot = Number(store.accounts[targetIdx].slot || 0) || null;
+    const keepSlotBecauseSameAccount =
+      isSameAccountUpdate &&
+      resolvedIncomingSlot !== null &&
+      currentSlot !== null &&
+      resolvedIncomingSlot !== currentSlot &&
+      !forceReplaceSlot;
+    const resolvedLabel = isSameAccountUpdate
+      ? currentLabel || tokenEmail || accountId
+      : label || currentLabel || tokenEmail || accountId;
     store.accounts[targetIdx] = {
       ...store.accounts[targetIdx],
+      identity_id: entryId,
       account_id: accountId,
       token: normalizeToken(normalizedToken, store.accounts[targetIdx].token),
       enabled: true,
-      label: label || store.accounts[targetIdx].label || "",
-      slot: slot ?? store.accounts[targetIdx].slot ?? null,
+      label: resolvedLabel,
+      slot: keepSlotBecauseSameAccount
+        ? currentSlot
+        : resolvedIncomingSlot ?? store.accounts[targetIdx].slot ?? null,
       last_error: "",
       cooldown_until: 0
     };
   } else {
     store.accounts.push({
+      identity_id: entryId,
       account_id: accountId,
-      label,
-      slot: slot ?? null,
+      label: label || tokenEmail || accountId,
+      slot: resolvedIncomingSlot ?? null,
       enabled: true,
       token: normalizeToken(normalizedToken, normalizedToken),
       created_at: nowSec,
@@ -2450,12 +3072,17 @@ function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
     });
   }
 
-  store.active_account_id = accountId;
+  store.active_account_id = entryId;
   store.token = normalizedToken;
   store.rotation = store.rotation || { next_index: 0 };
   if (!Number.isFinite(store.rotation.next_index)) store.rotation.next_index = 0;
 
-  return { accountId, slot: slot ?? null, action };
+  normalizeCodexAccountSlots(store.accounts);
+
+  const resolvedAccount = store.accounts.find((x) => getCodexPoolEntryId(x) === entryId);
+  const resolvedSlot = Number(resolvedAccount?.slot || 0) || null;
+
+  return { accountId, entryId, slot: resolvedSlot, action, email: tokenEmail || null };
 }
 
 function shouldRotateCodexAccountForStatus(statusCode) {
@@ -2468,35 +3095,47 @@ function getCodexPoolCooldownSeconds(statusCode, failureCount) {
   return Math.min(180, 15 * Math.max(1, failureCount));
 }
 
-async function markCodexPoolAccountFailure(accountId, reason, statusCode = 0) {
+function findCodexPoolAccountByRef(accounts, ref) {
+  const needle = String(ref || "").trim();
+  if (!needle) return null;
+  const byEntry = (accounts || []).find((x) => getCodexPoolEntryId(x) === needle);
+  if (byEntry) return byEntry;
+  return (accounts || []).find((x) => String(x.account_id || "") === needle) || null;
+}
+
+async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
   if (!isCodexMultiAccountEnabled()) return;
   const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
   codexOAuthStore = normalized.store;
-  const target = (codexOAuthStore.accounts || []).find((x) => x.account_id === accountId);
+  const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], accountRef);
   if (!target) return;
   target.failure_count = Number(target.failure_count || 0) + 1;
   target.last_error = String(reason || "request_failed");
   const cooldownSeconds = getCodexPoolCooldownSeconds(statusCode, target.failure_count);
   const nowSec = Math.floor(Date.now() / 1000);
   target.cooldown_until = nowSec + cooldownSeconds;
-  if (codexOAuthStore.active_account_id === accountId && config.codexOAuth.multiAccountStrategy !== "sticky") {
+  const targetEntryId = getCodexPoolEntryId(target);
+  if (
+    codexOAuthStore.active_account_id === targetEntryId &&
+    config.codexOAuth.multiAccountStrategy !== "sticky"
+  ) {
     codexOAuthStore.active_account_id = null;
   }
   await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
 }
 
-async function markCodexPoolAccountSuccess(accountId) {
+async function markCodexPoolAccountSuccess(accountRef) {
   if (!isCodexMultiAccountEnabled()) return;
   const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
   codexOAuthStore = normalized.store;
-  const target = (codexOAuthStore.accounts || []).find((x) => x.account_id === accountId);
+  const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], accountRef);
   if (!target) return;
   target.last_used_at = Math.floor(Date.now() / 1000);
   target.failure_count = 0;
   target.cooldown_until = 0;
   target.last_error = "";
   if (config.codexOAuth.multiAccountStrategy === "sticky") {
-    codexOAuthStore.active_account_id = accountId;
+    codexOAuthStore.active_account_id = getCodexPoolEntryId(target);
   }
   await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
 }
@@ -2507,17 +3146,19 @@ function isCodexPoolRetryEnabled() {
 
 async function maybeMarkCodexPoolFailure(authContext, reason, statusCode = 0) {
   if (!isCodexPoolRetryEnabled()) return false;
-  if (!authContext?.poolAccountId) return false;
+  const poolRef = authContext?.poolEntryId || authContext?.poolAccountId || null;
+  if (!poolRef) return false;
   const code = Number(statusCode || 0);
   if (!shouldRotateCodexAccountForStatus(code)) return false;
-  await markCodexPoolAccountFailure(authContext.poolAccountId, reason, code);
+  await markCodexPoolAccountFailure(poolRef, reason, code);
   return true;
 }
 
 async function maybeMarkCodexPoolSuccess(authContext) {
   if (!isCodexPoolRetryEnabled()) return;
-  if (!authContext?.poolAccountId) return;
-  await markCodexPoolAccountSuccess(authContext.poolAccountId);
+  const poolRef = authContext?.poolEntryId || authContext?.poolAccountId || null;
+  if (!poolRef) return;
+  await markCodexPoolAccountSuccess(poolRef);
 }
 
 function parseCodexHeaderNumber(value) {
@@ -2588,9 +3229,9 @@ function extractCodexUsageSnapshotFromHeaders(headers, source = "response") {
   };
 }
 
-function applyCodexUsageSnapshotToStore(store, accountId, snapshot) {
-  if (!store || !Array.isArray(store.accounts) || !accountId || !snapshot) return false;
-  const target = store.accounts.find((x) => x.account_id === accountId);
+function applyCodexUsageSnapshotToStore(store, accountRef, snapshot) {
+  if (!store || !Array.isArray(store.accounts) || !accountRef || !snapshot) return false;
+  const target = findCodexPoolAccountByRef(store.accounts, accountRef);
   if (!target) return false;
   target.usage_snapshot = snapshot;
   target.usage_updated_at = Number(snapshot.fetched_at || Math.floor(Date.now() / 1000));
@@ -2599,14 +3240,43 @@ function applyCodexUsageSnapshotToStore(store, accountId, snapshot) {
 
 async function maybeCaptureCodexUsageFromHeaders(authContext, headers, source = "response") {
   if (config.authMode !== "codex-oauth") return;
-  const accountId = authContext?.poolAccountId || authContext?.accountId;
-  if (!accountId) return;
+  const tokenPrincipalId =
+    typeof authContext?.principalId === "string" && authContext.principalId.trim().length > 0
+      ? authContext.principalId.trim()
+      : null;
+  const tokenAccountId =
+    typeof authContext?.accountId === "string" && authContext.accountId.trim().length > 0
+      ? authContext.accountId.trim()
+      : null;
+  const poolEntryId =
+    typeof authContext?.poolEntryId === "string" && authContext.poolEntryId.trim().length > 0
+      ? authContext.poolEntryId.trim()
+      : null;
+  const poolAccountId =
+    typeof authContext?.poolAccountId === "string" && authContext.poolAccountId.trim().length > 0
+      ? authContext.poolAccountId.trim()
+      : null;
+  if (!tokenPrincipalId && !tokenAccountId && !poolEntryId && !poolAccountId) return;
   const snapshot = extractCodexUsageSnapshotFromHeaders(headers, source);
   if (!snapshot) return;
 
   const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
   codexOAuthStore = normalized.store;
-  const changed = applyCodexUsageSnapshotToStore(codexOAuthStore, accountId, snapshot);
+
+  const candidateIds = [];
+  if (poolEntryId) candidateIds.push(poolEntryId);
+  if (tokenPrincipalId && !candidateIds.includes(tokenPrincipalId)) candidateIds.push(tokenPrincipalId);
+  if (tokenAccountId) candidateIds.push(tokenAccountId);
+  if (poolAccountId && poolAccountId !== tokenAccountId) candidateIds.push(poolAccountId);
+
+  let changed = false;
+  for (const candidate of candidateIds) {
+    if (applyCodexUsageSnapshotToStore(codexOAuthStore, candidate, snapshot)) {
+      changed = true;
+      break;
+    }
+  }
+
   if (!changed) return;
   await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
 }
@@ -2616,27 +3286,40 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig) {
     throw new Error("Missing access token.");
   }
 
+  let accountIdFromToken = extractOpenAICodexAccountId(account.token.access_token || "") || account.account_id;
+  let entryIdFromToken = deriveCodexPoolEntryIdFromToken(account.token) || getCodexPoolEntryId(account);
+
   if (isExpiredOrNearExpirySec(account.token.expires_at)) {
     if (!account.token.refresh_token) {
       throw new Error("Access token expired and no refresh token available.");
     }
     const refreshed = await refreshAccessToken(account.token.refresh_token, oauthConfig);
     account.token = normalizeToken(refreshed, account.token);
+    accountIdFromToken = extractOpenAICodexAccountId(account.token.access_token || "") || accountIdFromToken;
+    entryIdFromToken = deriveCodexPoolEntryIdFromToken(account.token) || entryIdFromToken;
   }
+  if (!accountIdFromToken) {
+    throw new Error("Could not resolve chatgpt account id from OAuth token.");
+  }
+  if (!entryIdFromToken) {
+    throw new Error("Could not resolve principal identity from OAuth token.");
+  }
+  account.identity_id = entryIdFromToken;
+  account.account_id = accountIdFromToken;
 
-  const url = `${config.upstreamBaseUrl.replace(/\/+$/, "")}/codex/responses`;
+  const url = `${getCodexUsageProbeBaseUrl().replace(/\/+$/, "")}/codex/responses`;
   const body = {
     model: config.codex.defaultModel,
     stream: true,
     store: false,
-    instructions: config.codex.defaultInstructions || "You are Codex.",
+    instructions: "Return one character.",
     reasoning: {
-      effort: "low"
+      effort: "none"
     },
     input: [
       {
         role: "user",
-        content: [{ type: "input_text", text: "usage_probe" }]
+        content: [{ type: "input_text", text: "." }]
       }
     ]
   };
@@ -2644,7 +3327,7 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig) {
     method: "POST",
     headers: {
       authorization: `Bearer ${account.token.access_token}`,
-      "chatgpt-account-id": account.account_id,
+      "chatgpt-account-id": accountIdFromToken,
       "openai-beta": "responses=experimental",
       originator: getCodexOriginator(),
       accept: "text/event-stream",
@@ -2668,6 +3351,284 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig) {
   return snapshot;
 }
 
+function getCodexPreheatAccountHistory(entryId) {
+  const key = String(entryId || "").trim();
+  if (!key) return null;
+  if (!codexPreheatHistory.accounts || typeof codexPreheatHistory.accounts !== "object") {
+    codexPreheatHistory.accounts = {};
+  }
+  if (!codexPreheatHistory.accounts[key] || typeof codexPreheatHistory.accounts[key] !== "object") {
+    codexPreheatHistory.accounts[key] = {
+      run_count: 0,
+      success_count: 0,
+      failure_count: 0,
+      last_run_at: 0,
+      last_success_at: 0,
+      last_failure_at: 0,
+      next_eligible_at: 0,
+      last_error: ""
+    };
+  }
+  return codexPreheatHistory.accounts[key];
+}
+
+function getCodexPreheatState() {
+  return {
+    enabled: config.codexPreheat.enabled,
+    running: codexPreheatRuntime.running,
+    intervalSeconds: config.codexPreheat.intervalSeconds,
+    cooldownSeconds: config.codexPreheat.cooldownSeconds,
+    batchSize: config.codexPreheat.batchSize,
+    minPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
+    minSecondaryRemaining: config.codexPreheat.minSecondaryRemaining,
+    lastRunAt: codexPreheatRuntime.lastRunAt,
+    lastCompletedAt: codexPreheatRuntime.lastCompletedAt,
+    lastReason: codexPreheatRuntime.lastReason,
+    lastStatus: codexPreheatRuntime.lastStatus,
+    lastError: codexPreheatRuntime.lastError,
+    lastDurationMs: codexPreheatRuntime.lastDurationMs,
+    lastSummary: codexPreheatRuntime.lastSummary
+  };
+}
+
+function shouldSkipCodexPreheatAccount(account, nowSec, force = false) {
+  if (!account || account.enabled === false) return "disabled";
+  if (!account.token?.access_token) return "missing_token";
+  if (!force && Number(account.cooldown_until || 0) > nowSec) return "account_cooldown";
+
+  const entryId = getCodexPoolEntryId(account);
+  const history = getCodexPreheatAccountHistory(entryId);
+  if (!history) return "missing_identity";
+  if (!force && Number(history.next_eligible_at || 0) > nowSec) return "preheat_cooldown";
+
+  const usage = getCodexUsageWindowStats(account);
+  if (
+    Number.isFinite(usage.primaryRemaining) &&
+    usage.primaryRemaining < Number(config.codexPreheat.minPrimaryRemaining || 0)
+  ) {
+    return "low_primary_remaining";
+  }
+  if (
+    Number.isFinite(usage.secondaryRemaining) &&
+    usage.secondaryRemaining < Number(config.codexPreheat.minSecondaryRemaining || 0)
+  ) {
+    return "low_secondary_remaining";
+  }
+  return "";
+}
+
+function pickCodexPreheatCandidates(store, options = {}) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const force = options.force === true;
+  const accounts = Array.isArray(store?.accounts) ? store.accounts : [];
+  const enabled = accounts.filter((x) => x && x.enabled !== false);
+  const decorated = enabled
+    .map((account) => {
+      const entryId = getCodexPoolEntryId(account);
+      const usage = getCodexUsageWindowStats(account);
+      const health = classifyCodexPoolHealth(account, nowSec, usage);
+      const score = decorateCodexPoolAccount(account, store.active_account_id || "", nowSec).healthScore;
+      const skipReason = shouldSkipCodexPreheatAccount(account, nowSec, force);
+      return {
+        account,
+        entryId,
+        usage,
+        health,
+        score,
+        skipReason
+      };
+    })
+    .sort((a, b) => {
+      if (a.skipReason && !b.skipReason) return 1;
+      if (!a.skipReason && b.skipReason) return -1;
+      if (b.score !== a.score) return b.score - a.score;
+      const aUsed = Number(a.account?.last_used_at || 0);
+      const bUsed = Number(b.account?.last_used_at || 0);
+      if (aUsed !== bUsed) return aUsed - bUsed;
+      return String(a.entryId || "").localeCompare(String(b.entryId || ""));
+    });
+  return decorated;
+}
+
+async function runCodexPreheat(reason = "manual", options = {}) {
+  if (config.authMode !== "codex-oauth") {
+    throw new Error("Preheat is only available in AUTH_MODE=codex-oauth.");
+  }
+  if (!isCodexMultiAccountEnabled()) {
+    throw new Error("Preheat requires multi-account mode to be enabled.");
+  }
+  if (codexPreheatRuntime.running) {
+    return {
+      ok: true,
+      busy: true,
+      message: "Preheat is already running.",
+      summary: codexPreheatRuntime.lastSummary
+    };
+  }
+
+  const force = options.force === true;
+  const startedAt = Date.now();
+  const nowSec = Math.floor(startedAt / 1000);
+  codexPreheatRuntime.running = true;
+  codexPreheatRuntime.lastRunAt = nowSec;
+  codexPreheatRuntime.lastReason = String(reason || "manual");
+  codexPreheatRuntime.lastStatus = "running";
+  codexPreheatRuntime.lastError = "";
+
+  let saveStore = false;
+  let saveHistory = false;
+  try {
+    const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
+    codexOAuthStore = normalized.store;
+    saveStore = saveStore || normalized.changed;
+
+    const candidates = pickCodexPreheatCandidates(codexOAuthStore, { force });
+    const targetCount = Math.max(1, Number(options.batchSize || config.codexPreheat.batchSize || 1));
+    const selected = candidates.filter((x) => !x.skipReason).slice(0, targetCount);
+    const skipped = candidates
+      .filter((x) => x.skipReason)
+      .slice(0, 20)
+      .map((x) => ({
+        entryId: x.entryId,
+        accountId: x.account.account_id || null,
+        reason: x.skipReason
+      }));
+    const results = [];
+
+    for (let i = 0; i < selected.length; i += 1) {
+      const { account, entryId } = selected[i];
+      const accountId = String(account.account_id || "");
+      const history = getCodexPreheatAccountHistory(entryId);
+      if (!history) continue;
+      history.run_count = Number(history.run_count || 0) + 1;
+      history.last_run_at = nowSec;
+      saveHistory = true;
+
+      try {
+        const snapshot = await fetchCodexUsageSnapshotForAccount(account, config.codexOAuth);
+        const applied = applyCodexUsageSnapshotToStore(codexOAuthStore, entryId || accountId, snapshot);
+        if (applied) saveStore = true;
+        account.last_error = "";
+        account.failure_count = 0;
+        account.cooldown_until = 0;
+        history.success_count = Number(history.success_count || 0) + 1;
+        history.last_success_at = nowSec;
+        history.last_error = "";
+        history.next_eligible_at = nowSec + Number(config.codexPreheat.cooldownSeconds || 0);
+        results.push({
+          entryId,
+          accountId,
+          ok: true,
+          primaryRemaining: readUsageRemainingPercent(snapshot?.primary),
+          secondaryRemaining: readUsageRemainingPercent(snapshot?.secondary)
+        });
+        saveStore = true;
+      } catch (err) {
+        const message = String(err?.message || err || "preheat_failed");
+        account.last_error = `preheat: ${message}`;
+        account.failure_count = Number(account.failure_count || 0) + 1;
+        account.cooldown_until = Math.max(
+          Number(account.cooldown_until || 0),
+          nowSec + Math.min(900, Math.max(30, Number(config.codexPreheat.cooldownSeconds || 1200) / 2))
+        );
+        history.failure_count = Number(history.failure_count || 0) + 1;
+        history.last_failure_at = nowSec;
+        history.last_error = message;
+        history.next_eligible_at = nowSec + Math.min(1800, Math.max(60, Number(config.codexPreheat.cooldownSeconds || 1200)));
+        results.push({
+          entryId,
+          accountId,
+          ok: false,
+          error: message
+        });
+        saveStore = true;
+        saveHistory = true;
+      }
+
+      if (i < selected.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+    }
+
+    if (saveStore) {
+      codexOAuthStore.token = codexOAuthStore.accounts?.[0]?.token || codexOAuthStore.token || null;
+      await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
+      clearAuthContextCache();
+    }
+    if (saveHistory) {
+      await saveJsonStore(config.codexPreheat.historyPath, codexPreheatHistory);
+    }
+
+    const completedAt = Date.now();
+    const durationMs = Math.max(0, completedAt - startedAt);
+    const successCount = results.filter((x) => x.ok).length;
+    const failureCount = results.length - successCount;
+    const status = results.length === 0 ? "skipped" : failureCount > 0 ? "partial" : "ok";
+    const summary = {
+      ok: true,
+      reason: String(reason || "manual"),
+      status,
+      startedAt: nowSec,
+      completedAt: Math.floor(completedAt / 1000),
+      durationMs,
+      totalCandidates: candidates.length,
+      selected: selected.length,
+      success: successCount,
+      failed: failureCount,
+      skipped,
+      results
+    };
+
+    codexPreheatRuntime.lastCompletedAt = Math.floor(completedAt / 1000);
+    codexPreheatRuntime.lastDurationMs = durationMs;
+    codexPreheatRuntime.lastSummary = summary;
+    codexPreheatRuntime.lastStatus = status;
+    codexPreheatRuntime.lastError = "";
+    return summary;
+  } catch (err) {
+    const completedAt = Date.now();
+    const message = String(err?.message || err || "preheat_failed");
+    codexPreheatRuntime.lastCompletedAt = Math.floor(completedAt / 1000);
+    codexPreheatRuntime.lastDurationMs = Math.max(0, completedAt - startedAt);
+    codexPreheatRuntime.lastStatus = "failed";
+    codexPreheatRuntime.lastError = message;
+    codexPreheatRuntime.lastSummary = {
+      ok: false,
+      reason: String(reason || "manual"),
+      status: "failed",
+      startedAt: nowSec,
+      completedAt: Math.floor(completedAt / 1000),
+      durationMs: codexPreheatRuntime.lastDurationMs,
+      error: message
+    };
+    throw err;
+  } finally {
+    codexPreheatRuntime.running = false;
+  }
+}
+
+function stopCodexPreheatScheduler() {
+  if (codexPreheatRuntime.timer) {
+    clearInterval(codexPreheatRuntime.timer);
+    codexPreheatRuntime.timer = null;
+  }
+}
+
+function restartCodexPreheatScheduler() {
+  stopCodexPreheatScheduler();
+  if (config.authMode !== "codex-oauth") return;
+  if (!isCodexMultiAccountEnabled()) return;
+  if (!config.codexPreheat.enabled) return;
+
+  const intervalMs = Math.max(30, Number(config.codexPreheat.intervalSeconds || 600)) * 1000;
+  codexPreheatRuntime.timer = setInterval(() => {
+    runCodexPreheat("scheduled").catch((err) => {
+      codexPreheatRuntime.lastStatus = "failed";
+      codexPreheatRuntime.lastError = String(err?.message || err || "preheat_failed");
+    });
+  }, intervalMs);
+}
+
 function isExpiredOrNearExpirySec(expiresAtSec) {
   if (!Number.isFinite(expiresAtSec)) return false;
   const nowSec = Math.floor(Date.now() / 1000);
@@ -2685,12 +3646,14 @@ async function getValidAuthContextFromCodexOAuthStore(store, oauthConfig) {
 
   if (!isCodexMultiAccountEnabled()) {
     const context = await getValidAuthContextFromOAuthStore(store, oauthConfig);
-    const accountId = context.accountId || deriveCodexAccountIdFromToken(store.token || {});
-    upsertCodexOAuthAccount(store, store.token, { label: accountId });
+    const upsert = upsertCodexOAuthAccount(store, store.token, {
+      label: context.principalId || context.accountId || ""
+    });
     await saveTokenStore(oauthConfig.tokenStorePath, store);
     return {
       ...context,
-      poolAccountId: accountId
+      poolAccountId: upsert.entryId,
+      poolEntryId: upsert.entryId
     };
   }
 
@@ -2717,6 +3680,10 @@ async function getValidAuthContextFromCodexOAuthStore(store, oauthConfig) {
 
       const accountIdFromToken =
         extractOpenAICodexAccountId(account.token.access_token) || account.account_id;
+      const entryIdFromToken = deriveCodexPoolEntryIdFromToken(account.token);
+      const principalIdFromToken =
+        extractOpenAICodexPrincipalId(account.token.access_token) || entryIdFromToken;
+      account.identity_id = entryIdFromToken;
       account.account_id = accountIdFromToken;
       account.enabled = true;
       account.last_used_at = nowSec;
@@ -2724,25 +3691,27 @@ async function getValidAuthContextFromCodexOAuthStore(store, oauthConfig) {
       account.cooldown_until = 0;
       account.last_error = "";
       store.token = account.token;
-      store.active_account_id = account.account_id;
+      store.active_account_id = entryIdFromToken;
       store.rotation = store.rotation || { next_index: 0 };
       if (candidates.length > 1 && config.codexOAuth.multiAccountStrategy === "round-robin") {
         const enabled = getCodexEnabledAccounts(store);
-        const idx = enabled.findIndex((x) => x.account_id === account.account_id);
+        const idx = enabled.findIndex((x) => getCodexPoolEntryId(x) === entryIdFromToken);
         store.rotation.next_index = idx >= 0 ? (idx + 1) % enabled.length : 0;
       }
       await saveTokenStore(oauthConfig.tokenStorePath, store);
       return {
         accessToken: account.token.access_token,
         accountId: accountIdFromToken,
-        poolAccountId: account.account_id
+        principalId: principalIdFromToken,
+        poolAccountId: entryIdFromToken,
+        poolEntryId: entryIdFromToken
       };
     } catch (err) {
       account.failure_count = Number(account.failure_count || 0) + 1;
       account.last_error = String(err.message || err);
       const cooldownSeconds = Math.min(120, 10 * account.failure_count);
       account.cooldown_until = nowSec + cooldownSeconds;
-      errors.push(`${account.account_id}: ${account.last_error}`);
+      errors.push(`${getCodexPoolEntryId(account) || account.account_id}: ${account.last_error}`);
     }
   }
 
@@ -2758,7 +3727,8 @@ async function getValidAuthContextFromOAuthStore(store, oauthConfig) {
   if (!isExpiredOrNearExpirySec(store.token.expires_at)) {
     return {
       accessToken: store.token.access_token,
-      accountId: extractOpenAICodexAccountId(store.token.access_token) || null
+      accountId: extractOpenAICodexAccountId(store.token.access_token) || null,
+      principalId: extractOpenAICodexPrincipalId(store.token.access_token) || null
     };
   }
 
@@ -2771,7 +3741,8 @@ async function getValidAuthContextFromOAuthStore(store, oauthConfig) {
   await saveTokenStore(oauthConfig.tokenStorePath, store);
   return {
     accessToken: store.token.access_token,
-    accountId: extractOpenAICodexAccountId(store.token.access_token) || null
+    accountId: extractOpenAICodexAccountId(store.token.access_token) || null,
+    principalId: extractOpenAICodexPrincipalId(store.token.access_token) || null
   };
 }
 
@@ -4444,7 +5415,7 @@ async function handleGeminiOpenAICompatWithCodex(req, res) {
     res.status(401).json({
       error: "unauthorized",
       message: err.message,
-      hint: config.authMode === "openclaw" ? "Run OpenClaw login first." : "Open /auth/login first."
+      hint: config.authMode === "profile-store" ? "Run profile store login first." : "Open /auth/login first."
     });
     return;
   }
@@ -4492,7 +5463,7 @@ async function handleAnthropicOpenAICompatWithCodex(req, res) {
     res.status(401).json({
       error: "unauthorized",
       message: err.message,
-      hint: config.authMode === "openclaw" ? "Run OpenClaw login first." : "Open /auth/login first."
+      hint: config.authMode === "profile-store" ? "Run profile store login first." : "Open /auth/login first."
     });
     return;
   }
@@ -4903,6 +5874,8 @@ async function completeOAuthCallback({ code, state }) {
 
   let callbackSummary = {
     accountId: extractOpenAICodexAccountId(normalizedToken.access_token || "") || null,
+    entryId: extractOpenAICodexPrincipalId(normalizedToken.access_token || "") || null,
+    email: extractOpenAICodexEmail(normalizedToken.access_token || "") || null,
     slot: parseSlotValue(pending.slot),
     action: "updated"
   };
@@ -4913,10 +5886,13 @@ async function completeOAuthCallback({ code, state }) {
     Object.assign(oauthRuntime.store, shaped.store);
     const upsert = upsertCodexOAuthAccount(oauthRuntime.store, normalizedToken, {
       label: pending.label || "",
-      slot: pending.slot
+      slot: pending.slot,
+      force: pending.force
     });
     callbackSummary = {
       accountId: upsert.accountId,
+      entryId: upsert.entryId || callbackSummary.entryId,
+      email: upsert.email || callbackSummary.email,
       slot: upsert.slot,
       action: upsert.action
     };
@@ -4972,7 +5948,7 @@ async function ensureCodexOAuthCallbackServer() {
           const summary = await completeOAuthCallback({ code, state });
           res.statusCode = 200;
           res.setHeader("content-type", "text/html; charset=utf-8");
-          const msg = `<p>Account: ${escapeHtml(summary?.accountId || "unknown")}</p><p>Action: ${escapeHtml(summary?.action || "updated")}</p><p>Slot: ${escapeHtml(String(summary?.slot || "-"))}</p>`;
+          const msg = buildOAuthCallbackMessage(summary);
           res.end(OAUTH_CALLBACK_SUCCESS_HTML.replace("</body>", `${msg}</body>`));
         } catch (err) {
           console.error("Codex OAuth callback handling failed:", err);
@@ -5032,6 +6008,39 @@ function truncate(text, maxLen) {
   return `${text.slice(0, maxLen)}...`;
 }
 
+function describeOAuthUpsertAction(action) {
+  switch (String(action || "")) {
+    case "created":
+      return "new account added";
+    case "created_reassigned_slot":
+      return "new account added (requested slot occupied, reassigned)";
+    case "updated_existing_account":
+      return "existing account token refreshed";
+    case "already_exists_same_account":
+      return "same account detected (not added again)";
+    case "replaced_slot":
+      return "slot owner replaced";
+    default:
+      return "updated";
+  }
+}
+
+function buildOAuthCallbackMessage(summary) {
+  const accountId = summary?.accountId || "unknown";
+  const entryId = summary?.entryId || "";
+  const email = summary?.email || "";
+  const action = summary?.action || "updated";
+  const slot = summary?.slot || "-";
+  const actionLabel = describeOAuthUpsertAction(action);
+  const emailLine = email ? `<p>Email: ${escapeHtml(email)}</p>` : "";
+  const entryLine = entryId ? `<p>Entry: ${escapeHtml(truncate(String(entryId), 80))}</p>` : "";
+  const warning =
+    action === "already_exists_same_account"
+      ? `<p style="color:#b45309"><strong>Notice:</strong> This login returned the same ChatGPT account ID, so no new account was added.</p><p style="color:#b45309">Use another browser profile/incognito and login with a different account.</p>`
+      : "";
+  return `<p>Account: ${escapeHtml(accountId)}</p>${entryLine}${emailLine}<p>Action: ${escapeHtml(actionLabel)}</p><p>Slot: ${escapeHtml(String(slot))}</p>${warning}`;
+}
+
 function escapeHtml(text) {
   return String(text)
     .replaceAll("&", "&amp;")
@@ -5040,3 +6049,4 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 }
+
