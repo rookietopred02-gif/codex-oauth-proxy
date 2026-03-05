@@ -23,17 +23,53 @@
         --warn: #ffca6c;
         --bad: #ff6f7f;
         --accent: #66a1ff;
-        --mx: 50vw;
-        --my: 50vh;
         --fx-alpha: 1;
         --fx-glow-opacity: 0.26;
         --fx-shimmer-duration: 1.35s;
         --fx-shimmer-alpha: 0.22;
         --fx-orb-scale: 1;
+        --scrollbar-track: rgba(10, 24, 52, 0.86);
+        --scrollbar-track-border: rgba(255, 255, 255, 0.12);
+        --scrollbar-thumb: linear-gradient(180deg, rgba(121, 194, 255, 0.95), rgba(82, 126, 255, 0.94));
+        --scrollbar-thumb-border: rgba(10, 24, 52, 0.92);
+        --scrollbar-thumb-shadow: rgba(104, 166, 255, 0.5);
       }
 
       * {
         box-sizing: border-box;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(104, 166, 255, 0.9) var(--scrollbar-track);
+      }
+
+      *::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+
+      *::-webkit-scrollbar-track {
+        border-radius: 999px;
+        background: var(--scrollbar-track);
+        box-shadow:
+          inset 0 0 0 1px var(--scrollbar-track-border),
+          inset 0 8px 18px rgba(0, 0, 0, 0.24);
+      }
+
+      *::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        border: 2px solid var(--scrollbar-thumb-border);
+        background: var(--scrollbar-thumb);
+        box-shadow:
+          0 2px 10px var(--scrollbar-thumb-shadow),
+          inset 0 -1px 0 rgba(255, 255, 255, 0.3);
+      }
+
+      *::-webkit-scrollbar-thumb:hover {
+        background:
+          linear-gradient(180deg, rgba(145, 210, 255, 0.98), rgba(100, 142, 255, 0.96));
+      }
+
+      *::-webkit-scrollbar-corner {
+        background: transparent;
       }
 
       body {
@@ -56,8 +92,8 @@
         pointer-events: none;
         z-index: 0;
         background:
-          radial-gradient(420px circle at var(--mx) var(--my), rgba(106, 164, 255, 0.28), transparent 62%),
-          radial-gradient(360px circle at calc(var(--mx) * 0.82) calc(var(--my) * 1.08), rgba(168, 93, 255, 0.14), transparent 64%);
+          radial-gradient(520px circle at 18% 24%, rgba(106, 164, 255, 0.2), transparent 68%),
+          radial-gradient(480px circle at 82% 28%, rgba(168, 93, 255, 0.12), transparent 72%);
         opacity: var(--fx-alpha);
         transition: opacity 0.3s ease;
       }
@@ -67,9 +103,9 @@
       }
 
       .wrap {
-        max-width: 1280px;
+        max-width: 1360px;
         margin: 0 auto;
-        padding: 24px 22px 36px;
+        padding: 20px 18px 30px;
         position: relative;
         z-index: 2;
       }
@@ -108,20 +144,24 @@
 
       .grid {
         display: grid;
-        gap: 16px;
+        gap: 12px;
         grid-template-columns: repeat(12, minmax(0, 1fr));
       }
 
       .card {
         grid-column: span 4;
-        border: 1px solid var(--card-border);
-        background: var(--card);
-        border-radius: 14px;
-        padding: 17px;
+        border: 1px solid rgba(160, 188, 240, 0.32);
+        background:
+          linear-gradient(180deg, rgba(24, 39, 77, 0.9), rgba(16, 28, 58, 0.88));
+        border-radius: 10px;
+        padding: 12px;
         backdrop-filter: blur(8px);
         animation: cardIn 420ms ease both;
         position: relative;
         transform-style: preserve-3d;
+        box-shadow:
+          inset 0 0 0 1px rgba(123, 159, 226, 0.14),
+          0 10px 22px rgba(0, 0, 0, 0.24);
         transition:
           transform 0.18s ease,
           box-shadow 0.22s ease,
@@ -146,8 +186,9 @@
 
       .card.fx-active {
         box-shadow:
-          0 14px 26px rgba(0, 0, 0, 0.24),
-          0 0 0 1px rgba(127, 170, 255, 0.35);
+          inset 0 0 0 1px rgba(123, 173, 255, 0.28),
+          0 12px 24px rgba(0, 0, 0, 0.3),
+          0 0 0 1px rgba(127, 170, 255, 0.3);
       }
 
       .card.fx-active::after {
@@ -170,43 +211,70 @@
       }
 
       .card h3 {
-        margin: 0 0 14px;
-        font-size: 14px;
+        margin: 0 0 10px;
+        font-size: 13px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         color: #d9e4ff;
-        min-height: 18px;
+        min-height: 16px;
       }
 
       .card.core-card {
-        min-height: 430px;
+        min-height: 0;
       }
 
       .kv {
         display: grid;
-        grid-template-columns: 130px 1fr;
+        grid-template-columns: minmax(92px, 1fr) minmax(0, 1.4fr);
         gap: 8px;
-        font-size: 13px;
-        margin-bottom: 6px;
+        align-items: center;
+        font-size: 12px;
+        margin: 0;
+        padding: 7px 8px;
+        border: 1px solid rgba(146, 173, 226, 0.2);
+        border-radius: 8px;
+        background: rgba(8, 15, 33, 0.46);
       }
 
       .kv .k {
         color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-size: 10.5px;
+      }
+
+      .kv-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .kv-grid .kv--full {
+        grid-column: 1 / -1;
+      }
+
+      .kv > :last-child {
+        justify-self: end;
+        text-align: right;
+        max-width: 100%;
       }
 
       .mono {
         font-family: "JetBrains Mono", monospace;
-        word-break: break-all;
+        word-break: break-word;
       }
 
       .status {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
         border-radius: 999px;
-        padding: 5px 10px;
-        font-size: 12px;
+        padding: 4px 10px;
+        min-height: 24px;
+        font-size: 10.5px;
         font-family: "JetBrains Mono", monospace;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
         border: 1px solid var(--card-border);
       }
 
@@ -221,18 +289,24 @@
       .btns {
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 10px;
+        gap: 6px;
+        margin-top: 8px;
       }
 
       button {
         border: 1px solid var(--card-border);
         color: var(--text);
         background: #1a2e5f;
-        border-radius: 10px;
-        padding: 8px 12px;
+        border-radius: 8px;
+        padding: 0 10px;
+        min-height: 34px;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
         font-family: "JetBrains Mono", monospace;
-        font-size: 12px;
+        font-size: 11.5px;
         cursor: pointer;
         position: relative;
         overflow: hidden;
@@ -272,22 +346,24 @@
 
       label {
         display: block;
-        font-size: 12px;
+        font-size: 11px;
+        letter-spacing: 0.04em;
         color: var(--muted);
-        margin-bottom: 4px;
+        margin-bottom: 3px;
       }
 
       input,
       select,
       textarea {
         width: 100%;
-        border-radius: 10px;
+        border-radius: 8px;
         border: 1px solid var(--card-border);
         background: rgba(0, 0, 0, 0.25);
         color: var(--text);
-        padding: 9px 10px;
-        font-size: 13px;
-        margin-bottom: 10px;
+        padding: 7px 9px;
+        min-height: 34px;
+        font-size: 12px;
+        margin-bottom: 8px;
         font-family: "JetBrains Mono", monospace;
       }
 
@@ -342,7 +418,8 @@
 
       textarea {
         resize: vertical;
-        min-height: 72px;
+        min-height: 68px;
+        line-height: 1.35;
       }
 
       .log {
@@ -658,24 +735,24 @@
       }
 
       .section-hint {
-        margin: 0 0 10px;
+        margin: 0 0 8px;
       }
 
       .section-actions {
-        margin: 0 0 10px;
+        margin: 0 0 8px;
       }
 
       .preheat-panel {
         border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 12px;
+        border-radius: 9px;
         background: rgba(8, 15, 33, 0.45);
-        padding: 11px;
-        margin-bottom: 12px;
+        padding: 9px;
+        margin-bottom: 10px;
       }
 
       .preheat-panel h4 {
-        margin: 0 0 8px;
-        font-size: 12px;
+        margin: 0 0 6px;
+        font-size: 11px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         color: #d9e4ff;
@@ -684,7 +761,7 @@
       .preheat-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(96px, 1fr)) auto;
-        gap: 8px;
+        gap: 6px;
         align-items: end;
       }
 
@@ -697,8 +774,8 @@
       }
 
       .preheat-status {
-        margin-top: 9px;
-        font-size: 11px;
+        margin-top: 7px;
+        font-size: 10px;
         font-family: "JetBrains Mono", monospace;
         color: var(--muted);
         white-space: pre-wrap;
@@ -719,6 +796,10 @@
         font-family: "JetBrains Mono", monospace;
       }
 
+      .autosave-status:empty {
+        display: none;
+      }
+
       .autosave-status.ok {
         color: var(--ok);
       }
@@ -728,13 +809,13 @@
       }
 
       .result {
-        margin-top: 8px;
-        border-radius: 10px;
+        margin-top: 6px;
+        border-radius: 8px;
         border: 1px solid var(--card-border);
         background: rgba(0, 0, 0, 0.28);
-        padding: 10px;
+        padding: 8px;
         font-family: "JetBrains Mono", monospace;
-        font-size: 12px;
+        font-size: 11px;
         white-space: pre-wrap;
         word-break: break-word;
       }
@@ -742,7 +823,7 @@
       .inline-row {
         display: grid;
         grid-template-columns: 1.3fr 1.3fr auto;
-        gap: 8px;
+        gap: 6px;
         align-items: center;
       }
 
@@ -754,15 +835,57 @@
       .checkline {
         display: flex;
         align-items: center;
-        gap: 8px;
-        margin-bottom: 10px;
-        font-size: 12px;
+        gap: 6px;
+        margin-bottom: 8px;
+        font-size: 11px;
         color: var(--muted);
       }
 
       .checkline input {
         width: auto;
         margin: 0;
+      }
+
+      .config-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .field {
+        min-width: 0;
+      }
+
+      .field > input,
+      .field > select,
+      .field > textarea {
+        margin-bottom: 0;
+      }
+
+      .field--full {
+        grid-column: 1 / -1;
+      }
+
+      .self-test-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: start;
+      }
+
+      .self-test-grid .field--full {
+        grid-column: 1 / -1;
+      }
+
+      .self-test-grid .btns {
+        margin: 0;
+      }
+
+      .self-test-grid .result {
+        margin-top: 0;
+        min-height: 34px;
+        display: flex;
+        align-items: center;
       }
 
       .map-del {
@@ -777,15 +900,15 @@
       .pool-kpis {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        gap: 10px;
-        margin-bottom: 14px;
+        gap: 8px;
+        margin-bottom: 10px;
       }
 
       .metric-card {
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        background: rgba(20, 33, 66, 0.86);
-        border-radius: 12px;
-        padding: 11px;
+        border: 1px solid rgba(160, 188, 240, 0.24);
+        background: rgba(17, 29, 60, 0.88);
+        border-radius: 9px;
+        padding: 9px;
         transition: transform 0.18s ease, border-color 0.2s ease;
       }
 
@@ -796,17 +919,17 @@
 
       .metric-label {
         color: var(--muted);
-        font-size: 11px;
+        font-size: 10px;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-bottom: 5px;
+        letter-spacing: 0.07em;
+        margin-bottom: 4px;
       }
 
       .metric-value {
         font-family: "JetBrains Mono", monospace;
-        font-size: 24px;
+        font-size: 21px;
         line-height: 1;
-        margin-bottom: 5px;
+        margin-bottom: 4px;
       }
 
       .metric-value.fx-pulse,
@@ -815,42 +938,42 @@
       }
 
       .metric-value.metric-value--sm {
-        font-size: 16px;
+        font-size: 15px;
       }
 
       .metric-sub {
         color: var(--muted);
-        font-size: 11px;
+        font-size: 10px;
         font-family: "JetBrains Mono", monospace;
       }
 
       .pool-layout {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 14px;
+        gap: 10px;
         align-items: start;
         grid-auto-rows: min-content;
       }
 
       .pool-pane {
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 12px;
+        border: 1px solid rgba(155, 187, 241, 0.22);
+        border-radius: 9px;
         background: rgba(8, 15, 33, 0.45);
-        padding: 11px;
+        padding: 9px;
         align-self: start;
       }
 
       .pool-pane > * + * {
-        margin-top: 10px;
+        margin-top: 8px;
       }
 
       .pool-pane.pool-pane--full {
-        margin-top: 14px;
+        margin-top: 10px;
       }
 
       .pool-pane h4 {
         margin: 0;
-        font-size: 13px;
+        font-size: 12px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         color: #d9e4ff;
@@ -858,19 +981,157 @@
 
       .recommend-list {
         display: grid;
+        gap: 6px;
+        margin-bottom: 8px;
+        min-height: 0;
+        align-content: start;
+      }
+
+      .runtime-control-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 8px;
-        margin-bottom: 10px;
+        margin-top: 8px;
+      }
+
+      .runtime-heartbeat,
+      .runtime-language {
+        margin-top: 0;
+      }
+
+      .runtime-heartbeat input {
+        margin-bottom: 0;
+      }
+
+      .runtime-language select {
+        margin-bottom: 0;
+      }
+
+      .runtime-subcard {
+        margin-top: 10px;
+        border: 1px solid rgba(155, 187, 241, 0.2);
+        border-radius: 9px;
+        background: rgba(8, 15, 33, 0.46);
+        padding: 8px;
+      }
+
+      .runtime-subcard h4 {
+        margin: 0 0 6px;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #d9e4ff;
+      }
+
+      .runtime-inline-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 6px;
+        align-items: end;
+      }
+
+      .runtime-inline-grid input,
+      .runtime-inline-grid select {
+        margin-bottom: 0;
+      }
+
+      .runtime-inline-grid--public {
+        grid-template-columns: 1fr 1fr;
+        margin-bottom: 6px;
+      }
+
+      .runtime-inline-grid--url {
+        grid-template-columns: 1fr auto;
+        margin-top: 6px;
+      }
+
+      .runtime-inline-grid--url .public-access-url {
+        min-height: 34px;
+        border-radius: 8px;
+        border: 1px solid var(--card-border);
+        background: rgba(0, 0, 0, 0.25);
+        padding: 7px 9px;
+        font-size: 11.5px;
+      }
+
+      .api-key-generated {
+        margin-top: 6px;
+        border: 1px solid rgba(92, 240, 186, 0.34);
+        border-radius: 8px;
+        background: rgba(8, 35, 41, 0.45);
+        padding: 7px;
+      }
+
+      .api-key-generated .k {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 6px;
+      }
+
+      .api-key-secret {
+        font-size: 11px;
+        border: 1px dashed rgba(255, 255, 255, 0.2);
+        border-radius: 8px;
+        padding: 7px;
+        background: rgba(1, 9, 24, 0.72);
+      }
+
+      .api-key-list {
+        margin-top: 6px;
+        display: grid;
+        gap: 6px;
+        max-height: 180px;
+        overflow: auto;
+        padding-right: 2px;
+      }
+
+      .api-key-item {
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 8px;
+        background: rgba(20, 33, 66, 0.7);
+        padding: 7px;
+      }
+
+      .api-key-item-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 4px;
+      }
+
+      .api-key-item-title {
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .api-key-item-sub {
+        color: var(--muted);
+        font-size: 11px;
+        font-family: "JetBrains Mono", monospace;
+        line-height: 1.35;
+      }
+
+      .public-access-status {
+        min-height: 38px;
+        margin-top: 6px;
+      }
+
+      .pool-current-actions {
+        margin-top: 6px;
       }
 
       .recommend-item {
         border: 1px solid rgba(255, 255, 255, 0.16);
-        border-radius: 10px;
+        border-radius: 8px;
         background: rgba(25, 37, 73, 0.62);
-        padding: 9px 10px;
+        padding: 8px;
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
         transition:
           transform 0.18s ease,
           border-color 0.2s ease,
@@ -884,27 +1145,29 @@
       }
 
       .recommend-name {
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 600;
       }
 
       .recommend-sub {
         margin-top: 2px;
         color: var(--muted);
-        font-size: 11px;
+        font-size: 10px;
         font-family: "JetBrains Mono", monospace;
       }
 
       .account-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-        gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 8px;
       }
 
       .account-grid.compact {
         grid-template-columns: 1fr;
         max-height: clamp(300px, 48vh, 640px);
-        overflow: auto;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable;
         padding-right: 4px;
       }
 
@@ -913,10 +1176,18 @@
       }
 
       .account-card {
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        background: rgba(18, 31, 63, 0.88);
-        border-radius: 12px;
-        padding: 12px;
+        border: 1px solid rgba(159, 188, 240, 0.24);
+        background: rgba(18, 31, 63, 0.9);
+        border-radius: 9px;
+        padding: 9px;
+        min-width: 0;
+        overflow-x: hidden;
+      }
+
+      .account-card--current {
+        padding: 10px;
+        background:
+          linear-gradient(180deg, rgba(20, 36, 72, 0.9), rgba(15, 30, 63, 0.9));
       }
 
       .account-card.active {
@@ -926,28 +1197,63 @@
           0 10px 24px rgba(41, 91, 185, 0.22);
       }
 
+      .account-card--current .account-head {
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(144, 178, 242, 0.24);
+      }
+
+      .account-card--current .account-main {
+        min-width: 0;
+      }
+
+      .account-card--current .pill-row {
+        flex: 0 0 auto;
+      }
+
       .account-card.compact .account-meta {
-        gap: 6px 8px;
+        gap: 6px;
+      }
+
+      .account-card-actions {
+        margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        justify-content: flex-end;
+      }
+
+      .account-logout-btn {
+        border-color: rgba(255, 111, 127, 0.44) !important;
+        background: rgba(255, 111, 127, 0.14) !important;
+        color: #ffc3cb !important;
+      }
+
+      .account-logout-btn:hover:not(:disabled) {
+        border-color: rgba(255, 140, 155, 0.58) !important;
+        background: rgba(255, 111, 127, 0.22) !important;
       }
 
       .account-head {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
-        gap: 8px;
-        margin-bottom: 10px;
+        gap: 6px;
+        margin-bottom: 8px;
       }
 
       .account-name {
         font-weight: 700;
-        font-size: 14px;
+        font-size: 13px;
         line-height: 1.2;
       }
 
       .account-id {
         margin-top: 4px;
         color: var(--muted);
-        font-size: 11px;
+        font-size: 10.5px;
         font-family: "JetBrains Mono", monospace;
       }
 
@@ -959,14 +1265,18 @@
       .pill-row {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
+        gap: 4px;
         justify-content: flex-end;
       }
 
       .pill {
         border-radius: 999px;
         border: 1px solid transparent;
-        padding: 2px 8px;
+        padding: 4px 8px;
+        min-height: 24px;
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
         font-size: 10px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
@@ -999,19 +1309,47 @@
 
       .account-meta {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 8px 10px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .account-card--current .account-meta {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .account-card--current .meta-item {
+        border: 1px solid rgba(141, 170, 230, 0.24);
+        border-radius: 8px;
+        background: rgba(17, 32, 66, 0.7);
+        padding: 6px 7px;
+        min-height: 44px;
+      }
+
+      .account-card--current .meta-item .k {
+        margin-bottom: 0;
       }
 
       .meta-item .k {
         color: var(--muted);
-        font-size: 11px;
-        margin-bottom: 2px;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0;
       }
 
       .meta-item .v {
-        font-size: 12px;
+        font-size: 11px;
         font-family: "JetBrains Mono", monospace;
+        justify-self: end;
+        text-align: right;
+      }
+
+      .meta-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 6px;
       }
 
       .account-error {
@@ -1027,27 +1365,33 @@
       }
 
       .usage-stack {
-        margin-top: 10px;
+        margin-top: 8px;
         display: grid;
-        gap: 8px;
+        gap: 6px;
       }
 
       .usage-item .label {
-        display: flex;
-        justify-content: space-between;
+        display: grid;
+        grid-template-columns: minmax(110px, 1fr) auto;
         align-items: center;
-        font-size: 11px;
+        gap: 8px;
+        min-width: 0;
+        font-size: 10.5px;
         color: var(--muted);
-        margin-bottom: 4px;
+        margin-bottom: 3px;
       }
 
       .usage-item .label .v {
         color: #d4e2ff;
         font-family: "JetBrains Mono", monospace;
+        white-space: nowrap;
+        overflow-wrap: anywhere;
+        text-align: right;
+        justify-self: end;
       }
 
       .usage-track {
-        height: 8px;
+        height: 7px;
         border-radius: 999px;
         background: rgba(255, 255, 255, 0.1);
         overflow: hidden;
@@ -1071,28 +1415,51 @@
         background: linear-gradient(90deg, #f06a7a, #ff8f9d);
       }
 
-      .account-empty {
-        border: 1px dashed rgba(255, 255, 255, 0.22);
-        border-radius: 10px;
-        padding: 14px;
-        color: var(--muted);
-        font-size: 12px;
+      @media (max-width: 1320px) {
+        .account-card--current .account-meta {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
       }
 
-      .account-empty.account-empty--compact {
-        margin-top: 10px;
-        padding: 8px 10px;
+      @media (max-width: 1280px) {
+        .card {
+          grid-column: span 6;
+        }
+
+        .card.span-12 {
+          grid-column: 1 / -1;
+        }
+
+        .config-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .kv-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .preheat-grid {
+          grid-template-columns: repeat(2, minmax(120px, 1fr));
+        }
       }
 
       @media (max-width: 980px) {
-        .card,
-        .card.span-12 {
-          grid-column: 1 / -1;
+        .account-meta {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .runtime-control-grid {
+          grid-template-columns: 1fr;
         }
 
         .pool-layout {
           grid-template-columns: 1fr;
         }
+
+        .self-test-grid {
+          grid-template-columns: 1fr;
+        }
+
         .account-grid.compact {
           max-height: none;
           overflow: visible;
@@ -1100,7 +1467,22 @@
         }
 
         .preheat-grid {
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .card,
+        .card.span-12 {
+          grid-column: 1 / -1;
+        }
+
+        .account-card--current .account-meta {
+          grid-template-columns: 1fr;
+        }
+
+        .account-meta {
+          grid-template-columns: 1fr;
         }
 
         .req-detail-meta-grid {
@@ -1110,6 +1492,19 @@
         .req-detail-code-grid {
           grid-template-columns: 1fr;
         }
+      }
+
+      .account-empty {
+        border: 1px dashed rgba(255, 255, 255, 0.22);
+        border-radius: 8px;
+        padding: 12px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .account-empty.account-empty--compact {
+        margin-top: 8px;
+        padding: 7px 9px;
       }
 
       @media (prefers-reduced-motion: reduce) {
@@ -1167,189 +1562,268 @@
     <div class="wrap">
       <div class="head">
         <div class="head-top">
-          <div class="title">Codex OAuth Proxy Dashboard</div>
+          <div class="title" data-i18n="dashboard_title">Codex OAuth Proxy Dashboard</div>
           <button id="fxToggleBtn" class="secondary fx-toggle">FX: ON</button>
         </div>
-        <div class="sub">Local control surface for auth, upstream settings, and runtime diagnostics.</div>
+        <div class="sub" data-i18n="dashboard_subtitle">Local control surface for auth, upstream settings, and runtime diagnostics.</div>
       </div>
 
       <div class="grid">
         <section class="card core-card">
-          <h3>Runtime</h3>
-          <div class="kv"><div class="k">Mode</div><div id="mode" class="mono">-</div></div>
-          <div class="kv"><div class="k">Uptime</div><div id="uptime" class="mono">-</div></div>
-          <div class="kv"><div class="k">Base URL</div><div class="mono">http://127.0.0.1:8787/v1</div></div>
+          <h3 data-i18n="runtime_title">Runtime</h3>
+          <div class="kv-grid">
+            <div class="kv"><div class="k" data-i18n="runtime_mode">Mode</div><div id="mode" class="mono">-</div></div>
+            <div class="kv"><div class="k" data-i18n="runtime_uptime">Uptime</div><div id="uptime" class="mono">-</div></div>
+            <div class="kv kv--full"><div class="k" data-i18n="runtime_base_url">Base URL</div><div class="mono">http://127.0.0.1:8787/v1</div></div>
+          </div>
           <div class="status" id="authBadge">loading...</div>
           <div class="btns">
-            <button id="refreshBtn">Refresh</button>
-            <button id="loginBtn">OAuth Login</button>
-            <button id="addAccountBtn">Add Account</button>
-            <button id="logoutBtn" class="secondary">Logout</button>
+            <button id="refreshBtn" data-i18n="runtime_refresh">Refresh</button>
+            <button id="loginBtn" data-i18n="runtime_oauth_login">OAuth Login</button>
+            <button id="addAccountBtn" data-i18n="runtime_add_account">Add Account</button>
+            <button id="logoutBtn" class="secondary" data-i18n="runtime_logout_current">Logout Current</button>
           </div>
-          <div class="fx-panel">
-            <div class="fx-panel-grid">
-              <div>
-                <label for="fxLevelSelect">FX Level</label>
-                <select id="fxLevelSelect">
-                  <option value="low">Low</option>
-                  <option value="balanced">Balanced</option>
-                  <option value="high" selected>High</option>
-                </select>
-              </div>
-              <label class="fx-guard" for="fxGuardToggle">
-                <input id="fxGuardToggle" type="checkbox" checked />
-                Performance Guard
-              </label>
+          <div class="runtime-control-grid">
+            <div class="runtime-language">
+              <label for="languageSelect" data-i18n="runtime_language">Language</label>
+              <select id="languageSelect">
+                <option value="en">English</option>
+                <option value="zh-hant">繁體中文</option>
+                <option value="zh-hans">简体中文</option>
+              </select>
+            </div>
+            <div class="runtime-heartbeat">
+              <label for="heartbeatSeconds" data-i18n="runtime_heartbeat">Status Heartbeat (s)</label>
+              <input id="heartbeatSeconds" type="number" min="2" max="3600" step="1" value="7" />
             </div>
           </div>
-          <div class="hint">If you have used the Codex CLI before, it will automatically fetch and authenticate.</div>
-        </section>
-
-        <section class="card core-card">
-          <h3>Proxy Config</h3>
-          <label for="upstreamMode">Upstream Mode</label>
-          <select id="upstreamMode">
-            <option value="codex-chatgpt">openai-v1</option>
-            <option value="gemini-v1beta">gemini-v1beta</option>
-            <option value="anthropic-v1">anthropic-v1</option>
-          </select>
-          <label for="upstreamBaseUrl">Upstream Base URL</label>
-          <input id="upstreamBaseUrl" />
-          <label for="defaultModel">Default Model</label>
-          <input id="defaultModel" />
-          <label for="defaultInstructions">Default Instructions</label>
-          <textarea id="defaultInstructions"></textarea>
-          <label for="defaultReasoningEffort">Reasoning Effort (思維長度)</label>
-          <select id="defaultReasoningEffort">
-            <option value="adaptive">adaptive (auto)</option>
-            <option value="none">none</option>
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-            <option value="xhigh">xhigh</option>
-          </select>
-          <label for="multiAccountStrategy">Account Pool Strategy</label>
-          <select id="multiAccountStrategy">
-            <option value="smart">smart (health-aware)</option>
-            <option value="round-robin">round-robin</option>
-            <option value="random">random</option>
-            <option value="sticky">sticky</option>
-          </select>
-          <div class="autosave-status" id="configAutoSaveStatus">Auto-save enabled.</div>
-        </section>
-
-        <section class="card core-card">
-          <h3>Self Test</h3>
-          <label for="testPrompt">Prompt</label>
-          <textarea id="testPrompt">Reply with one short sentence: dashboard self-test passed.</textarea>
-          <div class="btns">
-            <button id="runTestBtn">Run Upstream Test</button>
+          <div class="runtime-subcard">
+            <h4 data-i18n="api_keys_title">API Keys</h4>
+            <div class="runtime-inline-grid">
+              <div>
+                <label for="apiKeyLabel" data-i18n="api_keys_label">Label</label>
+                <input id="apiKeyLabel" maxlength="80" placeholder="dashboard-generated" />
+              </div>
+              <div>
+                <label for="apiKeyExpiresDays" data-i18n="api_keys_expires_days">Expires (days)</label>
+                <input id="apiKeyExpiresDays" type="number" min="0" max="3650" step="1" value="0" />
+              </div>
+              <button id="apiKeyGenerateBtn" data-i18n="api_keys_generate">Generate API Key</button>
+            </div>
+            <div id="apiKeyGeneratedWrap" class="api-key-generated" hidden>
+              <div class="k" data-i18n="api_keys_generated_once">Generated Key (shown once)</div>
+              <div id="apiKeyGeneratedValue" class="mono api-key-secret">-</div>
+              <div class="btns">
+                <button id="apiKeyCopyBtn" data-i18n="api_keys_copy">Copy</button>
+              </div>
+            </div>
+            <div id="apiKeyList" class="api-key-list">
+              <div class="account-empty account-empty--compact" data-i18n="api_keys_empty">No API keys yet.</div>
+            </div>
           </div>
-          <div class="result" id="testResult">No test executed.</div>
+          <div class="hint" data-i18n="runtime_hint">If you have used the Codex CLI before, it will automatically fetch and authenticate.</div>
+        </section>
+
+        <section class="card core-card">
+          <h3 data-i18n="proxy_config_title">Proxy Config</h3>
+          <div class="config-grid">
+            <div class="field">
+              <label for="upstreamMode" data-i18n="proxy_upstream_mode">Upstream Mode</label>
+              <select id="upstreamMode">
+                <option value="codex-chatgpt">openai-v1</option>
+                <option value="gemini-v1beta">gemini-v1beta</option>
+                <option value="anthropic-v1">anthropic-v1</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="defaultModel" data-i18n="proxy_default_model">Default Model</label>
+              <input id="defaultModel" />
+            </div>
+            <div class="field field--full">
+              <label for="upstreamBaseUrl" data-i18n="proxy_upstream_base_url">Upstream Base URL</label>
+              <input id="upstreamBaseUrl" />
+            </div>
+            <div class="field field--full">
+              <label for="defaultInstructions" data-i18n="proxy_default_instructions">Default Instructions</label>
+              <textarea id="defaultInstructions"></textarea>
+            </div>
+            <div class="field">
+              <label for="defaultReasoningEffort" data-i18n="proxy_reasoning_effort">Reasoning Effort</label>
+              <select id="defaultReasoningEffort">
+                <option value="adaptive" data-i18n="reasoning_adaptive">adaptive (auto)</option>
+                <option value="none" data-i18n="reasoning_none">none</option>
+                <option value="low" data-i18n="reasoning_low">low</option>
+                <option value="medium" data-i18n="reasoning_medium">medium</option>
+                <option value="high" data-i18n="reasoning_high">high</option>
+                <option value="xhigh" data-i18n="reasoning_xhigh">xhigh</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="multiAccountStrategy" data-i18n="proxy_pool_strategy">Account Pool Strategy</label>
+              <select id="multiAccountStrategy">
+                <option value="smart" data-i18n="strategy_smart">smart (health-aware)</option>
+                <option value="manual" data-i18n="strategy_manual">manual (current account only)</option>
+                <option value="round-robin" data-i18n="strategy_round_robin">round-robin</option>
+                <option value="random" data-i18n="strategy_random">random</option>
+                <option value="sticky" data-i18n="strategy_sticky">sticky</option>
+              </select>
+            </div>
+          </div>
+          <div class="autosave-status" id="configAutoSaveStatus"></div>
+          <div class="runtime-subcard">
+            <h4 data-i18n="public_access_title">Public Access (Cloudflared)</h4>
+            <div class="runtime-inline-grid runtime-inline-grid--public">
+              <div>
+                <label for="publicAccessMode" data-i18n="public_access_mode">Mode</label>
+                <select id="publicAccessMode">
+                  <option value="quick" data-i18n="public_access_mode_quick">quick (trycloudflare)</option>
+                  <option value="auth" data-i18n="public_access_mode_auth">auth (named tunnel)</option>
+                </select>
+              </div>
+              <div>
+                <label for="publicAccessLocalPort" data-i18n="public_access_local_port">Local Port</label>
+                <input id="publicAccessLocalPort" type="number" min="1" max="65535" step="1" value="8787" />
+              </div>
+            </div>
+            <label for="publicAccessToken" data-i18n="public_access_token">Tunnel Token (auth mode)</label>
+            <input id="publicAccessToken" placeholder="Optional in quick mode" />
+            <label class="checkline">
+              <input id="publicAccessHttp2" type="checkbox" checked />
+              <span data-i18n="public_access_http2">Use HTTP/2</span>
+            </label>
+            <div class="btns">
+              <button id="publicAccessRefreshBtn" data-i18n="public_access_refresh">Refresh Status</button>
+              <button id="publicAccessInstallBtn" class="secondary" data-i18n="public_access_install">Install cloudflared</button>
+              <button id="publicAccessStartBtn" data-i18n="public_access_start">Start Tunnel</button>
+              <button id="publicAccessStopBtn" class="secondary" data-i18n="public_access_stop">Stop Tunnel</button>
+            </div>
+            <div id="publicAccessStatus" class="result public-access-status">-</div>
+            <div class="runtime-inline-grid runtime-inline-grid--url">
+              <div>
+                <label for="publicAccessUrl" data-i18n="public_access_url">Public URL</label>
+                <div id="publicAccessUrl" class="mono public-access-url">-</div>
+              </div>
+              <button id="publicAccessCopyBtn" data-i18n="public_access_copy_url">Copy URL</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card core-card">
+          <h3 data-i18n="self_test_title">Self Test</h3>
+          <div class="self-test-grid">
+            <div class="field field--full">
+              <label for="testPrompt" data-i18n="self_test_prompt">Prompt</label>
+              <textarea id="testPrompt">Reply with one short sentence: dashboard self-test passed.</textarea>
+            </div>
+            <div class="btns">
+              <button id="runTestBtn" data-i18n="self_test_run">Run Upstream Test</button>
+            </div>
+            <div class="result" id="testResult" data-i18n="self_test_none">No test executed.</div>
+          </div>
         </section>
 
         <section class="card span-12">
-          <h3>Account Pool</h3>
-          <div class="hint section-hint">Dual-window accounts show 5h/W; single-window plans (for example free) auto-switch to one limit badge.</div>
+          <h3 data-i18n="pool_title">Account Pool</h3>
+          <div class="hint section-hint" data-i18n="pool_hint">Dual-window accounts show 5h/W; single-window plans (for example free) auto-switch to one limit badge.</div>
           <div class="btns section-actions">
-            <button id="refreshUsageBtn">Refresh Usage (All)</button>
+            <button id="refreshUsageBtn" data-i18n="pool_refresh_usage">Refresh Usage (All)</button>
           </div>
           <div class="preheat-panel">
-            <h4>Preheat</h4>
+            <h4 data-i18n="preheat_title">Preheat</h4>
             <div class="preheat-grid">
-              <label for="preheatCooldownSeconds">Cooldown(s)<input id="preheatCooldownSeconds" type="number" min="30" step="30" /></label>
-              <label for="preheatBatchSize">Batch<input id="preheatBatchSize" type="number" min="1" max="32" step="1" /></label>
-              <label for="preheatMinPrimaryRemaining">Min 5h%<input id="preheatMinPrimaryRemaining" type="number" min="0" max="100" step="1" /></label>
-              <label for="preheatMinSecondaryRemaining">Min W%<input id="preheatMinSecondaryRemaining" type="number" min="0" max="100" step="1" /></label>
-              <button id="runPreheatBtn">Run Preheat Now</button>
+              <label for="preheatCooldownSeconds"><span data-i18n="preheat_cooldown">Cooldown(s)</span><input id="preheatCooldownSeconds" type="number" min="30" step="30" /></label>
+              <label for="preheatBatchSize"><span data-i18n="preheat_batch">Batch</span><input id="preheatBatchSize" type="number" min="1" max="32" step="1" /></label>
+              <label for="preheatMinPrimaryRemaining"><span data-i18n="preheat_min_5h">Min 5h%</span><input id="preheatMinPrimaryRemaining" type="number" min="0" max="100" step="1" /></label>
+              <label for="preheatMinSecondaryRemaining"><span data-i18n="preheat_min_w">Min W%</span><input id="preheatMinSecondaryRemaining" type="number" min="0" max="100" step="1" /></label>
+              <button id="runPreheatBtn" data-i18n="preheat_run">Run Preheat Now</button>
             </div>
-            <div id="preheatStatus" class="preheat-status">No preheat run yet.</div>
+            <div id="preheatStatus" class="preheat-status" data-i18n="preheat_none">No preheat run yet.</div>
           </div>
           <div class="pool-kpis">
             <div class="metric-card">
-              <div class="metric-label">Total Accounts</div>
+              <div class="metric-label" data-i18n="kpi_total_accounts">Total Accounts</div>
               <div id="poolTotal" class="metric-value">0</div>
-              <div class="metric-sub">all pooled identities</div>
+              <div class="metric-sub" data-i18n="kpi_total_accounts_sub">all pooled identities</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Healthy Ratio</div>
+              <div class="metric-label" data-i18n="kpi_healthy_ratio">Healthy Ratio</div>
               <div id="poolHealthyRatio" class="metric-value">0%</div>
-              <div class="metric-sub">ready for request routing</div>
+              <div class="metric-sub" data-i18n="kpi_healthy_ratio_sub">ready for request routing</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Primary Avg Remaining</div>
+              <div class="metric-label" data-i18n="kpi_primary_avg">Primary Avg Remaining</div>
               <div id="poolPrimaryAvg" class="metric-value">-</div>
-              <div class="metric-sub">5-hour usage window</div>
+              <div class="metric-sub" data-i18n="kpi_primary_avg_sub">5-hour usage window</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Secondary Avg Remaining</div>
+              <div class="metric-label" data-i18n="kpi_secondary_avg">Secondary Avg Remaining</div>
               <div id="poolSecondaryAvg" class="metric-value">-</div>
-              <div class="metric-sub">weekly usage window</div>
+              <div class="metric-sub" data-i18n="kpi_secondary_avg_sub">weekly usage window</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Cooldown</div>
+              <div class="metric-label" data-i18n="kpi_cooldown">Cooldown</div>
               <div id="poolCooldownCount" class="metric-value">0</div>
-              <div class="metric-sub">temporarily paused</div>
+              <div class="metric-sub" data-i18n="kpi_cooldown_sub">temporarily paused</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">At Risk</div>
+              <div class="metric-label" data-i18n="kpi_at_risk">At Risk</div>
               <div id="poolRiskCount" class="metric-value">0</div>
-              <div id="poolRiskHint" class="metric-sub">disabled / expired</div>
+              <div id="poolRiskHint" class="metric-sub" data-i18n="kpi_at_risk_sub">disabled / expired</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Low Quota</div>
+              <div class="metric-label" data-i18n="kpi_low_quota">Low Quota</div>
               <div id="poolLowQuotaCount" class="metric-value">0</div>
-              <div class="metric-sub">remaining ≤ 20%</div>
+              <div class="metric-sub" data-i18n="kpi_low_quota_sub">remaining ≤ 20%</div>
             </div>
             <div class="metric-card">
-              <div class="metric-label">Strategy</div>
+              <div class="metric-label" data-i18n="kpi_strategy">Strategy</div>
               <div id="poolStrategy" class="metric-value metric-value--sm">-</div>
-              <div id="poolAuthState" class="metric-sub">auth: -</div>
+              <div id="poolAuthState" class="metric-sub" data-i18n="pool_auth_unknown">auth: -</div>
             </div>
           </div>
           <div class="pool-layout">
             <div class="pool-pane">
-              <h4>Current Account</h4>
-              <div id="currentAccountCard" class="account-empty">No active account selected.</div>
+              <h4 data-i18n="current_account_title">Current Account</h4>
+              <div id="currentAccountCard" class="account-empty" data-i18n="account_no_active">No active account selected.</div>
             </div>
             <div class="pool-pane">
-              <h4>Best Account Recommendation</h4>
+              <h4 data-i18n="best_account_recommendation">Best Account Recommendation</h4>
               <div id="recommendList" class="recommend-list">
-                <div class="account-empty">No recommendation yet.</div>
+                <div class="account-empty" data-i18n="account_no_recommendation">No recommendation yet.</div>
               </div>
             </div>
           </div>
           <div class="pool-pane pool-pane--full">
-            <h4 id="allAccountsTitle">All Accounts</h4>
+            <h4 id="allAccountsTitle" data-i18n="all_accounts_title">All Accounts</h4>
             <div id="accountPoolCards" class="account-grid compact">
-              <div class="account-empty">Loading account pool...</div>
+              <div class="account-empty" data-i18n="account_loading_pool">Loading account pool...</div>
             </div>
           </div>
         </section>
 
         <section class="card span-12">
-          <h3>Model Router</h3>
-          <div class="hint">Priority: exact mapping &gt; wildcard (`*`) &gt; system fallback mapping.</div>
+          <h3 data-i18n="router_title">Model Router</h3>
+          <div class="hint" data-i18n="router_hint">Priority: exact mapping &gt; wildcard (`*`) &gt; system fallback mapping.</div>
           <label class="checkline"
-            ><input id="modelRouterEnabled" type="checkbox" />Enable model router</label
+            ><input id="modelRouterEnabled" type="checkbox" /><span data-i18n="router_enable">Enable model router</span></label
           >
           <div class="inline-row">
             <select id="mapFrom"></select>
             <select id="mapTo"></select>
-            <button id="addMappingBtn">Add Mapping</button>
+            <button id="addMappingBtn" data-i18n="router_add_mapping">Add Mapping</button>
           </div>
           <div class="btns">
-            <button id="resetMappingsBtn" class="secondary">Reset Mappings</button>
-            <button id="reloadModelOptionsBtn" class="secondary">Reload Model Options</button>
+            <button id="resetMappingsBtn" class="secondary" data-i18n="router_reset_mappings">Reset Mappings</button>
+            <button id="reloadModelOptionsBtn" class="secondary" data-i18n="router_reload_models">Reload Model Options</button>
           </div>
-          <div class="autosave-status" id="routerAutoSaveStatus">Auto-save enabled.</div>
+          <div class="autosave-status" id="routerAutoSaveStatus"></div>
           <div class="log">
             <table>
               <thead>
                 <tr>
-                  <th>Source</th>
-                  <th>Target</th>
-                  <th>Action</th>
+                  <th data-i18n="router_source">Source</th>
+                  <th data-i18n="router_target">Target</th>
+                  <th data-i18n="router_action">Action</th>
                 </tr>
               </thead>
               <tbody id="mapTable"></tbody>
@@ -1358,23 +1832,23 @@
         </section>
 
         <section class="card span-12">
-          <h3>Recent Proxy Requests</h3>
+          <h3 data-i18n="recent_requests_title">Recent Proxy Requests</h3>
           <div class="btns">
-            <button id="refreshReqBtn">Refresh Requests</button>
-            <button id="clearReqBtn" class="secondary">Clear Records</button>
+            <button id="refreshReqBtn" data-i18n="recent_requests_refresh">Refresh Requests</button>
+            <button id="clearReqBtn" class="secondary" data-i18n="recent_requests_clear">Clear Records</button>
           </div>
           <div class="log">
             <table>
               <thead>
                 <tr>
-                  <th>Time</th>
-                  <th>Method</th>
-                  <th>Path</th>
-                  <th>Input</th>
-                  <th>Output</th>
-                  <th>Total</th>
-                  <th>Status</th>
-                  <th>Latency</th>
+                  <th data-i18n="recent_requests_time">Time</th>
+                  <th data-i18n="recent_requests_method">Method</th>
+                  <th data-i18n="recent_requests_path">Path</th>
+                  <th data-i18n="recent_requests_input">Input</th>
+                  <th data-i18n="recent_requests_output">Output</th>
+                  <th data-i18n="recent_requests_total">Total</th>
+                  <th data-i18n="recent_requests_status">Status</th>
+                  <th data-i18n="recent_requests_latency">Latency</th>
                 </tr>
               </thead>
               <tbody id="reqTable"></tbody>
@@ -1387,20 +1861,20 @@
     <div id="reqDetailBackdrop" class="req-detail-backdrop" hidden>
       <div class="req-detail-modal" role="dialog" aria-modal="true" aria-labelledby="reqDetailTitle">
         <div class="req-detail-head">
-          <h3 id="reqDetailTitle" class="req-detail-title">Proxy Request Detail</h3>
-          <button id="reqDetailCloseBtn" class="secondary req-detail-close">Close</button>
+          <h3 id="reqDetailTitle" class="req-detail-title" data-i18n="request_detail_title">Proxy Request Detail</h3>
+          <button id="reqDetailCloseBtn" class="secondary req-detail-close" data-i18n="request_detail_close">Close</button>
         </div>
         <div id="reqDetailMetaGrid" class="req-detail-meta-grid"></div>
         <div class="req-detail-code-grid">
           <details class="req-detail-card" open>
-            <summary>Request Packet</summary>
+            <summary data-i18n="request_detail_request_packet">Request Packet</summary>
             <div id="reqDetailReqMeta" class="req-detail-code-meta mono">-</div>
             <div class="req-detail-code-wrap">
               <pre id="reqDetailReqCode" class="req-detail-code mono">(empty)</pre>
             </div>
           </details>
           <details class="req-detail-card" open>
-            <summary>Response Packet</summary>
+            <summary data-i18n="request_detail_response_packet">Response Packet</summary>
             <div id="reqDetailResMeta" class="req-detail-code-meta mono">-</div>
             <div class="req-detail-code-wrap">
               <pre id="reqDetailResCode" class="req-detail-code mono">(empty)</pre>
@@ -1426,10 +1900,20 @@
       let autoSaveReady = false;
       let autoSaveSnapshot = "";
       let lastAccounts = [];
+      let lastActiveEntryId = "";
       let requestDetailMap = new Map();
       let activeRequestDetailId = "";
-      const STATE_REFRESH_VISIBLE_MS = 7000;
-      const STATE_REFRESH_HIDDEN_MS = 30000;
+      let lastApiKeySummary = { keys: [] };
+      let lastPublicAccessStatus = null;
+      const UI_LANG_STORAGE_KEY = "codex_proxy_dashboard_ui_lang";
+      const HEARTBEAT_SECONDS_STORAGE_KEY = "codex_proxy_dashboard_heartbeat_seconds";
+      const HEARTBEAT_MIN_SECONDS = 2;
+      const HEARTBEAT_MAX_SECONDS = 3600;
+      const DEFAULT_STATE_REFRESH_VISIBLE_MS = 7000;
+      const DEFAULT_STATE_REFRESH_HIDDEN_MS = 30000;
+      let stateRefreshVisibleMs = DEFAULT_STATE_REFRESH_VISIBLE_MS;
+      let stateRefreshHiddenMs = DEFAULT_STATE_REFRESH_HIDDEN_MS;
+      let stateRefreshTimerId = 0;
       const USAGE_AUTO_REFRESH_MIN_MS = 5 * 60 * 1000;
       const AUTO_SAVE_DEBOUNCE_MS = 500;
       const CONFIG_FIELD_IDS = [
@@ -1439,6 +1923,10 @@
         "defaultInstructions",
         "defaultReasoningEffort",
         "multiAccountStrategy",
+        "publicAccessMode",
+        "publicAccessToken",
+        "publicAccessLocalPort",
+        "publicAccessHttp2",
         "preheatCooldownSeconds",
         "preheatBatchSize",
         "preheatMinPrimaryRemaining",
@@ -1446,34 +1934,699 @@
         "modelRouterEnabled"
       ];
       const FX_ENABLED_STORAGE_KEY = "codex_proxy_dashboard_fx_enabled";
-      const FX_LEVEL_STORAGE_KEY = "codex_proxy_dashboard_fx_level";
-      const FX_GUARD_STORAGE_KEY = "codex_proxy_dashboard_fx_guard";
       const FX_CARD_SELECTOR = ".card, .metric-card, .account-card, .recommend-item";
+      const I18N_TEXT = {
+        en: {
+          dashboard_title: "Codex OAuth Proxy Dashboard",
+          dashboard_subtitle: "Local control surface for auth, upstream settings, and runtime diagnostics.",
+          fx_toggle_on: "FX: ON",
+          fx_toggle_off: "FX: OFF",
+          fx_title_disabled_reduced_motion: "Disabled by system reduced-motion preference",
+          fx_title_disable: "Disable interactive effects",
+          fx_title_enable: "Enable interactive effects",
+          runtime_title: "Runtime",
+          runtime_mode: "Mode",
+          runtime_uptime: "Uptime",
+          runtime_base_url: "Base URL",
+          runtime_refresh: "Refresh",
+          runtime_oauth_login: "OAuth Login",
+          runtime_add_account: "Add Account",
+          runtime_logout_current: "Logout Current",
+          runtime_language: "Language",
+          runtime_heartbeat: "Status Heartbeat (s)",
+          runtime_hint: "If you have used the Codex CLI before, it will automatically fetch and authenticate.",
+          runtime_authenticated: "AUTHENTICATED",
+          runtime_not_authenticated: "NOT AUTHENTICATED",
+          api_keys_title: "API Keys",
+          api_keys_label: "Label",
+          api_keys_expires_days: "Expires (days)",
+          api_keys_generate: "Generate API Key",
+          api_keys_generated_once: "Generated Key (shown once)",
+          api_keys_copy: "Copy",
+          api_keys_empty: "No API keys yet.",
+          api_keys_active: "active",
+          api_keys_revoked: "revoked",
+          api_keys_created: "created",
+          api_keys_last_used: "last used",
+          api_keys_use_count: "uses",
+          api_keys_never_expires: "never expires",
+          api_keys_revoke: "Revoke",
+          api_keys_revoke_confirm: "Revoke API key {label}?",
+          api_keys_generated_and_copied: "API key generated.",
+          api_keys_copy_success: "API key copied.",
+          public_access_title: "Public Access (Cloudflared)",
+          public_access_mode: "Mode",
+          public_access_mode_quick: "quick (trycloudflare)",
+          public_access_mode_auth: "auth (named tunnel)",
+          public_access_local_port: "Local Port",
+          public_access_token: "Tunnel Token (auth mode)",
+          public_access_http2: "Use HTTP/2",
+          public_access_auto_install: "Auto install cloudflared if missing",
+          public_access_refresh: "Refresh Status",
+          public_access_install: "Install cloudflared",
+          public_access_start: "Start Tunnel",
+          public_access_stop: "Stop Tunnel",
+          public_access_url: "Public URL",
+          public_access_copy_url: "Copy URL",
+          public_access_status_not_installed: "cloudflared not installed",
+          public_access_status_installing: "installing",
+          public_access_status_running: "running",
+          public_access_status_stopped: "stopped",
+          public_access_status_line: "status={status} mode={mode} local={port} http2={http2}",
+          public_access_status_line_2: "installed={installed} version={version} pid={pid}",
+          public_access_status_url: "url={url}",
+          public_access_status_error: "error={error}",
+          proxy_config_title: "Proxy Config",
+          proxy_upstream_mode: "Upstream Mode",
+          proxy_upstream_base_url: "Upstream Base URL",
+          proxy_default_model: "Default Model",
+          proxy_default_instructions: "Default Instructions",
+          proxy_reasoning_effort: "Reasoning Effort",
+          proxy_pool_strategy: "Account Pool Strategy",
+          reasoning_adaptive: "adaptive (auto)",
+          reasoning_none: "none",
+          reasoning_low: "low",
+          reasoning_medium: "medium",
+          reasoning_high: "high",
+          reasoning_xhigh: "xhigh",
+          strategy_smart: "smart (health-aware)",
+          strategy_manual: "manual (current account only)",
+          strategy_round_robin: "round-robin",
+          strategy_random: "random",
+          strategy_sticky: "sticky",
+          self_test_title: "Self Test",
+          self_test_prompt: "Prompt",
+          self_test_run: "Run Upstream Test",
+          self_test_none: "No test executed.",
+          self_test_running: "Running test...",
+          self_test_failed: "TEST FAILED: {message}",
+          init_failed: "Init failed: {message}",
+          pool_title: "Account Pool",
+          pool_hint:
+            "Dual-window accounts show 5h/W; single-window plans (for example free) auto-switch to one limit badge.",
+          pool_refresh_usage: "Refresh Usage (All)",
+          preheat_title: "Preheat",
+          preheat_cooldown: "Cooldown(s)",
+          preheat_batch: "Batch",
+          preheat_min_5h: "Min 5h%",
+          preheat_min_w: "Min W%",
+          preheat_run: "Run Preheat Now",
+          preheat_none: "No preheat run yet.",
+          preheat_no_state: "No preheat state available.",
+          preheat_running: "Running preheat...",
+          preheat_failed: "Preheat failed: {message}",
+          preheat_status_line: "status={status} ({running}) | {summary}",
+          preheat_status_line_2: "run={run} complete={complete} duration={duration}ms{error}",
+          preheat_error_segment: " error={error}",
+          preheat_running_state_running: "running",
+          preheat_running_state_idle: "idle",
+          preheat_summary_none: "last=none",
+          preheat_summary_fmt: "last={status} success={success} failed={failed} selected={selected}",
+          kpi_total_accounts: "Total Accounts",
+          kpi_total_accounts_sub: "all pooled identities",
+          kpi_healthy_ratio: "Healthy Ratio",
+          kpi_healthy_ratio_sub: "ready for request routing",
+          kpi_primary_avg: "Primary Avg Remaining",
+          kpi_primary_avg_sub: "5-hour usage window",
+          kpi_secondary_avg: "Secondary Avg Remaining",
+          kpi_secondary_avg_sub: "weekly usage window",
+          kpi_cooldown: "Cooldown",
+          kpi_cooldown_sub: "temporarily paused",
+          kpi_at_risk: "At Risk",
+          kpi_at_risk_sub: "disabled / expired",
+          kpi_low_quota: "Low Quota",
+          kpi_low_quota_sub: "remaining ≤ 20%",
+          kpi_strategy: "Strategy",
+          pool_auth_unknown: "auth: -",
+          pool_auth_connected: "auth: connected",
+          pool_auth_disconnected: "auth: disconnected",
+          pool_risk_hint_enabled: "{enabled}/{total} enabled",
+          pool_risk_hint_disabled: "multi-account disabled",
+          current_account_title: "Current Account",
+          switch_to_this_account: "Switch to this account",
+          account_logout: "Log out",
+          best_account_recommendation: "Best Account Recommendation",
+          all_accounts_title: "All Accounts",
+          all_accounts_with_count: "All Accounts ({count})",
+          account_no_active: "No active account selected.",
+          account_no_recommendation: "No recommendation yet.",
+          account_no_recommendation_available: "No recommendation available.",
+          account_loading_pool: "Loading account pool...",
+          account_no_pool_accounts: "No pooled accounts yet. Use OAuth Login / Add Account.",
+          account_usage_not_fetched: "Usage snapshot not fetched yet.",
+          account_name_unknown: "unnamed-account",
+          account_slot: "Slot",
+          account_expires: "Expires",
+          account_last_used: "Last Used",
+          account_failures: "Failures",
+          account_cooldown: "Cooldown",
+          account_plan: "Plan",
+          account_usage_updated: "Usage Updated",
+          account_entry_prefix: "entry",
+          account_error_prefix: "last_error",
+          account_title_switch_tooltip_enabled: "Switch current account to this one",
+          account_title_switch_tooltip_active: "This is already the current account",
+          account_title_switch_tooltip_disabled: "This account is disabled",
+          account_title_switch_tooltip_unresolved: "Cannot resolve this account identity",
+          account_title_logout_tooltip_enabled: "Log out and remove this account from pool",
+          account_title_logout_tooltip_unresolved: "Cannot resolve this account identity",
+          account_status_healthy: "healthy",
+          account_status_limited: "limited",
+          account_status_limited_hard: "limited-hard",
+          account_status_cooldown: "cooldown",
+          account_status_expiring: "expiring",
+          account_status_expired: "expired",
+          account_status_disabled: "disabled",
+          account_status_active: "active",
+          cooldown_ready: "ready",
+          limit_weekly: "Weekly limit",
+          limit_5h: "5h limit",
+          limit_primary: "Primary limit",
+          limit_hour: "{hours}h limit",
+          limit_minute: "{minutes}m limit",
+          limit_short_weekly: "W",
+          limit_short_5h: "5h",
+          limit_short_primary: "P",
+          limit_short_hour: "{hours}h",
+          limit_short_minute: "{minutes}m",
+          remaining_used: "{remaining}% remaining · {used}% used",
+          remaining_only: "{remaining}% remaining",
+          token_usage_format: "I {input} / O {output}",
+          request_detail_title: "Proxy Request Detail",
+          request_detail_title_fmt: "Proxy Request Detail · {method} {path}",
+          request_detail_close: "Close",
+          request_detail_request_packet: "Request Packet",
+          request_detail_response_packet: "Response Packet",
+          request_detail_content_type: "content-type: {type}",
+          request_detail_empty: "(empty)",
+          req_meta_request_time: "Request Time",
+          req_meta_latency: "Latency",
+          req_meta_token_usage: "Token Usage",
+          req_meta_total_tokens: "Total Tokens",
+          req_meta_protocol: "Protocol",
+          req_meta_model: "Model",
+          req_meta_account: "Account",
+          req_meta_path: "Path",
+          req_meta_status: "Status",
+          router_title: "Model Router",
+          router_hint: "Priority: exact mapping > wildcard (`*`) > system fallback mapping.",
+          router_enable: "Enable model router",
+          router_add_mapping: "Add Mapping",
+          router_reset_mappings: "Reset Mappings",
+          router_reload_models: "Reload Model Options",
+          router_source: "Source",
+          router_target: "Target",
+          router_action: "Action",
+          router_select_model: "Select model...",
+          router_delete: "Delete",
+          recent_requests_title: "Recent Proxy Requests",
+          recent_requests_refresh: "Refresh Requests",
+          recent_requests_clear: "Clear Records",
+          recent_requests_time: "Time",
+          recent_requests_method: "Method",
+          recent_requests_path: "Path",
+          recent_requests_input: "Input",
+          recent_requests_output: "Output",
+          recent_requests_total: "Total",
+          recent_requests_status: "Status",
+          recent_requests_latency: "Latency",
+          quota_remaining_percent_title: "remaining quota percent",
+          autosave_saving: "Auto-saving...",
+          autosave_saved: "Auto-saved.",
+          autosave_failed: "Auto-save failed: {message}",
+          autosave_pending: "Auto-save pending...",
+          alert_mapping_required: "Both source and target model are required.",
+          confirm_reset_mappings: "Reset all custom model mappings?",
+          confirm_clear_requests: "Clear all recent proxy request records?",
+          alert_logout_failed: "Logout failed: {message}",
+          alert_account_logout_failed: "Account logout failed: {message}",
+          alert_switch_failed: "Switch account failed: {message}",
+          alert_switch_target_missing: "Cannot resolve target account identity.",
+          alert_switch_no_enabled: "No enabled account available to switch.",
+          alert_switch_only_one: "Only one enabled account is available.",
+          alert_refresh_requests_failed: "Refresh requests failed: {message}",
+          alert_clear_requests_failed: "Clear request records failed: {message}",
+          alert_refresh_usage_failed: "Refresh usage failed: {message}",
+          alert_api_key_generate_failed: "Generate API key failed: {message}",
+          alert_api_key_revoke_failed: "Revoke API key failed: {message}",
+          alert_api_key_copy_failed: "Copy API key failed: {message}",
+          alert_public_access_start_failed: "Start public access failed: {message}",
+          alert_public_access_stop_failed: "Stop public access failed: {message}",
+          alert_public_access_install_failed: "Install cloudflared failed: {message}",
+          alert_public_access_refresh_failed: "Refresh public access failed: {message}",
+          alert_public_access_copy_failed: "Copy public URL failed: {message}"
+        },
+        "zh-hant": {
+          dashboard_title: "Codex OAuth Proxy 控制台",
+          dashboard_subtitle: "本地控制介面：認證、上游設定與執行診斷。",
+          fx_toggle_on: "特效：開",
+          fx_toggle_off: "特效：關",
+          fx_title_disabled_reduced_motion: "系統偏好降低動效，已停用",
+          fx_title_disable: "停用互動特效",
+          fx_title_enable: "啟用互動特效",
+          runtime_title: "執行狀態",
+          runtime_mode: "模式",
+          runtime_uptime: "運行時間",
+          runtime_base_url: "基礎 URL",
+          runtime_refresh: "重新整理",
+          runtime_oauth_login: "OAuth 登入",
+          runtime_add_account: "新增帳號",
+          runtime_logout_current: "登出目前帳號",
+          runtime_language: "語言",
+          runtime_heartbeat: "狀態心跳檢查 (秒)",
+          runtime_hint: "如果你之前使用過 Codex CLI，系統會自動抓取並完成認證。",
+          runtime_authenticated: "已認證",
+          runtime_not_authenticated: "尚未認證",
+          api_keys_title: "API 金鑰",
+          api_keys_label: "標籤",
+          api_keys_expires_days: "有效天數",
+          api_keys_generate: "產生 API 金鑰",
+          api_keys_generated_once: "已產生金鑰（僅顯示一次）",
+          api_keys_copy: "複製",
+          api_keys_empty: "目前沒有 API 金鑰。",
+          api_keys_active: "啟用中",
+          api_keys_revoked: "已撤銷",
+          api_keys_created: "建立時間",
+          api_keys_last_used: "上次使用",
+          api_keys_use_count: "使用次數",
+          api_keys_never_expires: "永不過期",
+          api_keys_revoke: "撤銷",
+          api_keys_revoke_confirm: "確定要撤銷 API 金鑰 {label}？",
+          api_keys_generated_and_copied: "API 金鑰已產生。",
+          api_keys_copy_success: "API 金鑰已複製。",
+          public_access_title: "公網訪問（Cloudflared）",
+          public_access_mode: "模式",
+          public_access_mode_quick: "quick（trycloudflare）",
+          public_access_mode_auth: "auth（命名隧道）",
+          public_access_local_port: "本地端口",
+          public_access_token: "隧道 Token（auth 模式）",
+          public_access_http2: "使用 HTTP/2",
+          public_access_auto_install: "缺少 cloudflared 時自動安裝",
+          public_access_refresh: "刷新狀態",
+          public_access_install: "安裝 cloudflared",
+          public_access_start: "啟動隧道",
+          public_access_stop: "停止隧道",
+          public_access_url: "公網 URL",
+          public_access_copy_url: "複製 URL",
+          public_access_status_not_installed: "未安裝 cloudflared",
+          public_access_status_installing: "安裝中",
+          public_access_status_running: "執行中",
+          public_access_status_stopped: "已停止",
+          public_access_status_line: "狀態={status} 模式={mode} 本地={port} http2={http2}",
+          public_access_status_line_2: "安裝={installed} 版本={version} pid={pid}",
+          public_access_status_url: "網址={url}",
+          public_access_status_error: "錯誤={error}",
+          proxy_config_title: "代理設定",
+          proxy_upstream_mode: "上游協定模式",
+          proxy_upstream_base_url: "上游基礎 URL",
+          proxy_default_model: "預設模型",
+          proxy_default_instructions: "預設指示詞",
+          proxy_reasoning_effort: "思維長度",
+          proxy_pool_strategy: "帳號池策略",
+          reasoning_adaptive: "自適應（自動）",
+          reasoning_none: "無",
+          reasoning_low: "低",
+          reasoning_medium: "中",
+          reasoning_high: "高",
+          reasoning_xhigh: "極高",
+          strategy_smart: "智慧（健康優先）",
+          strategy_manual: "手動（僅目前帳號）",
+          strategy_round_robin: "輪詢",
+          strategy_random: "隨機",
+          strategy_sticky: "黏性",
+          self_test_title: "自我測試",
+          self_test_prompt: "提示詞",
+          self_test_run: "執行上游測試",
+          self_test_none: "尚未執行測試。",
+          self_test_running: "測試執行中...",
+          self_test_failed: "測試失敗：{message}",
+          init_failed: "初始化失敗：{message}",
+          pool_title: "帳號池",
+          pool_hint: "雙視窗帳號會顯示 5h/W；單視窗方案（如 free）會自動切成單一額度標籤。",
+          pool_refresh_usage: "刷新用量（全部）",
+          preheat_title: "預熱",
+          preheat_cooldown: "冷卻秒數",
+          preheat_batch: "批次",
+          preheat_min_5h: "最低 5h%",
+          preheat_min_w: "最低 W%",
+          preheat_run: "立即預熱",
+          preheat_none: "尚未執行預熱。",
+          preheat_no_state: "尚無預熱狀態。",
+          preheat_running: "預熱執行中...",
+          preheat_failed: "預熱失敗：{message}",
+          preheat_status_line: "狀態={status}（{running}）| {summary}",
+          preheat_status_line_2: "執行={run} 完成={complete} 耗時={duration}ms{error}",
+          preheat_error_segment: " 錯誤={error}",
+          preheat_running_state_running: "執行中",
+          preheat_running_state_idle: "閒置",
+          preheat_summary_none: "上次=無",
+          preheat_summary_fmt: "上次={status} 成功={success} 失敗={failed} 選取={selected}",
+          kpi_total_accounts: "帳號總數",
+          kpi_total_accounts_sub: "所有池內身份",
+          kpi_healthy_ratio: "健康比例",
+          kpi_healthy_ratio_sub: "可用於請求路由",
+          kpi_primary_avg: "主要視窗平均剩餘",
+          kpi_primary_avg_sub: "5 小時用量視窗",
+          kpi_secondary_avg: "次要視窗平均剩餘",
+          kpi_secondary_avg_sub: "每週用量視窗",
+          kpi_cooldown: "冷卻中",
+          kpi_cooldown_sub: "暫時停用",
+          kpi_at_risk: "風險帳號",
+          kpi_at_risk_sub: "停用 / 過期",
+          kpi_low_quota: "低額度",
+          kpi_low_quota_sub: "剩餘 ≤ 20%",
+          kpi_strategy: "策略",
+          pool_auth_unknown: "認證：-",
+          pool_auth_connected: "認證：已連線",
+          pool_auth_disconnected: "認證：未連線",
+          pool_risk_hint_enabled: "{enabled}/{total} 已啟用",
+          pool_risk_hint_disabled: "多帳號已停用",
+          current_account_title: "目前帳號",
+          switch_to_this_account: "切換到此帳號",
+          account_logout: "登出",
+          best_account_recommendation: "最佳帳號推薦",
+          all_accounts_title: "所有帳號",
+          all_accounts_with_count: "所有帳號（{count}）",
+          account_no_active: "尚未選擇目前帳號。",
+          account_no_recommendation: "尚無推薦結果。",
+          account_no_recommendation_available: "目前沒有可推薦的帳號。",
+          account_loading_pool: "帳號池載入中...",
+          account_no_pool_accounts: "尚無池內帳號，請使用 OAuth 登入 / 新增帳號。",
+          account_usage_not_fetched: "尚未抓取用量快照。",
+          account_name_unknown: "未命名帳號",
+          account_slot: "槽位",
+          account_expires: "到期",
+          account_last_used: "上次使用",
+          account_failures: "失敗次數",
+          account_cooldown: "冷卻",
+          account_plan: "方案",
+          account_usage_updated: "用量更新",
+          account_entry_prefix: "條目",
+          account_error_prefix: "上次錯誤",
+          account_title_switch_tooltip_enabled: "切換目前帳號到此帳號",
+          account_title_switch_tooltip_active: "這已是目前帳號",
+          account_title_switch_tooltip_disabled: "此帳號已停用",
+          account_title_switch_tooltip_unresolved: "無法解析此帳號識別",
+          account_title_logout_tooltip_enabled: "登出並從帳號池移除此帳號",
+          account_title_logout_tooltip_unresolved: "無法解析此帳號識別",
+          account_status_healthy: "健康",
+          account_status_limited: "受限",
+          account_status_limited_hard: "嚴重受限",
+          account_status_cooldown: "冷卻中",
+          account_status_expiring: "即將到期",
+          account_status_expired: "已過期",
+          account_status_disabled: "已停用",
+          account_status_active: "目前",
+          cooldown_ready: "可用",
+          limit_weekly: "每週額度",
+          limit_5h: "5 小時額度",
+          limit_primary: "主要額度",
+          limit_hour: "{hours} 小時額度",
+          limit_minute: "{minutes} 分鐘額度",
+          limit_short_weekly: "W",
+          limit_short_5h: "5h",
+          limit_short_primary: "P",
+          limit_short_hour: "{hours}h",
+          limit_short_minute: "{minutes}m",
+          remaining_used: "剩餘 {remaining}% · 已用 {used}%",
+          remaining_only: "剩餘 {remaining}%",
+          token_usage_format: "輸入 {input} / 輸出 {output}",
+          request_detail_title: "代理請求詳情",
+          request_detail_title_fmt: "代理請求詳情 · {method} {path}",
+          request_detail_close: "關閉",
+          request_detail_request_packet: "請求封包",
+          request_detail_response_packet: "回應封包",
+          request_detail_content_type: "內容類型：{type}",
+          request_detail_empty: "（空）",
+          req_meta_request_time: "請求時間",
+          req_meta_latency: "延遲",
+          req_meta_token_usage: "Token 用量",
+          req_meta_total_tokens: "Token 總量",
+          req_meta_protocol: "協定",
+          req_meta_model: "模型",
+          req_meta_account: "帳號",
+          req_meta_path: "路徑",
+          req_meta_status: "狀態",
+          router_title: "模型路由",
+          router_hint: "優先順序：精確映射 > 萬用字元（`*`）> 系統回退映射。",
+          router_enable: "啟用模型路由",
+          router_add_mapping: "新增映射",
+          router_reset_mappings: "重設映射",
+          router_reload_models: "重新載入模型選項",
+          router_source: "來源",
+          router_target: "目標",
+          router_action: "操作",
+          router_select_model: "選擇模型...",
+          router_delete: "刪除",
+          recent_requests_title: "近期代理請求",
+          recent_requests_refresh: "刷新請求",
+          recent_requests_clear: "清除紀錄",
+          recent_requests_time: "時間",
+          recent_requests_method: "方法",
+          recent_requests_path: "路徑",
+          recent_requests_input: "輸入",
+          recent_requests_output: "輸出",
+          recent_requests_total: "總量",
+          recent_requests_status: "狀態",
+          recent_requests_latency: "延遲",
+          quota_remaining_percent_title: "剩餘額度百分比",
+          autosave_saving: "自動儲存中...",
+          autosave_saved: "已自動儲存。",
+          autosave_failed: "自動儲存失敗：{message}",
+          autosave_pending: "等待自動儲存...",
+          alert_mapping_required: "來源模型與目標模型都必填。",
+          confirm_reset_mappings: "確定要重設全部自訂模型映射嗎？",
+          confirm_clear_requests: "確定要清除全部近期代理請求紀錄嗎？",
+          alert_logout_failed: "登出失敗：{message}",
+          alert_account_logout_failed: "帳號登出失敗：{message}",
+          alert_switch_failed: "切換帳號失敗：{message}",
+          alert_switch_target_missing: "無法解析目標帳號識別。",
+          alert_switch_no_enabled: "沒有可切換的啟用帳號。",
+          alert_switch_only_one: "目前只有一個啟用帳號。",
+          alert_refresh_requests_failed: "刷新請求失敗：{message}",
+          alert_clear_requests_failed: "清除請求紀錄失敗：{message}",
+          alert_refresh_usage_failed: "刷新用量失敗：{message}",
+          alert_api_key_generate_failed: "產生 API 金鑰失敗：{message}",
+          alert_api_key_revoke_failed: "撤銷 API 金鑰失敗：{message}",
+          alert_api_key_copy_failed: "複製 API 金鑰失敗：{message}",
+          alert_public_access_start_failed: "啟動公網訪問失敗：{message}",
+          alert_public_access_stop_failed: "停止公網訪問失敗：{message}",
+          alert_public_access_install_failed: "安裝 cloudflared 失敗：{message}",
+          alert_public_access_refresh_failed: "刷新公網訪問狀態失敗：{message}",
+          alert_public_access_copy_failed: "複製公網 URL 失敗：{message}"
+        }
+      };
+      function buildSimplifiedChineseTable(source) {
+        const replacements = [
+          ["執行狀態", "运行状态"],
+          ["狀態心跳檢查", "状态心跳检查"],
+          ["控制台", "控制台"],
+          ["本地控制介面", "本地控制界面"],
+          ["認證", "认证"],
+          ["執行診斷", "运行诊断"],
+          ["特效等級", "特效等级"],
+          ["效能守護", "性能守护"],
+          ["運行時間", "运行时间"],
+          ["基礎 URL", "基础 URL"],
+          ["重新整理", "刷新"],
+          ["OAuth 登入", "OAuth 登录"],
+          ["登出目前帳號", "登出当前账号"],
+          ["新增帳號", "新增账号"],
+          ["目前帳號", "当前账号"],
+          ["切換到此帳號", "切换到此账号"],
+          ["登出並從帳號池移除此帳號", "登出并从账号池移除此账号"],
+          ["語言", "语言"],
+          ["API 金鑰", "API 密钥"],
+          ["標籤", "标签"],
+          ["有效天數", "有效天数"],
+          ["產生 API 金鑰", "生成 API 密钥"],
+          ["已產生金鑰（僅顯示一次）", "已生成密钥（仅显示一次）"],
+          ["複製", "复制"],
+          ["目前沒有 API 金鑰。", "目前没有 API 密钥。"],
+          ["啟用中", "启用中"],
+          ["已撤銷", "已撤销"],
+          ["建立時間", "创建时间"],
+          ["使用次數", "使用次数"],
+          ["永不過期", "永不过期"],
+          ["撤銷", "撤销"],
+          ["公網訪問", "公网访问"],
+          ["命名隧道", "命名隧道"],
+          ["本地端口", "本地端口"],
+          ["隧道 Token", "隧道 Token"],
+          ["使用 HTTP/2", "使用 HTTP/2"],
+          ["刷新狀態", "刷新状态"],
+          ["啟動隧道", "启动隧道"],
+          ["停止隧道", "停止隧道"],
+          ["缺少 cloudflared 時自動安裝", "缺少 cloudflared 时自动安装"],
+          ["安裝 cloudflared", "安装 cloudflared"],
+          ["安裝中", "安装中"],
+          ["公網 URL", "公网 URL"],
+          ["複製 URL", "复制 URL"],
+          ["未安裝 cloudflared", "未安装 cloudflared"],
+          ["執行中", "运行中"],
+          ["已停止", "已停止"],
+          ["狀態=", "状态="],
+          ["模式=", "模式="],
+          ["本地=", "本地="],
+          ["安裝=", "安装="],
+          ["版本=", "版本="],
+          ["網址=", "网址="],
+          ["錯誤=", "错误="],
+          ["代理設定", "代理设置"],
+          ["上游協定模式", "上游协议模式"],
+          ["預設模型", "默认模型"],
+          ["預設指示詞", "默认指令词"],
+          ["思維長度", "思维长度"],
+          ["帳號池策略", "账号池策略"],
+          ["智慧（健康優先）", "智能（健康优先）"],
+          ["手動（僅目前帳號）", "手动（仅当前账号）"],
+          ["自我測試", "自测"],
+          ["提示詞", "提示词"],
+          ["執行上游測試", "执行上游测试"],
+          ["尚未執行測試。", "尚未执行测试。"],
+          ["測試執行中...", "测试执行中..."],
+          ["測試失敗", "测试失败"],
+          ["初始化失敗", "初始化失败"],
+          ["帳號池", "账号池"],
+          ["雙視窗帳號會顯示", "双窗口账号会显示"],
+          ["單視窗方案", "单窗口方案"],
+          ["刷新用量（全部）", "刷新用量（全部）"],
+          ["冷卻秒數", "冷却秒数"],
+          ["立即預熱", "立即预热"],
+          ["尚未執行預熱。", "尚未执行预热。"],
+          ["尚無預熱狀態。", "暂无预热状态。"],
+          ["預熱執行中...", "预热执行中..."],
+          ["預熱失敗", "预热失败"],
+          ["狀態=", "状态="],
+          ["執行中", "执行中"],
+          ["閒置", "空闲"],
+          ["上次", "上次"],
+          ["成功", "成功"],
+          ["失敗", "失败"],
+          ["選取", "选取"],
+          ["帳號總數", "账号总数"],
+          ["所有池內身份", "所有池内身份"],
+          ["健康比例", "健康比例"],
+          ["可用於請求路由", "可用于请求路由"],
+          ["主要視窗平均剩餘", "主要窗口平均剩余"],
+          ["次要視窗平均剩餘", "次要窗口平均剩余"],
+          ["每週用量視窗", "每周用量窗口"],
+          ["冷卻中", "冷却中"],
+          ["暫時停用", "临时停用"],
+          ["風險帳號", "风险账号"],
+          ["停用 / 過期", "停用 / 过期"],
+          ["低額度", "低额度"],
+          ["剩餘", "剩余"],
+          ["認證：已連線", "认证：已连接"],
+          ["認證：未連線", "认证：未连接"],
+          ["認證：-", "认证：-"],
+          ["已啟用", "已启用"],
+          ["切換到此帳號", "切换到此账号"],
+          ["最佳帳號推薦", "最佳账号推荐"],
+          ["所有帳號", "所有账号"],
+          ["尚未選擇目前帳號。", "尚未选择当前账号。"],
+          ["尚無推薦結果。", "暂无推荐结果。"],
+          ["目前沒有可推薦的帳號。", "当前没有可推荐的账号。"],
+          ["帳號池載入中...", "账号池加载中..."],
+          ["尚無池內帳號", "暂无池内账号"],
+          ["請使用 OAuth 登入 / 新增帳號。", "请使用 OAuth 登录 / 新增账号。"],
+          ["尚未抓取用量快照。", "尚未抓取用量快照。"],
+          ["未命名帳號", "未命名账号"],
+          ["槽位", "槽位"],
+          ["到期", "到期"],
+          ["上次使用", "上次使用"],
+          ["失敗次數", "失败次数"],
+          ["冷卻", "冷却"],
+          ["方案", "套餐"],
+          ["用量更新", "用量更新"],
+          ["條目", "条目"],
+          ["上次錯誤", "上次错误"],
+          ["切換目前帳號到此帳號", "切换当前账号到此账号"],
+          ["這已是目前帳號", "这已是当前账号"],
+          ["此帳號已停用", "此账号已停用"],
+          ["無法解析此帳號識別", "无法解析此账号标识"],
+          ["健康", "健康"],
+          ["受限", "受限"],
+          ["嚴重受限", "严重受限"],
+          ["即將到期", "即将到期"],
+          ["已過期", "已过期"],
+          ["已停用", "已停用"],
+          ["目前", "当前"],
+          ["可用", "可用"],
+          ["每週額度", "每周额度"],
+          ["5 小時額度", "5 小时额度"],
+          ["主要額度", "主要额度"],
+          ["小時額度", "小时额度"],
+          ["分鐘額度", "分钟额度"],
+          ["剩餘 {remaining}% · 已用 {used}%", "剩余 {remaining}% · 已用 {used}%"],
+          ["輸入", "输入"],
+          ["輸出", "输出"],
+          ["代理請求詳情", "代理请求详情"],
+          ["關閉", "关闭"],
+          ["請求封包", "请求封包"],
+          ["回應封包", "响应封包"],
+          ["內容類型", "内容类型"],
+          ["（空）", "（空）"],
+          ["請求時間", "请求时间"],
+          ["延遲", "延迟"],
+          ["協定", "协议"],
+          ["模型路由", "模型路由"],
+          ["優先順序", "优先顺序"],
+          ["精確映射", "精确映射"],
+          ["萬用字元", "通配符"],
+          ["系統回退映射", "系统回退映射"],
+          ["啟用模型路由", "启用模型路由"],
+          ["新增映射", "新增映射"],
+          ["重設映射", "重置映射"],
+          ["重新載入模型選項", "重新加载模型选项"],
+          ["來源", "来源"],
+          ["目標", "目标"],
+          ["操作", "操作"],
+          ["選擇模型...", "选择模型..."],
+          ["刪除", "删除"],
+          ["近期代理請求", "近期代理请求"],
+          ["刷新請求", "刷新请求"],
+          ["清除紀錄", "清除记录"],
+          ["時間", "时间"],
+          ["方法", "方法"],
+          ["路徑", "路径"],
+          ["總量", "总量"],
+          ["自動儲存中...", "自动保存中..."],
+          ["已自動儲存。", "已自动保存。"],
+          ["自動儲存失敗", "自动保存失败"],
+          ["等待自動儲存...", "等待自动保存..."],
+          ["來源模型與目標模型都必填。", "来源模型与目标模型都必填。"],
+          ["確定要重設全部自訂模型映射嗎？", "确定要重置全部自定义模型映射吗？"],
+          ["確定要清除全部近期代理請求紀錄嗎？", "确定要清除全部近期代理请求记录吗？"],
+          ["登出失敗", "登出失败"],
+          ["切換帳號失敗", "切换账号失败"],
+          ["無法解析目標帳號識別。", "无法解析目标账号标识。"],
+          ["沒有可切換的啟用帳號。", "没有可切换的启用账号。"],
+          ["目前只有一個啟用帳號。", "当前只有一个启用账号。"],
+          ["刷新請求失敗", "刷新请求失败"],
+          ["清除請求紀錄失敗", "清除请求记录失败"],
+          ["刷新用量失敗", "刷新用量失败"]
+        ];
+
+        const out = {};
+        for (const [key, value] of Object.entries(source || {})) {
+          if (typeof value !== "string") {
+            out[key] = value;
+            continue;
+          }
+          let next = value;
+          for (const [from, to] of replacements) {
+            next = next.split(from).join(to);
+          }
+          out[key] = next;
+        }
+        return out;
+      }
+
+      I18N_TEXT["zh-hans"] = buildSimplifiedChineseTable(I18N_TEXT["zh-hant"]);
+
+      let uiLang = "en";
       const FX_PROFILE = {
-        low: {
-          sparkIntervalMs: 90,
-          sparkMaxCount: 34,
-          sparkLifeMs: 560,
-          cardTiltMaxDeg: 3.2,
-          orbParallaxStrength: 14,
-          glowOpacity: 0.17,
-          shimmerDurationMs: 920,
-          shimmerAlpha: 0.14,
-          orbScale: 0.92,
-          cursorLerp: 0.14
-        },
-        balanced: {
-          sparkIntervalMs: 62,
-          sparkMaxCount: 54,
-          sparkLifeMs: 700,
-          cardTiltMaxDeg: 4.8,
-          orbParallaxStrength: 20,
-          glowOpacity: 0.23,
-          shimmerDurationMs: 1180,
-          shimmerAlpha: 0.19,
-          orbScale: 0.98,
-          cursorLerp: 0.18
-        },
         high: {
           sparkIntervalMs: 42,
           sparkMaxCount: 72,
@@ -1488,10 +2641,7 @@
         }
       };
       let fxEnabled = true;
-      let fxLevel = "high";
-      let fxGuardEnabled = true;
       let fxProfile = FX_PROFILE.high;
-      let fxQuality = "normal";
       let fxActiveCard = null;
       let fxActiveButton = null;
       let fxTrailRow = null;
@@ -1501,8 +2651,6 @@
       let fxCursorY = fxTargetY;
       let fxRafId = 0;
       let fxLastFrameAt = 0;
-      const fxFrameWindow = [];
-      let fxAvgFrameMs = 16;
       let fxLastSparkAt = 0;
       let fxLastSparkX = fxCursorX;
       let fxLastSparkY = fxCursorY;
@@ -1511,8 +2659,6 @@
       const fxOrbB = $("fxOrbB");
       const fxOrbC = $("fxOrbC");
       const fxSparkLayer = $("fxSparkLayer");
-      const fxLevelSelect = $("fxLevelSelect");
-      const fxGuardToggle = $("fxGuardToggle");
 
       function clamp(value, min, max) {
         if (!Number.isFinite(value)) return min;
@@ -1543,20 +2689,117 @@
         }
       }
 
-      function sanitizeFxLevel(value) {
-        const v = String(value || "").toLowerCase();
-        if (v === "low" || v === "balanced" || v === "high") return v;
-        return "high";
+      function normalizeUiLang(value) {
+        const v = String(value || "").trim().toLowerCase();
+        if (["zh-hans", "zh_cn", "zh-cn", "hans", "cn", "sc"].includes(v)) return "zh-hans";
+        if (["zh-hant", "zh_tw", "zh-tw", "zh-hk", "hant", "tw", "tc", "zh"].includes(v)) return "zh-hant";
+        return "en";
+      }
+
+      function t(key) {
+        const table = I18N_TEXT[uiLang] || I18N_TEXT.en;
+        return table[key] ?? I18N_TEXT.en[key] ?? key;
+      }
+
+      function tt(key, vars = {}) {
+        const template = String(t(key));
+        return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, varName) => {
+          if (!Object.prototype.hasOwnProperty.call(vars, varName)) return "";
+          const value = vars[varName];
+          return value === undefined || value === null ? "" : String(value);
+        });
+      }
+
+      function applyUiLanguage(lang, options = {}) {
+        uiLang = normalizeUiLang(lang);
+        if (options.persist !== false) {
+          writeStoredString(UI_LANG_STORAGE_KEY, uiLang);
+        }
+        document.documentElement.lang =
+          uiLang === "zh-hans" ? "zh-CN" : uiLang === "zh-hant" ? "zh-Hant" : "en";
+        document.querySelectorAll("[data-i18n]").forEach((node) => {
+          if (!(node instanceof HTMLElement)) return;
+          const key = node.dataset.i18n;
+          if (!key) return;
+          node.textContent = t(key);
+        });
+        renderModelOptions();
+        renderMappingsTable();
+        if (activeRequestDetailId) {
+          openRequestDetailModal(activeRequestDetailId);
+        }
+      }
+
+      function initLanguageControl() {
+        const select = $("languageSelect");
+        if (!select) return;
+        const stored = readStoredString(UI_LANG_STORAGE_KEY);
+        const resolved = normalizeUiLang(stored || select.value || "en");
+        select.value = resolved;
+        applyUiLanguage(resolved, { persist: false });
+        select.addEventListener("change", () => {
+          applyUiLanguage(select.value, { persist: true });
+          refreshState(false).catch(() => {});
+        });
+      }
+
+      function normalizeHeartbeatSeconds(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return Math.round(DEFAULT_STATE_REFRESH_VISIBLE_MS / 1000);
+        return Math.max(HEARTBEAT_MIN_SECONDS, Math.min(HEARTBEAT_MAX_SECONDS, Math.floor(n)));
+      }
+
+      function syncHeartbeatControl() {
+        const input = $("heartbeatSeconds");
+        if (!input) return;
+        if (document.activeElement === input) return;
+        input.value = String(Math.round(stateRefreshVisibleMs / 1000));
+      }
+
+      function restartStateRefreshLoop() {
+        if (stateRefreshTimerId) {
+          clearInterval(stateRefreshTimerId);
+          stateRefreshTimerId = 0;
+        }
+        stateRefreshTimerId = setInterval(() => {
+          if (document.hidden) {
+            if (Date.now() - lastStateRefreshAtMs >= stateRefreshHiddenMs) {
+              refreshState(false).catch(() => {});
+            }
+            return;
+          }
+          refreshState(false).catch(() => {});
+        }, stateRefreshVisibleMs);
+      }
+
+      function applyHeartbeatSeconds(nextSeconds, options = {}) {
+        const heartbeatSeconds = normalizeHeartbeatSeconds(nextSeconds);
+        stateRefreshVisibleMs = heartbeatSeconds * 1000;
+        stateRefreshHiddenMs = Math.max(DEFAULT_STATE_REFRESH_HIDDEN_MS, stateRefreshVisibleMs * 4);
+        syncHeartbeatControl();
+        if (options.persist !== false) {
+          writeStoredString(HEARTBEAT_SECONDS_STORAGE_KEY, String(heartbeatSeconds));
+        }
+        restartStateRefreshLoop();
+        if (options.immediate === true) {
+          refreshState(false).catch(() => {});
+        }
+      }
+
+      function initRuntimeHeartbeatControl() {
+        const input = $("heartbeatSeconds");
+        if (!input) return;
+        input.min = String(HEARTBEAT_MIN_SECONDS);
+        input.max = String(HEARTBEAT_MAX_SECONDS);
+        const stored = readStoredString(HEARTBEAT_SECONDS_STORAGE_KEY);
+        const heartbeatSeconds =
+          stored === null ? Math.round(DEFAULT_STATE_REFRESH_VISIBLE_MS / 1000) : normalizeHeartbeatSeconds(stored);
+        applyHeartbeatSeconds(heartbeatSeconds, { persist: false });
+        input.addEventListener("change", () => applyHeartbeatSeconds(input.value, { persist: true, immediate: true }));
+        input.addEventListener("blur", () => applyHeartbeatSeconds(input.value, { persist: true }));
       }
 
       function qualityMultipliers() {
-        if (!fxGuardEnabled) return { sparkInterval: 1, sparkMax: 1, sparkLife: 1, tilt: 1, glow: 1, orb: 1 };
-        if (fxQuality === "minimal") {
-          return { sparkInterval: 1.95, sparkMax: 0.46, sparkLife: 0.72, tilt: 0.34, glow: 0.55, orb: 0.82 };
-        }
-        if (fxQuality === "degraded") {
-          return { sparkInterval: 1.32, sparkMax: 0.74, sparkLife: 0.84, tilt: 0.68, glow: 0.78, orb: 0.92 };
-        }
         return { sparkInterval: 1, sparkMax: 1, sparkLife: 1, tilt: 1, glow: 1, orb: 1 };
       }
 
@@ -1567,26 +2810,20 @@
         root.style.setProperty("--fx-shimmer-duration", `${Math.round(fxProfile.shimmerDurationMs)}ms`);
         root.style.setProperty("--fx-shimmer-alpha", (fxProfile.shimmerAlpha * m.glow).toFixed(3));
         root.style.setProperty("--fx-orb-scale", (fxProfile.orbScale * m.orb).toFixed(3));
-        document.body.classList.toggle("fx-quality-degraded", fxQuality === "degraded");
-        document.body.classList.toggle("fx-quality-minimal", fxQuality === "minimal");
       }
 
       function syncFxControls() {
         const button = $("fxToggleBtn");
-        if (button) button.textContent = `FX: ${fxEnabled ? "ON" : "OFF"}`;
-        if (fxLevelSelect) fxLevelSelect.value = fxLevel;
-        if (fxGuardToggle) fxGuardToggle.checked = fxGuardEnabled;
+        if (button) button.textContent = fxEnabled ? t("fx_toggle_on") : t("fx_toggle_off");
         const disabled = prefersReducedMotion.matches;
         if (button) {
           button.disabled = disabled;
           button.title = disabled
-            ? "Disabled by system reduced-motion preference"
+            ? t("fx_title_disabled_reduced_motion")
             : fxEnabled
-              ? "Disable interactive effects"
-              : "Enable interactive effects";
+              ? t("fx_title_disable")
+              : t("fx_title_enable");
         }
-        if (fxLevelSelect) fxLevelSelect.disabled = disabled;
-        if (fxGuardToggle) fxGuardToggle.disabled = disabled;
       }
 
       function clearCardFx(card) {
@@ -1607,23 +2844,6 @@
         if (!fxTrailRow) return;
         fxTrailRow.classList.remove("fx-trail");
         fxTrailRow = null;
-      }
-
-      function setFxLevel(nextLevel, options = {}) {
-        fxLevel = sanitizeFxLevel(nextLevel);
-        fxProfile = FX_PROFILE[fxLevel] || FX_PROFILE.high;
-        applyFxStyleVars();
-        syncFxControls();
-        if (options.persist !== false) writeStoredString(FX_LEVEL_STORAGE_KEY, fxLevel);
-        if (fxEnabled) requestFxFrame();
-      }
-
-      function setFxGuardEnabled(nextGuard, options = {}) {
-        fxGuardEnabled = Boolean(nextGuard);
-        if (!fxGuardEnabled) fxQuality = "normal";
-        applyFxStyleVars();
-        syncFxControls();
-        if (options.persist !== false) writeStoredString(FX_GUARD_STORAGE_KEY, fxGuardEnabled ? "1" : "0");
       }
 
       function setFxEnabled(nextEnabled, options = {}) {
@@ -1647,7 +2867,6 @@
             fxRafId = 0;
           }
           fxLastFrameAt = 0;
-          fxFrameWindow.length = 0;
         } else {
           requestFxFrame();
         }
@@ -1660,24 +2879,6 @@
           maxCount: Math.max(12, Math.round(fxProfile.sparkMaxCount * m.sparkMax)),
           lifeMs: Math.max(240, Math.round(fxProfile.sparkLifeMs * m.sparkLife))
         };
-      }
-
-      function recordFrameMs(deltaMs) {
-        if (!Number.isFinite(deltaMs) || deltaMs <= 0 || deltaMs > 80) return;
-        fxFrameWindow.push(deltaMs);
-        if (fxFrameWindow.length > 60) fxFrameWindow.shift();
-        const sum = fxFrameWindow.reduce((acc, n) => acc + n, 0);
-        fxAvgFrameMs = fxFrameWindow.length > 0 ? sum / fxFrameWindow.length : 16;
-      }
-
-      function updateFxQualityFromPerf() {
-        if (!fxGuardEnabled || !fxEnabled) return;
-        let nextQuality = "normal";
-        if (fxAvgFrameMs > 24) nextQuality = "minimal";
-        else if (fxAvgFrameMs > 18) nextQuality = "degraded";
-        if (nextQuality === fxQuality) return;
-        fxQuality = nextQuality;
-        applyFxStyleVars();
       }
 
       function maybeSpawnSpark(x, y) {
@@ -1774,10 +2975,6 @@
       function runFxFrame(timestamp) {
         fxRafId = 0;
         if (!fxEnabled) return;
-        if (fxLastFrameAt > 0) {
-          recordFrameMs(timestamp - fxLastFrameAt);
-          updateFxQualityFromPerf();
-        }
         fxLastFrameAt = timestamp;
 
         const m = qualityMultipliers();
@@ -1806,8 +3003,6 @@
         const y = Number(event.clientY);
         if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
-        document.documentElement.style.setProperty("--mx", `${x}px`);
-        document.documentElement.style.setProperty("--my", `${y}px`);
         fxTargetX = x;
         fxTargetY = y;
 
@@ -1840,26 +3035,12 @@
 
       function initInteractiveFx() {
         const storedEnabled = readStoredBool(FX_ENABLED_STORAGE_KEY);
-        const storedLevel = readStoredString(FX_LEVEL_STORAGE_KEY);
-        const storedGuard = readStoredBool(FX_GUARD_STORAGE_KEY);
-        fxLevel = sanitizeFxLevel(storedLevel || "high");
-        fxProfile = FX_PROFILE[fxLevel] || FX_PROFILE.high;
-        fxGuardEnabled = storedGuard === null ? true : storedGuard;
+        fxProfile = FX_PROFILE.high;
         applyFxStyleVars();
         setFxEnabled(storedEnabled === null ? !prefersReducedMotion.matches : storedEnabled, { persist: false });
         syncFxControls();
 
         $("fxToggleBtn").addEventListener("click", () => setFxEnabled(!fxEnabled));
-        if (fxLevelSelect) {
-          fxLevelSelect.addEventListener("change", () => {
-            setFxLevel(fxLevelSelect.value || "high");
-          });
-        }
-        if (fxGuardToggle) {
-          fxGuardToggle.addEventListener("change", () => {
-            setFxGuardEnabled(fxGuardToggle.checked);
-          });
-        }
 
         document.addEventListener("mousemove", handleGlobalMouseMove, { passive: true });
         document.addEventListener("mouseout", (event) => {
@@ -1942,11 +3123,12 @@
       function fmtCooldown(cooldownUntilSec) {
         if (!Number.isFinite(cooldownUntilSec) || cooldownUntilSec <= 0) return "-";
         const remain = cooldownUntilSec - Math.floor(Date.now() / 1000);
-        if (remain <= 0) return "ready";
-        if (remain < 60) return `${remain}s`;
+        const isZh = uiLang === "zh-hant" || uiLang === "zh-hans";
+        if (remain <= 0) return t("cooldown_ready");
+        if (remain < 60) return isZh ? `${remain}秒` : `${remain}s`;
         const m = Math.floor(remain / 60);
         const s = remain % 60;
-        return `${m}m ${s}s`;
+        return isZh ? `${m}分 ${s}秒` : `${m}m ${s}s`;
       }
 
       function shortId(value) {
@@ -1958,7 +3140,23 @@
 
       function safeCodeText(value) {
         const text = String(value || "");
-        return text.length > 0 ? text : "(empty)";
+        return text.length > 0 ? text : t("request_detail_empty");
+      }
+
+      function healthDisplayLabel(label) {
+        const raw = String(label || "").trim();
+        if (!raw) return "-";
+        const key = `account_status_${raw.replaceAll("-", "_")}`;
+        const localized = t(key);
+        return localized === key ? raw : localized;
+      }
+
+      function localizeStrategyName(value) {
+        const raw = String(value || "").trim();
+        if (!raw) return "-";
+        const key = `strategy_${raw.replaceAll("-", "_")}`;
+        const localized = t(key);
+        return localized === key ? raw : localized;
       }
 
       function getProtocolLabel(row) {
@@ -1989,7 +3187,7 @@
             String(acc?.accountId || "").trim() === accountId
         );
         if (match) {
-          const mappedLabel = String(match.label || "").trim() || "unnamed-account";
+          const mappedLabel = String(match.label || "").trim() || t("account_name_unknown");
           return `${mappedLabel} (${shortId(accountId)})`;
         }
         return shortId(accountId);
@@ -1998,7 +3196,10 @@
       function buildReqDetailMetaItems(row) {
         const timeText = row?.ts ? new Date(Number(row.ts)).toLocaleString() : "-";
         const latencyText = Number.isFinite(Number(row?.durationMs)) ? `${Number(row.durationMs)} ms` : "-";
-        const tokenText = `I ${fmtToken(row?.inputTokens)} / O ${fmtToken(row?.outputTokens)}`;
+        const tokenText = tt("token_usage_format", {
+          input: fmtToken(row?.inputTokens),
+          output: fmtToken(row?.outputTokens)
+        });
         const totalText = fmtToken(row?.totalTokens);
         const protocolText = getProtocolLabel(row);
         const modelText = getModelDisplay(row);
@@ -2007,15 +3208,15 @@
         const statusText = String(row?.status ?? "-");
 
         return [
-          { key: "Request Time", value: timeText },
-          { key: "Latency", value: latencyText },
-          { key: "Token Usage", value: tokenText },
-          { key: "Total Tokens", value: totalText },
-          { key: "Protocol", value: protocolText },
-          { key: "Model", value: modelText },
-          { key: "Account", value: accountText },
-          { key: "Path", value: pathText },
-          { key: "Status", value: statusText }
+          { key: t("req_meta_request_time"), value: timeText },
+          { key: t("req_meta_latency"), value: latencyText },
+          { key: t("req_meta_token_usage"), value: tokenText },
+          { key: t("req_meta_total_tokens"), value: totalText },
+          { key: t("req_meta_protocol"), value: protocolText },
+          { key: t("req_meta_model"), value: modelText },
+          { key: t("req_meta_account"), value: accountText },
+          { key: t("req_meta_path"), value: pathText },
+          { key: t("req_meta_status"), value: statusText }
         ];
       }
 
@@ -2026,7 +3227,10 @@
         if (!row) return;
 
         activeRequestDetailId = id;
-        $("reqDetailTitle").textContent = `Proxy Request Detail · ${String(row.method || "-")} ${String(row.path || "-")}`;
+        $("reqDetailTitle").textContent = tt("request_detail_title_fmt", {
+          method: String(row.method || "-"),
+          path: String(row.path || "-")
+        });
         const metaItems = buildReqDetailMetaItems(row);
         $("reqDetailMetaGrid").innerHTML = metaItems
           .map(
@@ -2039,8 +3243,8 @@
 
         const reqCt = String(row?.requestContentType || "").trim();
         const resCt = String(row?.responseContentType || "").trim();
-        $("reqDetailReqMeta").textContent = reqCt ? `content-type: ${reqCt}` : "content-type: -";
-        $("reqDetailResMeta").textContent = resCt ? `content-type: ${resCt}` : "content-type: -";
+        $("reqDetailReqMeta").textContent = tt("request_detail_content_type", { type: reqCt || "-" });
+        $("reqDetailResMeta").textContent = tt("request_detail_content_type", { type: resCt || "-" });
         $("reqDetailReqCode").textContent = safeCodeText(row?.requestPacket);
         $("reqDetailResCode").textContent = safeCodeText(row?.responsePacket);
 
@@ -2186,24 +3390,24 @@
 
       function longWindowLabel(minutes, fallbackLabel) {
         if (!Number.isFinite(minutes) || minutes <= 0) return fallbackLabel;
-        if (minutes >= 9000) return "Weekly limit";
-        if (minutes >= 295 && minutes <= 305) return "5h limit";
+        if (minutes >= 9000) return t("limit_weekly");
+        if (minutes >= 295 && minutes <= 305) return t("limit_5h");
         if (minutes % 60 === 0) {
           const hours = minutes / 60;
-          if (hours >= 1 && hours <= 24) return `${hours}h limit`;
+          if (hours >= 1 && hours <= 24) return tt("limit_hour", { hours });
         }
-        return `${minutes}m limit`;
+        return tt("limit_minute", { minutes });
       }
 
       function shortWindowLabel(minutes, fallbackLabel) {
         if (!Number.isFinite(minutes) || minutes <= 0) return fallbackLabel;
-        if (minutes >= 9000) return "W";
-        if (minutes >= 295 && minutes <= 305) return "5h";
+        if (minutes >= 9000) return t("limit_short_weekly");
+        if (minutes >= 295 && minutes <= 305) return t("limit_short_5h");
         if (minutes % 60 === 0) {
           const hours = minutes / 60;
-          if (hours >= 1 && hours <= 24) return `${hours}h`;
+          if (hours >= 1 && hours <= 24) return tt("limit_short_hour", { hours });
         }
-        return `${minutes}m`;
+        return tt("limit_short_minute", { minutes });
       }
 
       function resolveUsageWindows(account) {
@@ -2234,10 +3438,16 @@
         const primaryWindowMinutes = windowMinutesOrNull(usage?.primary);
         const secondaryWindowMinutes = windowMinutesOrNull(usage?.secondary);
         const singleWindowMode = primaryHasWindow && !secondaryHasWindow;
-        const primaryLabel = longWindowLabel(primaryWindowMinutes, singleWindowMode ? "Primary limit" : "5h limit");
-        const secondaryLabel = longWindowLabel(secondaryWindowMinutes, "Weekly limit");
-        const primaryShortLabel = shortWindowLabel(primaryWindowMinutes, singleWindowMode ? "P" : "5h");
-        const secondaryShortLabel = shortWindowLabel(secondaryWindowMinutes, "W");
+        const primaryLabel = longWindowLabel(
+          primaryWindowMinutes,
+          singleWindowMode ? t("limit_primary") : t("limit_5h")
+        );
+        const secondaryLabel = longWindowLabel(secondaryWindowMinutes, t("limit_weekly"));
+        const primaryShortLabel = shortWindowLabel(
+          primaryWindowMinutes,
+          singleWindowMode ? t("limit_short_primary") : t("limit_short_5h")
+        );
+        const secondaryShortLabel = shortWindowLabel(secondaryWindowMinutes, t("limit_short_weekly"));
         return {
           usage,
           singleWindowMode,
@@ -2261,10 +3471,13 @@
       function fmtLimitPair(usageView) {
         const p = Number.isFinite(usageView?.primaryRemaining) ? usageView.primaryRemaining : "-";
         const w = Number.isFinite(usageView?.secondaryRemaining) ? usageView.secondaryRemaining : "-";
+        const asPercent = (value) => (Number.isFinite(value) ? `${value}%` : "-");
         if (usageView?.singleWindowMode) {
-          return `${usageView.primaryShortLabel} ${p}/100`;
+          if (Number.isFinite(p)) return asPercent(p);
+          if (Number.isFinite(w)) return asPercent(w);
+          return "-";
         }
-        return `${usageView?.primaryShortLabel || "5h"}/${usageView?.secondaryShortLabel || "W"} ${p}/${w}`;
+        return `${asPercent(p)}/${asPercent(w)}`;
       }
 
       function getAccountSlotNumber(account, fallbackIndex = 0) {
@@ -2289,8 +3502,11 @@
         const health = resolveAccountHealth(account, activeAccountId);
         const score = computeAccountScore(account, activeAccountId);
         const slotNumber = getAccountSlotNumber(account);
-        const pills = [`<span class="pill ${health.tone}">${health.label}</span>`];
-        if (health.isActive) pills.push(`<span class="pill neutral">active</span>`);
+        const accountRef = getAccountIdentity(account);
+        const canSwitchToThis = compact && !health.isActive && account.enabled !== false && Boolean(accountRef);
+        const canLogoutThis = compact && Boolean(accountRef);
+        const pills = [`<span class="pill ${health.tone}">${escapeHtml(healthDisplayLabel(health.label))}</span>`];
+        if (health.isActive) pills.push(`<span class="pill neutral">${escapeHtml(t("account_status_active"))}</span>`);
         const usageView = resolveUsageWindows(account);
         const {
           usage,
@@ -2308,13 +3524,17 @@
         const pairText = fmtLimitPair(usageView);
         const usageHtml =
           primaryUsed === null && secondaryUsed === null && primaryRemaining === null && secondaryRemaining === null
-            ? `<div class="account-empty account-empty--compact">Usage snapshot not fetched yet.</div>`
+            ? `<div class="account-empty account-empty--compact">${escapeHtml(t("account_usage_not_fetched"))}</div>`
             : `<div class="usage-stack">
                 ${
                   primaryUsed === null && primaryRemaining === null
                     ? ""
                     : `<div class="usage-item">
-                        <div class="label"><span>${escapeHtml(primaryLabel)}</span><span class="v">${primaryRemaining ?? "-"}% remaining${primaryUsed !== null ? ` · ${primaryUsed}% used` : ""}</span></div>
+                        <div class="label"><span>${escapeHtml(primaryLabel)}</span><span class="v">${
+                          primaryUsed !== null
+                            ? escapeHtml(tt("remaining_used", { remaining: primaryRemaining ?? "-", used: primaryUsed }))
+                            : escapeHtml(tt("remaining_only", { remaining: primaryRemaining ?? "-" }))
+                        }</span></div>
                         <div class="usage-track"><div class="usage-fill ${primaryTone}" style="width:${primaryRemaining ?? 0}%"></div></div>
                       </div>`
                 }
@@ -2322,39 +3542,75 @@
                   singleWindowMode || (secondaryUsed === null && secondaryRemaining === null)
                     ? ""
                     : `<div class="usage-item">
-                        <div class="label"><span>${escapeHtml(secondaryLabel)}</span><span class="v">${secondaryRemaining ?? "-"}% remaining${secondaryUsed !== null ? ` · ${secondaryUsed}% used` : ""}</span></div>
+                        <div class="label"><span>${escapeHtml(secondaryLabel)}</span><span class="v">${
+                          secondaryUsed !== null
+                            ? escapeHtml(tt("remaining_used", { remaining: secondaryRemaining ?? "-", used: secondaryUsed }))
+                            : escapeHtml(tt("remaining_only", { remaining: secondaryRemaining ?? "-" }))
+                        }</span></div>
                         <div class="usage-track"><div class="usage-fill ${secondaryTone}" style="width:${secondaryRemaining ?? 0}%"></div></div>
                       </div>`
                 }
               </div>`;
         const errorHtml =
           typeof account.lastError === "string" && account.lastError.trim().length > 0
-            ? `<div class="account-error">last_error: ${escapeHtml(account.lastError)}</div>`
+            ? `<div class="account-error">${escapeHtml(t("account_error_prefix"))}: ${escapeHtml(account.lastError)}</div>`
+            : "";
+        const actionHtml =
+          compact
+            ? `<div class="account-card-actions">
+                <button
+                  class="secondary account-switch-btn"
+                  data-switch-entry="${escapeHtml(accountRef || "")}"
+                  ${canSwitchToThis ? "" : "disabled"}
+                  title="${
+                    canSwitchToThis
+                      ? escapeHtml(t("account_title_switch_tooltip_enabled"))
+                      : health.isActive
+                        ? escapeHtml(t("account_title_switch_tooltip_active"))
+                        : account.enabled === false
+                          ? escapeHtml(t("account_title_switch_tooltip_disabled"))
+                          : escapeHtml(t("account_title_switch_tooltip_unresolved"))
+                  }"
+                >${t("switch_to_this_account")}</button>
+                <button
+                  class="secondary account-logout-btn"
+                  data-logout-entry="${escapeHtml(accountRef || "")}"
+                  ${canLogoutThis ? "" : "disabled"}
+                  title="${
+                    canLogoutThis
+                      ? escapeHtml(t("account_title_logout_tooltip_enabled"))
+                      : escapeHtml(t("account_title_logout_tooltip_unresolved"))
+                  }"
+                >${escapeHtml(t("account_logout"))}</button>
+              </div>`
             : "";
 
-        return `<article class="account-card ${health.isActive ? "active" : ""} ${compact ? "compact" : ""}">
+        return `<article class="account-card ${health.isActive ? "active" : ""} ${compact ? "compact" : "account-card--current"}">
           <div class="account-head">
-            <div>
-              <div class="account-name">${escapeHtml(account.label || "unnamed-account")}</div>
+            <div class="account-main">
+              <div class="account-name">${escapeHtml(account.label || t("account_name_unknown"))}</div>
               <div class="account-id" title="${escapeHtml(account.accountId || "-")}">${escapeHtml(shortId(account.accountId || "-"))}</div>
-              <div class="account-id" title="${escapeHtml(account.entryId || "-")}">entry ${escapeHtml(shortId(account.entryId || "-"))}</div>
+              <div class="account-id" title="${escapeHtml(account.entryId || "-")}">${escapeHtml(
+                t("account_entry_prefix")
+              )} ${escapeHtml(shortId(account.entryId || "-"))}</div>
             </div>
             <div class="pill-row">
               ${pills.join("")}
-              <span class="pill ${pairTone}" title="5-hour / weekly remaining quota">${escapeHtml(pairText)}</span>
+              <span class="pill ${pairTone}" title="${escapeHtml(t("quota_remaining_percent_title"))}">${escapeHtml(pairText)}</span>
             </div>
           </div>
           <div class="account-meta">
-            <div class="meta-item"><div class="k">Slot</div><div class="v">${slotNumber ? `#${slotNumber}` : "-"}</div></div>
-            <div class="meta-item"><div class="k">Expires</div><div class="v">${fmtUnixSec(Number(account.expiresAt || 0))}</div></div>
-            <div class="meta-item"><div class="k">Last Used</div><div class="v">${fmtUnixSec(Number(account.lastUsedAt || 0))}</div></div>
-            <div class="meta-item"><div class="k">Failures</div><div class="v">${Number(account.failureCount || 0)}</div></div>
-            <div class="meta-item"><div class="k">Cooldown</div><div class="v">${fmtCooldown(Number(account.cooldownUntil || 0))}</div></div>
-            <div class="meta-item"><div class="k">Plan</div><div class="v">${escapeHtml(String(usage?.plan_type || "-"))}</div></div>
-            <div class="meta-item"><div class="k">Usage Updated</div><div class="v">${fmtUnixSec(Number(account.usageUpdatedAt || usage?.fetched_at || 0))}</div></div>
+            <div class="meta-item"><div class="k">${escapeHtml(t("account_slot"))}</div><div class="v">${slotNumber ? `#${slotNumber}` : "-"}</div></div>
+            <div class="meta-item"><div class="k">${escapeHtml(t("account_expires"))}</div><div class="v">${fmtUnixSec(Number(account.expiresAt || 0))}</div></div>
+            <div class="meta-item"><div class="k">${escapeHtml(t("account_last_used"))}</div><div class="v">${fmtUnixSec(Number(account.lastUsedAt || 0))}</div></div>
+            <div class="meta-item"><div class="k">${escapeHtml(t("account_failures"))}</div><div class="v">${Number(account.failureCount || 0)}</div></div>
+            <div class="meta-item"><div class="k">${escapeHtml(t("account_cooldown"))}</div><div class="v">${fmtCooldown(Number(account.cooldownUntil || 0))}</div></div>
+            <div class="meta-item"><div class="k">${escapeHtml(t("account_plan"))}</div><div class="v">${escapeHtml(String(usage?.plan_type || "-"))}</div></div>
+            <div class="meta-item"><div class="k">${escapeHtml(t("account_usage_updated"))}</div><div class="v">${fmtUnixSec(Number(account.usageUpdatedAt || usage?.fetched_at || 0))}</div></div>
           </div>
           ${usageHtml}
           ${errorHtml}
+          ${actionHtml}
         </article>`;
       }
 
@@ -2385,7 +3641,7 @@
         const fromPrev = fromSelect.value;
         const toPrev = toSelect.value;
         const options = collectModelOptions();
-        const html = [`<option value="">Select model...</option>`]
+        const html = [`<option value="">${escapeHtml(t("router_select_model"))}</option>`]
           .concat(options.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`))
           .join("");
 
@@ -2415,10 +3671,191 @@
             ([from, to]) => `<tr>
               <td class="mono">${escapeHtml(from)}</td>
               <td class="mono">${escapeHtml(to)}</td>
-              <td><button class="map-del" data-map-del="${escapeHtml(from)}">Delete</button></td>
+              <td><button class="map-del" data-map-del="${escapeHtml(from)}">${escapeHtml(
+                t("router_delete")
+              )}</button></td>
             </tr>`
           )
           .join("");
+      }
+
+      function renderApiKeySummary(summary) {
+        const container = $("apiKeyList");
+        const keys = Array.isArray(summary?.keys) ? summary.keys : [];
+        lastApiKeySummary = { ...(summary || {}), keys };
+        if (keys.length === 0) {
+          container.innerHTML = `<div class="account-empty account-empty--compact">${escapeHtml(t("api_keys_empty"))}</div>`;
+          return;
+        }
+        container.innerHTML = keys
+          .map((k) => {
+            const active = k?.active === true;
+            const tone = active ? "ok" : "bad";
+            const statusLabel = active ? t("api_keys_active") : t("api_keys_revoked");
+            const expiresAt = Number(k?.expiresAt || 0);
+            const expiresText = expiresAt > 0 ? fmtUnixSec(expiresAt) : t("api_keys_never_expires");
+            const createdText = fmtUnixSec(Number(k?.createdAt || 0));
+            const lastUsedText = fmtUnixSec(Number(k?.lastUsedAt || 0));
+            const label = String(k?.label || "unnamed");
+            const prefix = String(k?.prefix || "sk-");
+            const canRevoke = active;
+            return `<article class="api-key-item">
+              <div class="api-key-item-head">
+                <div class="api-key-item-title">${escapeHtml(label)} <span class="mono">${escapeHtml(prefix)}...</span></div>
+                <span class="pill ${tone}">${escapeHtml(statusLabel)}</span>
+              </div>
+              <div class="api-key-item-sub">${escapeHtml(
+                `${t("api_keys_created")}: ${createdText} | ${t("api_keys_last_used")}: ${lastUsedText}`
+              )}</div>
+              <div class="api-key-item-sub">${escapeHtml(
+                `${t("api_keys_use_count")}: ${Number(k?.useCount || 0)} | ${t("account_expires")}: ${expiresText}`
+              )}</div>
+              <div class="btns">
+                <button class="secondary" data-api-key-revoke="${escapeHtml(String(k?.id || ""))}" ${
+                  canRevoke ? "" : "disabled"
+                }>${escapeHtml(t("api_keys_revoke"))}</button>
+              </div>
+            </article>`;
+          })
+          .join("");
+      }
+
+      function updatePublicAccessTokenUI() {
+        const mode = String($("publicAccessMode")?.value || "quick").trim().toLowerCase();
+        const tokenInput = $("publicAccessToken");
+        if (!tokenInput) return;
+        const authMode = mode === "auth";
+        tokenInput.disabled = false;
+        tokenInput.placeholder = authMode ? "Required in auth mode" : "Optional in quick mode";
+      }
+
+      function renderPublicAccessStatus(status) {
+        lastPublicAccessStatus = status || null;
+        const statusEl = $("publicAccessStatus");
+        const urlEl = $("publicAccessUrl");
+        if (!statusEl || !urlEl) return;
+        if (!status || typeof status !== "object") {
+          statusEl.textContent = "-";
+          urlEl.textContent = "-";
+          return;
+        }
+        const installed = status.installed === true;
+        const running = status.running === true;
+        const installing = status.installInProgress === true;
+        const statusLabel = installed
+          ? installing
+            ? t("public_access_status_installing")
+            : running
+            ? t("public_access_status_running")
+            : t("public_access_status_stopped")
+          : t("public_access_status_not_installed");
+        const mode = String(status.mode || "quick");
+        const localPort = Number(status.localPort || 0) || Number($("publicAccessLocalPort").value || 8787);
+        const useHttp2 = status.useHttp2 === true ? "on" : "off";
+        const version = String(status.version || "-");
+        const pid = Number(status.pid || 0) > 0 ? String(status.pid) : "-";
+        const url = String(status.url || "").trim();
+        const err = String(status.error || "").trim();
+        const segments = [
+          tt("public_access_status_line", { status: statusLabel, mode, port: localPort, http2: useHttp2 }),
+          tt("public_access_status_line_2", {
+            installed: installed ? "yes" : "no",
+            version,
+            pid
+          })
+        ];
+        if (url) segments.push(tt("public_access_status_url", { url }));
+        if (err) segments.push(tt("public_access_status_error", { error: err }));
+        if (String(status.installMessage || "").trim()) {
+          segments.push(String(status.installMessage || "").trim());
+        }
+        statusEl.textContent = segments.join("\n");
+        urlEl.textContent = url || "-";
+      }
+
+      function applyPublicAccessConfigFromState(state) {
+        const cfg = state?.config?.publicAccess || {};
+        const status = state?.publicAccess || {};
+        const mode = String(status.mode || cfg.mode || "quick").trim().toLowerCase();
+        const useHttp2 = status.useHttp2 !== false && cfg.useHttp2 !== false;
+        const localPort = Number(status.localPort || cfg.localPort || 8787);
+        $("publicAccessMode").value = mode === "auth" ? "auth" : "quick";
+        $("publicAccessHttp2").checked = useHttp2;
+        $("publicAccessLocalPort").value = String(localPort);
+        updatePublicAccessTokenUI();
+        renderPublicAccessStatus(status);
+      }
+
+      async function refreshPublicAccessStatus() {
+        const data = await api("/admin/public-access/status");
+        renderPublicAccessStatus(data?.status || null);
+        return data?.status || null;
+      }
+
+      async function startPublicAccess() {
+        const mode = String($("publicAccessMode").value || "quick").trim().toLowerCase();
+        const payload = {
+          mode,
+          useHttp2: $("publicAccessHttp2").checked,
+          localPort: Number($("publicAccessLocalPort").value || 8787),
+          autoInstall: true
+        };
+        const token = String($("publicAccessToken").value || "").trim();
+        if (mode === "auth") {
+          payload.token = token;
+        }
+        const data = await api("/admin/public-access/start", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        renderPublicAccessStatus(data?.status || null);
+        return data?.status || null;
+      }
+
+      async function stopPublicAccess() {
+        const data = await api("/admin/public-access/stop", {
+          method: "POST"
+        });
+        renderPublicAccessStatus(data?.status || null);
+        return data?.status || null;
+      }
+
+      async function generateApiKey() {
+        const label = String($("apiKeyLabel").value || "").trim();
+        const expiresInDays = Number($("apiKeyExpiresDays").value || 0);
+        const data = await api("/admin/api-keys/generate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            label,
+            expiresInDays
+          })
+        });
+        const keyValue = String(data?.apiKey || "").trim();
+        const wrap = $("apiKeyGeneratedWrap");
+        const valueEl = $("apiKeyGeneratedValue");
+        wrap.hidden = !keyValue;
+        valueEl.textContent = keyValue || "-";
+        $("apiKeyLabel").value = "";
+        await refreshState(true);
+      }
+
+      async function revokeApiKeyById(id) {
+        const targetId = String(id || "").trim();
+        if (!targetId) return;
+        const target =
+          (Array.isArray(lastApiKeySummary?.keys) ? lastApiKeySummary.keys : []).find(
+            (x) => String(x?.id || "") === targetId
+          ) || null;
+        const label = String(target?.label || targetId);
+        if (!confirm(tt("api_keys_revoke_confirm", { label }))) return;
+        await api("/admin/api-keys/revoke", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: targetId })
+        });
+        await refreshState(true);
       }
 
       async function api(path, init = {}) {
@@ -2442,7 +3879,7 @@
           const el = $(id);
           if (!el) continue;
           el.className = tone ? `autosave-status ${tone}` : "autosave-status";
-          el.textContent = message;
+          el.textContent = String(message || "");
         }
       }
 
@@ -2484,6 +3921,10 @@
           defaultInstructions: $("defaultInstructions").value,
           defaultReasoningEffort: $("defaultReasoningEffort").value,
           multiAccountStrategy: $("multiAccountStrategy").value,
+          publicAccessMode: $("publicAccessMode").value,
+          publicAccessToken: $("publicAccessToken").value,
+          publicAccessLocalPort: Number($("publicAccessLocalPort").value || 0),
+          publicAccessUseHttp2: $("publicAccessHttp2").checked,
           preheatCooldownSeconds: Number($("preheatCooldownSeconds").value || 0),
           preheatBatchSize: Number($("preheatBatchSize").value || 0),
           preheatMinPrimaryRemaining: Number($("preheatMinPrimaryRemaining").value || 0),
@@ -2503,7 +3944,7 @@
           return false;
         }
         autoSaveInFlight = true;
-        setAutoSaveStatus("Auto-saving...");
+        setAutoSaveStatus(t("autosave_saving"));
         try {
           await api("/admin/config", {
             method: "POST",
@@ -2511,11 +3952,11 @@
             body: JSON.stringify(payload)
           });
           autoSaveSnapshot = snapshot;
-          setAutoSaveStatus("Auto-saved.", "ok");
+          setAutoSaveStatus(t("autosave_saved"), "ok");
           return true;
         } catch (err) {
           console.warn("Auto-save failed:", err.message);
-          setAutoSaveStatus(`Auto-save failed: ${err.message}`, "bad");
+          setAutoSaveStatus(tt("autosave_failed", { message: err.message }), "bad");
           return false;
         } finally {
           autoSaveInFlight = false;
@@ -2531,7 +3972,7 @@
       function scheduleAutoSave(delayMs = AUTO_SAVE_DEBOUNCE_MS) {
         if (!autoSaveReady) return;
         if (autoSaveTimer) clearTimeout(autoSaveTimer);
-        setAutoSaveStatus("Auto-save pending...");
+        setAutoSaveStatus(t("autosave_pending"));
         autoSaveTimer = setTimeout(() => {
           autoSaveTimer = null;
           persistAutoSave(false).catch(() => {});
@@ -2552,24 +3993,36 @@
         if (!el) return;
         if (!preheat) {
           el.className = "preheat-status";
-          el.textContent = "No preheat state available.";
+          el.textContent = t("preheat_no_state");
           return;
         }
         const lastRun = fmtUnixSec(Number(preheat.lastRunAt || 0));
         const completed = fmtUnixSec(Number(preheat.lastCompletedAt || 0));
         const summary = preheat.lastSummary || null;
         const summaryText = summary
-          ? `last=${summary.status || "-"} success=${summary.success ?? 0} failed=${summary.failed ?? 0} selected=${summary.selected ?? 0}`
-          : "last=none";
-        const runningText = preheat.running ? "running" : "idle";
+          ? tt("preheat_summary_fmt", {
+              status: summary.status || "-",
+              success: summary.success ?? 0,
+              failed: summary.failed ?? 0,
+              selected: summary.selected ?? 0
+            })
+          : t("preheat_summary_none");
+        const runningText = preheat.running ? t("preheat_running_state_running") : t("preheat_running_state_idle");
         const errorText =
           typeof preheat.lastError === "string" && preheat.lastError.trim().length > 0
-            ? ` error=${preheat.lastError.trim()}`
+            ? tt("preheat_error_segment", { error: preheat.lastError.trim() })
             : "";
         el.className = `preheat-status ${preheat.lastStatus === "failed" ? "bad" : preheat.lastStatus === "ok" || preheat.lastStatus === "partial" ? "ok" : ""}`;
-        el.textContent =
-          `status=${preheat.lastStatus || "idle"} (${runningText}) | ${summaryText}\n` +
-          `run=${lastRun} complete=${completed} duration=${Number(preheat.lastDurationMs || 0)}ms${errorText}`;
+        el.textContent = `${tt("preheat_status_line", {
+          status: preheat.lastStatus || "idle",
+          running: runningText,
+          summary: summaryText
+        })}\n${tt("preheat_status_line_2", {
+          run: lastRun,
+          complete: completed,
+          duration: Number(preheat.lastDurationMs || 0),
+          error: errorText
+        })}`;
       }
 
       function applyServerConfigToForm(state) {
@@ -2587,6 +4040,7 @@
         currentMappings = { ...(state.config.modelMappings || {}) };
         renderMappingsTable();
         renderModelOptions();
+        applyPublicAccessConfigFromState(state);
       }
 
       function renderState(state, options = {}) {
@@ -2600,26 +4054,31 @@
         renderPreheatStatus(state.preheat || null);
         if (!autoSaveReady) {
           autoSaveReady = true;
-          setAutoSaveStatus("Auto-save enabled.");
+          setAutoSaveStatus("");
         } else if (!syncConfigFromServer && hasPendingConfigSave()) {
-          setAutoSaveStatus("Auto-save pending...");
+          setAutoSaveStatus(t("autosave_pending"));
         }
 
         const authOk = Boolean(state.auth?.authenticated);
         const badge = $("authBadge");
         badge.className = `status ${authOk ? "ok" : "bad"}`;
-        badge.textContent = authOk ? "AUTHENTICATED" : "NOT AUTHENTICATED";
+        badge.textContent = authOk ? t("runtime_authenticated") : t("runtime_not_authenticated");
         const prevBadge = String(badge.dataset.fxBadge || "");
         if (fxEnabled && prevBadge && prevBadge !== badge.textContent) {
           pulseElement(badge);
         }
         badge.dataset.fxBadge = badge.textContent;
+        renderApiKeySummary(state.apiKeys || { keys: [] });
+        if (!syncConfigFromServer) {
+          renderPublicAccessStatus(state.publicAccess || null);
+        }
 
         const accounts = Array.isArray(state.auth?.accounts) ? state.auth.accounts : [];
         lastAccounts = accounts;
         const strategy = state.auth?.multiAccountStrategy || "-";
         const enabledCount = Number(state.auth?.enabledAccountCount || 0);
         const activeAccount = state.auth?.activeEntryId || state.auth?.activeAccountId || "";
+        lastActiveEntryId = String(activeAccount || "");
         const poolEnabled = state.auth?.multiAccountEnabled === true;
         const decorated = accounts
           .map((a, idx) => {
@@ -2660,11 +4119,11 @@
         setTextAndPulse("poolRiskCount", String(riskCount));
         setTextAndPulse("poolLowQuotaCount", String(lowQuotaCount));
         $("poolRiskHint").textContent = poolEnabled
-          ? `${enabledCount}/${accounts.length} enabled`
-          : "multi-account disabled";
-        setTextAndPulse("poolStrategy", poolEnabled ? strategy : "disabled");
-        $("poolAuthState").textContent = authOk ? "auth: connected" : "auth: disconnected";
-        $("allAccountsTitle").textContent = `All Accounts (${decorated.length})`;
+          ? tt("pool_risk_hint_enabled", { enabled: enabledCount, total: accounts.length })
+          : t("pool_risk_hint_disabled");
+        setTextAndPulse("poolStrategy", poolEnabled ? localizeStrategyName(strategy) : t("account_status_disabled"));
+        $("poolAuthState").textContent = authOk ? t("pool_auth_connected") : t("pool_auth_disconnected");
+        $("allAccountsTitle").textContent = tt("all_accounts_with_count", { count: decorated.length });
 
         const activeItem =
           decorated.find((x) => getAccountIdentity(x) === String(activeAccount || "")) ||
@@ -2676,54 +4135,62 @@
           currentCard.innerHTML = buildAccountCardHtml(activeItem, activeAccount);
         } else {
           currentCard.className = "account-empty";
-          currentCard.textContent = "No active account selected.";
+          currentCard.textContent = t("account_no_active");
         }
 
+        const recommendationLimit = Math.min(8, Math.max(4, decorated.length));
         let recommendations = [];
         if (Array.isArray(poolMetrics.recommendedEntryIds) && poolMetrics.recommendedEntryIds.length > 0) {
           recommendations = poolMetrics.recommendedEntryIds
             .map((id) => decorated.find((x) => getAccountIdentity(x) === String(id)))
-            .filter(Boolean)
-            .slice(0, 3);
+            .filter(Boolean);
+          if (recommendations.length < recommendationLimit) {
+            const picked = new Set(recommendations.map((x) => getAccountIdentity(x)));
+            const more = decorated
+              .filter((x) => x.enabled !== false && !picked.has(getAccountIdentity(x)))
+              .sort((a, b) => b._score - a._score)
+              .slice(0, recommendationLimit - recommendations.length);
+            recommendations = recommendations.concat(more);
+          }
+          recommendations = recommendations.slice(0, recommendationLimit);
         } else {
           recommendations = decorated
             .filter((x) => x.enabled !== false)
             .sort((a, b) => b._score - a._score)
-            .slice(0, 3);
+            .slice(0, recommendationLimit);
         }
         $("recommendList").innerHTML =
           recommendations.length === 0
-                ? `<div class="account-empty">No recommendation available.</div>`
+                ? `<div class="account-empty">${escapeHtml(t("account_no_recommendation_available"))}</div>`
                 : recommendations
                 .map((acc) => {
                   const usageView = resolveUsageWindows(acc);
-                  const {
-                    singleWindowMode,
-                    primaryShortLabel,
-                    secondaryShortLabel,
-                    primaryRemaining,
-                    secondaryRemaining
-                  } = usageView;
+                  const { primaryRemaining, secondaryRemaining } = usageView;
                   const tone = limitPairTone(primaryRemaining, secondaryRemaining, acc._score);
                   const pairText = fmtLimitPair(usageView);
                   const planTypeRaw = String(acc?.usageSnapshot?.plan_type || "").trim();
                   const planType = planTypeRaw.length > 0 ? planTypeRaw : null;
+                  const localizedHealth = healthDisplayLabel(acc.healthStatus || "");
                   const statusLine = acc.healthStatus
-                    ? `${planType ? `${escapeHtml(planType)} · ` : ""}${escapeHtml(acc.healthStatus)}${Number.isFinite(primaryRemaining) ? ` · ${primaryShortLabel} ${primaryRemaining}%` : ""}${!singleWindowMode && Number.isFinite(secondaryRemaining) ? ` · ${secondaryShortLabel} ${secondaryRemaining}%` : ""}`
+                    ? `${planType ? `${escapeHtml(planType)} · ` : ""}${escapeHtml(localizedHealth)}${
+                        pairText !== "-" ? ` · ${escapeHtml(pairText)}` : ""
+                      }`
                     : escapeHtml(shortId(acc.accountId || "-"));
                   return `<div class="recommend-item">
                     <div>
-                      <div class="recommend-name">${escapeHtml(acc.label || "unnamed-account")}</div>
+                      <div class="recommend-name">${escapeHtml(acc.label || t("account_name_unknown"))}</div>
                       <div class="recommend-sub">${statusLine}</div>
                     </div>
-                    <span class="pill ${tone}" title="5-hour / weekly remaining quota">${escapeHtml(pairText)}</span>
+                    <span class="pill ${tone}" title="${escapeHtml(t("quota_remaining_percent_title"))}">${escapeHtml(
+                      pairText
+                    )}</span>
                   </div>`;
                 })
                 .join("");
 
         $("accountPoolCards").innerHTML =
           decorated.length === 0
-            ? `<div class="account-empty">No pooled accounts yet. Use OAuth Login / Add Account.</div>`
+            ? `<div class="account-empty">${escapeHtml(t("account_no_pool_accounts"))}</div>`
             : decorated
                 .map((a) => buildAccountCardHtml(a, activeAccount, true))
                 .join("");
@@ -2759,7 +4226,7 @@
           stateRefreshQueued = true;
           return;
         }
-        if (!force && document.hidden && Date.now() - lastStateRefreshAtMs < STATE_REFRESH_HIDDEN_MS) {
+        if (!force && document.hidden && Date.now() - lastStateRefreshAtMs < stateRefreshHiddenMs) {
           return;
         }
         stateRefreshInFlight = true;
@@ -2803,7 +4270,7 @@
       }
 
       async function runTest() {
-        $("testResult").textContent = "Running test...";
+        $("testResult").textContent = t("self_test_running");
         try {
           const result = await api("/admin/test", {
             method: "POST",
@@ -2813,14 +4280,14 @@
           $("testResult").textContent = JSON.stringify(result, null, 2);
           await refreshState();
         } catch (err) {
-          $("testResult").textContent = `TEST FAILED: ${err.message}`;
+          $("testResult").textContent = tt("self_test_failed", { message: err.message });
         }
       }
 
       async function runPreheatNow(force = true) {
         const statusEl = $("preheatStatus");
         statusEl.className = "preheat-status";
-        statusEl.textContent = "Running preheat...";
+        statusEl.textContent = t("preheat_running");
         try {
           const result = await api("/admin/preheat/run", {
             method: "POST",
@@ -2831,8 +4298,64 @@
           await refreshState(true);
         } catch (err) {
           statusEl.className = "preheat-status bad";
-          statusEl.textContent = `Preheat failed: ${err.message}`;
+          statusEl.textContent = tt("preheat_failed", { message: err.message });
         }
+      }
+
+      async function switchCurrentAccountTo(targetRef) {
+        const ref = String(targetRef || "").trim();
+        if (!ref) {
+          alert(t("alert_switch_target_missing"));
+          return;
+        }
+        await api("/admin/auth-pool/activate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ entryId: ref })
+        });
+        await refreshState(true);
+      }
+
+      async function logoutAccountByEntry(targetRef) {
+        const ref = String(targetRef || "").trim();
+        if (!ref) {
+          throw new Error(t("alert_switch_target_missing"));
+        }
+        await api("/admin/auth-pool/remove", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ entryId: ref })
+        });
+        await refreshState(true);
+      }
+
+      async function switchCurrentAccount() {
+        const sorted = (Array.isArray(lastAccounts) ? lastAccounts : [])
+          .map((acc, idx) => ({ ...acc, _slot: getAccountSlotNumber(acc, idx) || 999 }))
+          .sort((a, b) => {
+            if (a._slot !== b._slot) return a._slot - b._slot;
+            return String(a.label || a.accountId || "").localeCompare(String(b.label || b.accountId || ""));
+          });
+        const enabled = sorted.filter((acc) => acc.enabled !== false);
+        if (enabled.length === 0) {
+          alert(t("alert_switch_no_enabled"));
+          return;
+        }
+        if (enabled.length === 1) {
+          alert(t("alert_switch_only_one"));
+          return;
+        }
+
+        const currentIdx = enabled.findIndex(
+          (acc) => getAccountIdentity(acc) === String(lastActiveEntryId || "")
+        );
+        const target = enabled[(currentIdx + 1 + enabled.length) % enabled.length];
+        const targetRef = getAccountIdentity(target);
+        if (!targetRef) {
+          alert(t("alert_switch_target_missing"));
+          return;
+        }
+        await switchCurrentAccountTo(targetRef);
       }
 
       $("refreshBtn").addEventListener("click", refreshState);
@@ -2845,17 +4368,120 @@
       });
       $("logoutBtn").addEventListener("click", async () => {
         try {
-          await api("/auth/logout", { method: "POST" });
+          const payload = {};
+          if (lastActiveEntryId) payload.entryId = lastActiveEntryId;
+          await api("/auth/logout", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload)
+          });
           await refreshState();
         } catch (err) {
-          alert(`Logout failed: ${err.message}`);
+          alert(tt("alert_logout_failed", { message: err.message }));
+        }
+      });
+      $("apiKeyGenerateBtn").addEventListener("click", async () => {
+        try {
+          await generateApiKey();
+        } catch (err) {
+          alert(tt("alert_api_key_generate_failed", { message: err.message }));
+        }
+      });
+      $("apiKeyCopyBtn").addEventListener("click", async () => {
+        try {
+          const value = String($("apiKeyGeneratedValue").textContent || "").trim();
+          if (!value || value === "-") return;
+          await navigator.clipboard.writeText(value);
+        } catch (err) {
+          alert(tt("alert_api_key_copy_failed", { message: err.message }));
+        }
+      });
+      $("apiKeyList").addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const btn = target.closest("button[data-api-key-revoke]");
+        if (!(btn instanceof HTMLButtonElement)) return;
+        const id = btn.getAttribute("data-api-key-revoke");
+        if (!id || btn.disabled) return;
+        try {
+          await revokeApiKeyById(id);
+        } catch (err) {
+          alert(tt("alert_api_key_revoke_failed", { message: err.message }));
+        }
+      });
+      $("publicAccessMode").addEventListener("change", updatePublicAccessTokenUI);
+      $("publicAccessRefreshBtn").addEventListener("click", async () => {
+        try {
+          await refreshPublicAccessStatus();
+        } catch (err) {
+          alert(tt("alert_public_access_refresh_failed", { message: err.message }));
+        }
+      });
+      $("publicAccessStartBtn").addEventListener("click", async () => {
+        try {
+          await startPublicAccess();
+          await refreshState(true);
+        } catch (err) {
+          alert(tt("alert_public_access_start_failed", { message: err.message }));
+        }
+      });
+      $("publicAccessStopBtn").addEventListener("click", async () => {
+        try {
+          await stopPublicAccess();
+          await refreshState(true);
+        } catch (err) {
+          alert(tt("alert_public_access_stop_failed", { message: err.message }));
+        }
+      });
+      $("publicAccessInstallBtn").addEventListener("click", async () => {
+        try {
+          const data = await api("/admin/public-access/install", { method: "POST" });
+          renderPublicAccessStatus(data?.status || null);
+          await refreshState(true);
+        } catch (err) {
+          alert(tt("alert_public_access_install_failed", { message: err.message }));
+        }
+      });
+      $("publicAccessCopyBtn").addEventListener("click", async () => {
+        try {
+          const url = String($("publicAccessUrl").textContent || "").trim();
+          if (!url || url === "-") return;
+          await navigator.clipboard.writeText(url);
+        } catch (err) {
+          alert(tt("alert_public_access_copy_failed", { message: err.message }));
+        }
+      });
+      $("accountPoolCards").addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const logoutBtn = target.closest("button[data-logout-entry]");
+        if (logoutBtn instanceof HTMLButtonElement) {
+          const entryId = logoutBtn.getAttribute("data-logout-entry");
+          if (!entryId || logoutBtn.disabled) return;
+          try {
+            await logoutAccountByEntry(entryId);
+          } catch (err) {
+            alert(tt("alert_account_logout_failed", { message: err.message }));
+          }
+          return;
+        }
+        const btn = target.closest("button[data-switch-entry]");
+        if (!(btn instanceof HTMLButtonElement)) return;
+        const entryId = btn.getAttribute("data-switch-entry");
+        if (!entryId || btn.disabled) return;
+        try {
+          await switchCurrentAccountTo(entryId);
+        } catch (err) {
+          alert(tt("alert_switch_failed", { message: err.message }));
         }
       });
 
       const instantSaveFields = [
         "upstreamMode",
         "defaultReasoningEffort",
-        "multiAccountStrategy"
+        "multiAccountStrategy",
+        "publicAccessMode",
+        "publicAccessHttp2",
       ];
       for (const id of instantSaveFields) {
         $(id).addEventListener("change", () => triggerAutoSaveNow());
@@ -2865,6 +4491,8 @@
         "upstreamBaseUrl",
         "defaultModel",
         "defaultInstructions",
+        "publicAccessToken",
+        "publicAccessLocalPort",
         "preheatCooldownSeconds",
         "preheatBatchSize",
         "preheatMinPrimaryRemaining",
@@ -2881,7 +4509,7 @@
         const from = $("mapFrom").value;
         const to = $("mapTo").value;
         if (!from || !to) {
-          alert("Both source and target model are required.");
+          alert(t("alert_mapping_required"));
           return;
         }
         currentMappings[from] = to;
@@ -2901,7 +4529,7 @@
         triggerAutoSaveNow();
       });
       $("resetMappingsBtn").addEventListener("click", () => {
-        if (!confirm("Reset all custom model mappings?")) return;
+        if (!confirm(t("confirm_reset_mappings"))) return;
         currentMappings = {};
         renderMappingsTable();
         renderModelOptions();
@@ -2914,16 +4542,16 @@
         try {
           await refreshState();
         } catch (err) {
-          alert(`Refresh requests failed: ${err.message}`);
+          alert(tt("alert_refresh_requests_failed", { message: err.message }));
         }
       });
       $("clearReqBtn").addEventListener("click", async () => {
-        if (!confirm("Clear all recent proxy request records?")) return;
+        if (!confirm(t("confirm_clear_requests"))) return;
         try {
           await api("/admin/requests/clear", { method: "POST" });
           await refreshState();
         } catch (err) {
-          alert(`Clear request records failed: ${err.message}`);
+          alert(tt("alert_clear_requests_failed", { message: err.message }));
         }
       });
       $("refreshUsageBtn").addEventListener("click", async () => {
@@ -2932,7 +4560,7 @@
           if (!didRefresh) return;
           await refreshState();
         } catch (err) {
-          alert(`Refresh usage failed: ${err.message}`);
+          alert(tt("alert_refresh_usage_failed", { message: err.message }));
         }
       });
       $("reqTable").addEventListener("click", (event) => {
@@ -2968,23 +4596,16 @@
       $("runTestBtn").addEventListener("click", runTest);
       $("runPreheatBtn").addEventListener("click", () => runPreheatNow(true));
 
+      initLanguageControl();
       initInteractiveFx();
+      initRuntimeHeartbeatControl();
 
       Promise.all([loadModelCandidates(), refreshState()]).catch((err) => {
-        $("testResult").textContent = `Init failed: ${err.message}`;
+        $("testResult").textContent = tt("init_failed", { message: err.message });
       });
       refreshUsage(true)
         .then((did) => (did ? refreshState() : null))
         .catch(() => {});
-      setInterval(() => {
-        if (document.hidden) {
-          if (Date.now() - lastStateRefreshAtMs >= STATE_REFRESH_HIDDEN_MS) {
-            refreshState(false).catch(() => {});
-          }
-          return;
-        }
-        refreshState(false).catch(() => {});
-      }, STATE_REFRESH_VISIBLE_MS);
       setInterval(() => {
         if (document.hidden) return;
         refreshUsage(false)

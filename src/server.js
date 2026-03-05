@@ -1,7 +1,9 @@
 import "dotenv/config";
 
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -23,10 +25,13 @@ const OPENAI_CODEX_SCOPES = ["openid", "profile", "email", "offline_access"];
 const DEFAULT_CODEX_UPSTREAM_BASE_URL = "https://chatgpt.com/backend-api";
 const DEFAULT_GEMINI_UPSTREAM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_ANTHROPIC_UPSTREAM_BASE_URL = "https://api.anthropic.com/v1";
+const DEFAULT_CLOUDFLARED_BIN = process.platform === "win32" ? "cloudflared.exe" : "cloudflared";
 const DEFAULT_CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || "2026.2.26";
 const VALID_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh"]);
 const VALID_REASONING_EFFORT_MODES = new Set(["none", "low", "medium", "high", "xhigh", "adaptive"]);
-const VALID_MULTI_ACCOUNT_STRATEGIES = new Set(["smart", "round-robin", "random", "sticky"]);
+const VALID_MULTI_ACCOUNT_STRATEGIES = new Set(["smart", "manual", "round-robin", "random", "sticky"]);
+const MULTI_ACCOUNT_STRATEGY_LIST = [...VALID_MULTI_ACCOUNT_STRATEGIES].join(", ");
+const VALID_CLOUDFLARED_MODES = new Set(["quick", "auth"]);
 const LOW_QUOTA_THRESHOLD_DUAL_WINDOW = 20;
 const LOW_QUOTA_THRESHOLD_SINGLE_WINDOW = 30;
 const OFFICIAL_OPENAI_MODELS = [
@@ -147,6 +152,11 @@ const config = {
     version: process.env.ANTHROPIC_API_VERSION || "2023-06-01",
     defaultModel: process.env.ANTHROPIC_DEFAULT_MODEL || "claude-sonnet-4-20250514"
   },
+  providerUpstream: {
+    // Keep native provider upstream opt-in for request-supplied keys.
+    // Default false avoids accidental 403/Cloudflare challenge when clients send placeholder API keys.
+    allowRequestApiKeys: parseBooleanEnv(process.env.PROVIDER_UPSTREAM_ALLOW_REQUEST_KEYS, false)
+  },
   profileStore: {
     authStorePath: path.resolve(
       process.env.PROFILE_AUTH_STORE_PATH ||
@@ -224,6 +234,22 @@ const config = {
   modelRouter: {
     enabled: parseBooleanEnv(process.env.MODEL_ROUTER_ENABLED, true),
     customMappings: parseModelMappingsEnv(process.env.MODEL_ROUTER_MAPPINGS || process.env.MODEL_MAPPINGS)
+  },
+  apiKeys: {
+    storePath: path.resolve(process.env.API_KEY_STORE_PATH || path.join(rootDir, "data", "api-keys.json")),
+    bootstrapLegacySharedKey: parseBooleanEnv(process.env.API_KEY_BOOTSTRAP_LEGACY, true)
+  },
+  publicAccess: {
+    cloudflaredBinPath: String(process.env.CLOUDFLARED_BIN_PATH || "").trim(),
+    defaultMode: String(process.env.CLOUDFLARED_MODE || "quick").trim().toLowerCase(),
+    defaultUseHttp2: parseBooleanEnv(process.env.CLOUDFLARED_USE_HTTP2, true),
+    autoInstall: parseBooleanEnv(process.env.CLOUDFLARED_AUTO_INSTALL, true),
+    defaultTunnelToken: String(process.env.CLOUDFLARED_TUNNEL_TOKEN || "").trim(),
+    localPort: parseNumberEnv(process.env.CLOUDFLARED_LOCAL_PORT, Number(process.env.PORT || 8787), {
+      min: 1,
+      max: 65535,
+      integer: true
+    })
   }
 };
 
@@ -250,10 +276,14 @@ if (config.authMode === "custom-oauth") {
 
 if (!VALID_MULTI_ACCOUNT_STRATEGIES.has(config.codexOAuth.multiAccountStrategy)) {
   console.warn(
-    `Invalid CODEX_MULTI_ACCOUNT_STRATEGY="${config.codexOAuth.multiAccountStrategy}", fallback to smart.`
+    `Invalid CODEX_MULTI_ACCOUNT_STRATEGY="${config.codexOAuth.multiAccountStrategy}", fallback to smart. Supported: ${MULTI_ACCOUNT_STRATEGY_LIST}.`
   );
   config.codexOAuth.multiAccountStrategy = "smart";
 }
+if (!VALID_CLOUDFLARED_MODES.has(config.publicAccess.defaultMode)) {
+  config.publicAccess.defaultMode = "quick";
+}
+config.publicAccess.autoInstall = true;
 
 const pendingAuth = new Map();
 let codexCallbackServer = null;
@@ -287,6 +317,33 @@ if (config.authMode === "codex-oauth") {
     await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
   }
 }
+
+let proxyApiKeyStore = await loadProxyApiKeyStore(config.apiKeys.storePath);
+if (bootstrapLegacySharedApiKey(proxyApiKeyStore, config.codexOAuth.sharedApiKey, config.apiKeys.bootstrapLegacySharedKey)) {
+  await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore);
+}
+
+let cloudflaredInstallPromise = null;
+
+const cloudflaredRuntime = {
+  process: null,
+  mode: config.publicAccess.defaultMode,
+  useHttp2: config.publicAccess.defaultUseHttp2,
+  tunnelToken: config.publicAccess.defaultTunnelToken,
+  localPort: config.publicAccess.localPort,
+  url: "",
+  error: "",
+  running: false,
+  installed: false,
+  version: "",
+  lastCheckedAt: 0,
+  installInProgress: false,
+  installMessage: "",
+  installUpdatedAt: 0,
+  pid: null,
+  startedAt: 0,
+  outputTail: []
+};
 
 const runtimeStats = {
   startedAt: Date.now(),
@@ -335,6 +392,531 @@ function clearAuthContextCache() {
   authContextCache.accessToken = "";
   authContextCache.accountId = null;
   authContextCache.expiresAt = 0;
+}
+
+function hashProxyApiKey(value) {
+  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
+}
+
+function normalizeProxyApiKeyStore(raw) {
+  const out = {
+    version: 1,
+    keys: []
+  };
+  let changed = false;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const src = raw && typeof raw === "object" ? raw : {};
+  const sourceKeys = Array.isArray(src.keys) ? src.keys : [];
+  if (!Array.isArray(src.keys)) changed = true;
+
+  for (const item of sourceKeys) {
+    if (!item || typeof item !== "object") {
+      changed = true;
+      continue;
+    }
+    const id = String(item.id || "").trim() || `key_${crypto.randomUUID().replace(/-/g, "")}`;
+    const hash = String(item.hash || "").trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(hash)) {
+      changed = true;
+      continue;
+    }
+    const label = String(item.label || "").trim() || "unnamed";
+    const prefix = String(item.prefix || "").trim() || "sk-";
+    const createdAt = Number(item.created_at || item.createdAt || nowSec);
+    const lastUsedAt = Number(item.last_used_at || item.lastUsedAt || 0);
+    const useCount = Number(item.use_count || item.useCount || 0);
+    const revokedAt = Number(item.revoked_at || item.revokedAt || 0);
+    const expiresAt = Number(item.expires_at || item.expiresAt || 0);
+    out.keys.push({
+      id,
+      label,
+      prefix,
+      hash,
+      created_at: Number.isFinite(createdAt) ? createdAt : nowSec,
+      last_used_at: Number.isFinite(lastUsedAt) ? Math.max(0, Math.floor(lastUsedAt)) : 0,
+      use_count: Number.isFinite(useCount) ? Math.max(0, Math.floor(useCount)) : 0,
+      revoked_at: Number.isFinite(revokedAt) ? Math.max(0, Math.floor(revokedAt)) : 0,
+      expires_at: Number.isFinite(expiresAt) ? Math.max(0, Math.floor(expiresAt)) : 0
+    });
+  }
+  return { store: out, changed };
+}
+
+async function loadProxyApiKeyStore(filePath) {
+  const raw = await loadJsonStore(filePath, { version: 1, keys: [] });
+  const normalized = normalizeProxyApiKeyStore(raw);
+  const prunedRevoked = pruneRevokedProxyApiKeys(normalized.store);
+  if (normalized.changed || prunedRevoked) {
+    await saveProxyApiKeyStore(filePath, normalized.store);
+  }
+  return normalized.store;
+}
+
+async function saveProxyApiKeyStore(filePath, store) {
+  const normalized = normalizeProxyApiKeyStore(store);
+  await saveJsonStore(filePath, normalized.store);
+}
+
+let proxyApiKeyStoreFlushTimer = null;
+function scheduleProxyApiKeyStoreFlush(delayMs = 2000) {
+  if (proxyApiKeyStoreFlushTimer) clearTimeout(proxyApiKeyStoreFlushTimer);
+  proxyApiKeyStoreFlushTimer = setTimeout(() => {
+    proxyApiKeyStoreFlushTimer = null;
+    saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore).catch((err) => {
+      console.warn(`[api-keys] failed to persist usage: ${err.message}`);
+    });
+  }, Math.max(250, Number(delayMs) || 2000));
+}
+
+function createProxyApiKey() {
+  const value = `sk-${crypto.randomBytes(24).toString("base64url")}`;
+  return value;
+}
+
+function sanitizeProxyApiKeyLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "generated-key";
+  return raw.slice(0, 80);
+}
+
+function listActiveProxyApiKeys(store, nowSec = Math.floor(Date.now() / 1000)) {
+  const keys = Array.isArray(store?.keys) ? store.keys : [];
+  return keys.filter((k) => {
+    if (!k || typeof k !== "object") return false;
+    if (Number(k.revoked_at || 0) > 0) return false;
+    const expiresAt = Number(k.expires_at || 0);
+    if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= nowSec) return false;
+    return true;
+  });
+}
+
+function pruneRevokedProxyApiKeys(store) {
+  if (!store || typeof store !== "object") return false;
+  if (!Array.isArray(store.keys)) {
+    store.keys = [];
+    return false;
+  }
+  const before = store.keys.length;
+  store.keys = store.keys.filter((k) => Number(k?.revoked_at || 0) <= 0);
+  return store.keys.length !== before;
+}
+
+function hasActiveManagedProxyApiKeys() {
+  return listActiveProxyApiKeys(proxyApiKeyStore).length > 0;
+}
+
+function bootstrapLegacySharedApiKey(store, legacyKey, enabled = true) {
+  if (!enabled) return false;
+  const key = String(legacyKey || "").trim();
+  if (!key) return false;
+  const hash = hashProxyApiKey(key);
+  const exists = (Array.isArray(store?.keys) ? store.keys : []).some((k) => String(k?.hash || "") === hash);
+  if (exists) return false;
+  if (!Array.isArray(store.keys)) store.keys = [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  store.keys.unshift({
+    id: "legacy-local-api-key",
+    label: "legacy env LOCAL_API_KEY",
+    prefix: key.slice(0, 10),
+    hash,
+    created_at: nowSec,
+    last_used_at: 0,
+    use_count: 0,
+    revoked_at: 0,
+    expires_at: 0
+  });
+  return true;
+}
+
+function extractProxyApiKeyFromRequest(req) {
+  const bearer = extractBearerToken(req);
+  if (bearer) return bearer;
+  const xApiKey = readHeaderValue(req, "x-api-key");
+  if (xApiKey) return xApiKey.trim();
+  return "";
+}
+
+function findManagedProxyApiKeyByValue(candidate) {
+  const key = String(candidate || "").trim();
+  if (!key) return null;
+  const hash = hashProxyApiKey(key);
+  const active = listActiveProxyApiKeys(proxyApiKeyStore);
+  return active.find((entry) => String(entry.hash || "") === hash) || null;
+}
+
+function recordManagedProxyApiKeyUsage(entry) {
+  if (!entry || typeof entry !== "object") return;
+  entry.last_used_at = Math.floor(Date.now() / 1000);
+  entry.use_count = Number(entry.use_count || 0) + 1;
+  scheduleProxyApiKeyStoreFlush();
+}
+
+function buildApiKeySummary() {
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (pruneRevokedProxyApiKeys(proxyApiKeyStore)) {
+    scheduleProxyApiKeyStoreFlush(400);
+  }
+  const keys = Array.isArray(proxyApiKeyStore?.keys) ? proxyApiKeyStore.keys : [];
+  const activeKeys = listActiveProxyApiKeys(proxyApiKeyStore, nowSec);
+  const activeIds = new Set(activeKeys.map((k) => String(k.id)));
+  return {
+    enforced: activeKeys.length > 0 || Boolean(String(config.codexOAuth.sharedApiKey || "").trim()),
+    total: keys.length,
+    active: activeKeys.length,
+    keys: keys
+      .map((entry) => {
+        const expiresAt = Number(entry.expires_at || 0);
+        const revokedAt = Number(entry.revoked_at || 0);
+        return {
+          id: String(entry.id || ""),
+          label: String(entry.label || ""),
+          prefix: String(entry.prefix || "sk-"),
+          createdAt: Number(entry.created_at || 0) || null,
+          lastUsedAt: Number(entry.last_used_at || 0) || null,
+          useCount: Number(entry.use_count || 0) || 0,
+          expiresAt: expiresAt > 0 ? expiresAt : null,
+          revokedAt: revokedAt > 0 ? revokedAt : null,
+          active: activeIds.has(String(entry.id || ""))
+        };
+      })
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+  };
+}
+
+function resolveCloudflaredBin() {
+  const configured = String(config.publicAccess.cloudflaredBinPath || "").trim();
+  if (configured) return configured;
+  return DEFAULT_CLOUDFLARED_BIN;
+}
+
+function resolveCloudflaredAssetMeta() {
+  const archMap = {
+    x64: "amd64",
+    ia32: "386",
+    arm64: "arm64",
+    arm: "arm"
+  };
+  const arch = archMap[String(process.arch || "").toLowerCase()];
+  if (!arch) {
+    throw new Error(`Unsupported CPU architecture for cloudflared install: ${process.arch}`);
+  }
+
+  let platform = "";
+  let ext = "";
+  if (process.platform === "win32") {
+    platform = "windows";
+    ext = ".exe";
+  } else if (process.platform === "linux") {
+    platform = "linux";
+  } else if (process.platform === "darwin") {
+    platform = "darwin";
+  } else {
+    throw new Error(`Unsupported OS for cloudflared install: ${process.platform}`);
+  }
+
+  const assetName = `cloudflared-${platform}-${arch}${ext}`;
+  const downloadUrl = `https://github.com/cloudflare/cloudflared/releases/latest/download/${assetName}`;
+  const binaryName = process.platform === "win32" ? "cloudflared.exe" : "cloudflared";
+  return {
+    assetName,
+    downloadUrl,
+    binaryName
+  };
+}
+
+async function installCloudflaredBinary() {
+  if (cloudflaredInstallPromise) {
+    return cloudflaredInstallPromise;
+  }
+
+  cloudflaredInstallPromise = (async () => {
+    cloudflaredRuntime.installInProgress = true;
+    cloudflaredRuntime.installMessage = "installing";
+    cloudflaredRuntime.installUpdatedAt = Math.floor(Date.now() / 1000);
+
+    let tempPath = "";
+    try {
+      const assetMeta = resolveCloudflaredAssetMeta();
+      const installDir = path.join(rootDir, "bin");
+      const configuredPath = String(config.publicAccess.cloudflaredBinPath || "").trim();
+      const installPath = configuredPath || path.join(installDir, assetMeta.binaryName);
+      await fs.mkdir(path.dirname(installPath), { recursive: true });
+
+      const response = await fetch(assetMeta.downloadUrl, {
+        method: "GET",
+        redirect: "follow",
+        headers: { "user-agent": "codex-oauth-proxy/0.1.0" }
+      });
+      if (!response.ok) {
+        throw new Error(`cloudflared download failed: HTTP ${response.status} ${response.statusText}`);
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (!Buffer.isBuffer(bytes) || bytes.length < 64 * 1024) {
+        throw new Error("cloudflared download produced invalid payload.");
+      }
+
+      tempPath = `${installPath}.download-${Date.now()}`;
+      await fs.writeFile(tempPath, bytes);
+      if (process.platform !== "win32") {
+        await fs.chmod(tempPath, 0o755);
+      }
+
+      if (fsSync.existsSync(installPath)) {
+        await fs.unlink(installPath).catch(() => {});
+      }
+      await fs.rename(tempPath, installPath);
+      tempPath = "";
+
+      config.publicAccess.cloudflaredBinPath = installPath;
+      cloudflaredRuntime.lastCheckedAt = 0;
+      const probe = await checkCloudflaredInstalled(true);
+      if (!probe.installed) {
+        throw new Error("cloudflared install finished but binary check still failed.");
+      }
+
+      const message = `installed (${assetMeta.assetName})`;
+      cloudflaredRuntime.installMessage = message;
+      cloudflaredRuntime.installUpdatedAt = Math.floor(Date.now() / 1000);
+      return {
+        installed: true,
+        path: installPath,
+        asset: assetMeta.assetName,
+        version: probe.version || ""
+      };
+    } catch (err) {
+      cloudflaredRuntime.installMessage = String(err?.message || err || "install_failed");
+      cloudflaredRuntime.installUpdatedAt = Math.floor(Date.now() / 1000);
+      if (tempPath) {
+        await fs.unlink(tempPath).catch(() => {});
+      }
+      throw err;
+    } finally {
+      cloudflaredRuntime.installInProgress = false;
+      cloudflaredInstallPromise = null;
+    }
+  })();
+
+  return cloudflaredInstallPromise;
+}
+
+function updateCloudflaredOutput(line) {
+  const text = String(line || "").trim();
+  if (!text) return;
+  cloudflaredRuntime.outputTail.push(text);
+  if (cloudflaredRuntime.outputTail.length > 120) {
+    cloudflaredRuntime.outputTail.splice(0, cloudflaredRuntime.outputTail.length - 120);
+  }
+}
+
+function extractCloudflaredUrlFromLine(line) {
+  const text = String(line || "");
+  const quick = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/gi);
+  if (quick && quick[0]) return quick[0];
+  if (text.includes("Updated to new configuration") && text.includes("hostname")) {
+    const m = text.match(/\\"hostname\\":\\"([^"\\]+)\\"/);
+    if (m && m[1]) {
+      return `https://${m[1]}`;
+    }
+  }
+  const generic = text.match(/https:\/\/[a-z0-9.-]+\.[a-z]{2,}/i);
+  if (generic && generic[0]) return generic[0];
+  return "";
+}
+
+function createCloudflaredLineReader(stream) {
+  let buffer = "";
+  stream.on("data", (chunk) => {
+    buffer += Buffer.from(chunk).toString("utf8");
+    let idx = buffer.indexOf("\n");
+    while (idx >= 0) {
+      const line = buffer.slice(0, idx).replace(/\r$/, "");
+      buffer = buffer.slice(idx + 1);
+      updateCloudflaredOutput(line);
+      const url = extractCloudflaredUrlFromLine(line);
+      if (url) cloudflaredRuntime.url = url;
+      idx = buffer.indexOf("\n");
+    }
+  });
+  stream.on("end", () => {
+    const tail = buffer.replace(/\r$/, "").trim();
+    if (!tail) return;
+    updateCloudflaredOutput(tail);
+    const url = extractCloudflaredUrlFromLine(tail);
+    if (url) cloudflaredRuntime.url = url;
+  });
+}
+
+async function checkCloudflaredInstalled(force = false) {
+  const now = Date.now();
+  if (!force && now - Number(cloudflaredRuntime.lastCheckedAt || 0) < 30000) {
+    return {
+      installed: cloudflaredRuntime.installed,
+      version: cloudflaredRuntime.version
+    };
+  }
+  const bin = resolveCloudflaredBin();
+  const output = await new Promise((resolve) => {
+    const child = spawn(bin, ["--version"], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      resolve({ ok: false, stdout, stderr });
+    }, 8000);
+    child.stdout?.on("data", (d) => {
+      stdout += Buffer.from(d).toString("utf8");
+    });
+    child.stderr?.on("data", (d) => {
+      stderr += Buffer.from(d).toString("utf8");
+    });
+    child.once("error", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({ ok: false, stdout, stderr });
+    });
+    child.once("exit", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({ ok: code === 0, stdout, stderr });
+    });
+  });
+  cloudflaredRuntime.lastCheckedAt = now;
+  cloudflaredRuntime.installed = output.ok === true;
+  cloudflaredRuntime.version = output.ok
+    ? String(output.stdout || output.stderr || "")
+        .split(/\r?\n/)[0]
+        .trim()
+    : "";
+  return {
+    installed: cloudflaredRuntime.installed,
+    version: cloudflaredRuntime.version
+  };
+}
+
+function getCloudflaredStatus() {
+  return {
+    installed: Boolean(cloudflaredRuntime.installed),
+    version: cloudflaredRuntime.version || null,
+    installInProgress: Boolean(cloudflaredRuntime.installInProgress),
+    installMessage: cloudflaredRuntime.installMessage || null,
+    installUpdatedAt: Number(cloudflaredRuntime.installUpdatedAt || 0) || null,
+    running: Boolean(cloudflaredRuntime.running),
+    url: cloudflaredRuntime.url || null,
+    error: cloudflaredRuntime.error || null,
+    mode: cloudflaredRuntime.mode || "quick",
+    useHttp2: cloudflaredRuntime.useHttp2 !== false,
+    autoInstall: config.publicAccess.autoInstall !== false,
+    localPort: Number(cloudflaredRuntime.localPort || config.port),
+    pid: cloudflaredRuntime.pid || null,
+    startedAt: Number(cloudflaredRuntime.startedAt || 0) || null,
+    binaryPath: resolveCloudflaredBin(),
+    outputTail: [...cloudflaredRuntime.outputTail]
+  };
+}
+
+async function startCloudflaredTunnel({ mode, token, useHttp2, localPort, autoInstall } = {}) {
+  if (cloudflaredRuntime.running && cloudflaredRuntime.process) {
+    return getCloudflaredStatus();
+  }
+
+  const normalizedMode = VALID_CLOUDFLARED_MODES.has(String(mode || "").trim().toLowerCase())
+    ? String(mode).trim().toLowerCase()
+    : config.publicAccess.defaultMode;
+  const normalizedAutoInstall =
+    autoInstall === undefined ? config.publicAccess.autoInstall !== false : Boolean(autoInstall);
+  const normalizedToken = String(token || cloudflaredRuntime.tunnelToken || config.publicAccess.defaultTunnelToken || "").trim();
+  const normalizedUseHttp2 = useHttp2 === undefined ? cloudflaredRuntime.useHttp2 !== false : Boolean(useHttp2);
+  const parsedPort = parseNumberEnv(localPort ?? cloudflaredRuntime.localPort ?? config.port, Number(config.port), {
+    min: 1,
+    max: 65535,
+    integer: true
+  });
+
+  if (normalizedMode === "auth" && !normalizedToken) {
+    throw new Error("Cloudflared token is required when mode=auth.");
+  }
+
+  let installed = await checkCloudflaredInstalled(true);
+  if (!installed.installed && normalizedAutoInstall) {
+    await installCloudflaredBinary();
+    installed = await checkCloudflaredInstalled(true);
+  }
+  if (!installed.installed) {
+    throw new Error(
+      `cloudflared binary not found. Install cloudflared and ensure it is on PATH, or set CLOUDFLARED_BIN_PATH.`
+    );
+  }
+
+  const bin = resolveCloudflaredBin();
+  const args =
+    normalizedMode === "auth"
+      ? ["tunnel", "run", "--token", normalizedToken]
+      : ["tunnel", "--url", `http://127.0.0.1:${parsedPort}`];
+  if (normalizedUseHttp2) {
+    args.push("--protocol", "http2");
+  }
+
+  const child = spawn(bin, args, {
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  child.once("error", (err) => {
+    cloudflaredRuntime.running = false;
+    cloudflaredRuntime.error = String(err?.message || err || "cloudflared_start_failed");
+    cloudflaredRuntime.pid = null;
+    cloudflaredRuntime.process = null;
+  });
+  child.once("exit", (code, signal) => {
+    cloudflaredRuntime.running = false;
+    cloudflaredRuntime.pid = null;
+    cloudflaredRuntime.process = null;
+    if (!cloudflaredRuntime.error && code !== 0) {
+      cloudflaredRuntime.error = `cloudflared exited with code=${code ?? "?"} signal=${signal ?? "-"}`;
+    }
+  });
+  if (child.stdout) createCloudflaredLineReader(child.stdout);
+  if (child.stderr) createCloudflaredLineReader(child.stderr);
+
+  cloudflaredRuntime.process = child;
+  cloudflaredRuntime.running = true;
+  cloudflaredRuntime.error = "";
+  cloudflaredRuntime.mode = normalizedMode;
+  cloudflaredRuntime.useHttp2 = normalizedUseHttp2;
+  cloudflaredRuntime.tunnelToken = normalizedToken;
+  cloudflaredRuntime.localPort = parsedPort;
+  cloudflaredRuntime.startedAt = Math.floor(Date.now() / 1000);
+  cloudflaredRuntime.pid = child.pid || null;
+  return getCloudflaredStatus();
+}
+
+async function stopCloudflaredTunnel() {
+  const child = cloudflaredRuntime.process;
+  if (child) {
+    try {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      if (!child.killed) {
+        child.kill("SIGKILL");
+      }
+    } catch {
+      // ignore process kill errors
+    }
+  }
+  cloudflaredRuntime.process = null;
+  cloudflaredRuntime.running = false;
+  cloudflaredRuntime.pid = null;
+  cloudflaredRuntime.url = "";
+  cloudflaredRuntime.error = "";
+  return getCloudflaredStatus();
 }
 
 function getCachedAuthContext() {
@@ -527,22 +1109,33 @@ app.use((req, res, next) => {
     return;
   }
 
-  const expectedApiKey = config.codexOAuth.sharedApiKey;
-  if (!expectedApiKey) {
+  const managedEnabled = hasActiveManagedProxyApiKeys();
+  const legacyKey = String(config.codexOAuth.sharedApiKey || "").trim();
+  if (!managedEnabled && !legacyKey) {
     next();
     return;
   }
 
-  const bearer = extractBearerToken(req);
-  const xApiKey = readHeaderValue(req, "x-api-key");
-  if (bearer === expectedApiKey || xApiKey === expectedApiKey) {
+  const provided = extractProxyApiKeyFromRequest(req);
+  const managedMatch = findManagedProxyApiKeyByValue(provided);
+  if (managedMatch) {
+    recordManagedProxyApiKeyUsage(managedMatch);
+    res.locals.proxyApiKeyId = managedMatch.id;
+    next();
+    return;
+  }
+  if (!managedEnabled && legacyKey && provided === legacyKey) {
+    next();
+    return;
+  }
+  if (managedEnabled && legacyKey && provided === legacyKey) {
     next();
     return;
   }
 
   res.status(401).json({
     error: "invalid_api_key",
-    message: "Invalid local API key. Set Authorization: Bearer <LOCAL_API_KEY>."
+    message: "Invalid API key. Set Authorization: Bearer <your_proxy_api_key>."
   });
 });
 
@@ -701,7 +1294,7 @@ app.get("/auth/callback", async (req, res) => {
   }
 });
 
-app.post("/auth/logout", async (_req, res) => {
+app.post("/auth/logout", async (req, res) => {
   if (config.authMode === "profile-store") {
     res.status(400).json({
       mode: "profile-store",
@@ -719,20 +1312,43 @@ app.post("/auth/logout", async (_req, res) => {
     return;
   }
 
-  oauthRuntime.store.token = null;
   if (config.authMode === "codex-oauth") {
-    oauthRuntime.store.accounts = [];
-    oauthRuntime.store.active_account_id = null;
-    oauthRuntime.store.rotation = { next_index: 0 };
+    const body = parseJsonBody(req);
+    const accountRef = String(body.entryId || body.accountId || "").trim();
+    const removed = removeCodexPoolAccountFromStore(oauthRuntime.store, accountRef);
+    if (!removed.removed) {
+      res.status(404).json({
+        error: "not_found",
+        message: "No removable OAuth account was found."
+      });
+      return;
+    }
+
+    oauthRuntime.store = removed.store;
+    await saveTokenStore(oauthRuntime.oauth.tokenStorePath, oauthRuntime.store);
+    clearAuthContextCache();
+    res.json({
+      ok: true,
+      mode: "codex-oauth",
+      removedEntryId: removed.removedEntryId,
+      removedAccountId: removed.removedAccountId,
+      remainingAccounts: removed.remainingAccounts,
+      activeEntryId: removed.activeEntryId
+    });
+    return;
   }
+
+  oauthRuntime.store.token = null;
   await saveTokenStore(oauthRuntime.oauth.tokenStorePath, oauthRuntime.store);
   clearAuthContextCache();
-  res.json({ ok: true });
+  res.json({ ok: true, mode: config.authMode });
 });
 
 app.get("/admin/state", async (_req, res) => {
   try {
     const authStatus = await getAuthStatus();
+    await checkCloudflaredInstalled(false).catch(() => {});
+    const apiKeySummary = buildApiKeySummary();
     res.json({
       ok: true,
       startedAt: runtimeStats.startedAt,
@@ -745,6 +1361,7 @@ app.get("/admin/state", async (_req, res) => {
         defaultInstructions: config.codex.defaultInstructions,
         defaultReasoningEffort: config.codex.defaultReasoningEffort,
         sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
+        apiKeyEnforced: apiKeySummary.enforced,
         multiAccountEnabled: isCodexMultiAccountEnabled(),
         multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
         preheatCooldownSeconds: config.codexPreheat.cooldownSeconds,
@@ -752,9 +1369,17 @@ app.get("/admin/state", async (_req, res) => {
         preheatMinPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
         preheatMinSecondaryRemaining: config.codexPreheat.minSecondaryRemaining,
         modelRouterEnabled: config.modelRouter.enabled,
-        modelMappings: config.modelRouter.customMappings
+        modelMappings: config.modelRouter.customMappings,
+        publicAccess: {
+          mode: cloudflaredRuntime.mode || config.publicAccess.defaultMode,
+          useHttp2: cloudflaredRuntime.useHttp2 !== false,
+          autoInstall: config.publicAccess.autoInstall !== false,
+          localPort: Number(cloudflaredRuntime.localPort || config.port)
+        }
       },
       auth: authStatus,
+      apiKeys: apiKeySummary,
+      publicAccess: getCloudflaredStatus(),
       preheat: getCodexPreheatState(),
       stats: {
         totalRequests: runtimeStats.totalRequests,
@@ -765,6 +1390,173 @@ app.get("/admin/state", async (_req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: "state_failed", message: err.message });
+  }
+});
+
+app.get("/admin/api-keys", async (_req, res) => {
+  const summary = buildApiKeySummary();
+  res.json({
+    ok: true,
+    ...summary
+  });
+});
+
+app.post("/admin/api-keys/generate", async (req, res) => {
+  try {
+    const body = parseJsonBody(req);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const label = sanitizeProxyApiKeyLabel(body?.label);
+    const expiresInDaysRaw = Number(body?.expiresInDays);
+    const expiresInDays = Number.isFinite(expiresInDaysRaw)
+      ? Math.max(0, Math.min(3650, Math.floor(expiresInDaysRaw)))
+      : 0;
+    const expiresAt = expiresInDays > 0 ? nowSec + expiresInDays * 86400 : 0;
+    const apiKey = createProxyApiKey();
+    const id = `key_${crypto.randomUUID().replace(/-/g, "")}`;
+    const entry = {
+      id,
+      label,
+      prefix: apiKey.slice(0, 10),
+      hash: hashProxyApiKey(apiKey),
+      created_at: nowSec,
+      last_used_at: 0,
+      use_count: 0,
+      revoked_at: 0,
+      expires_at: expiresAt
+    };
+
+    if (!Array.isArray(proxyApiKeyStore.keys)) proxyApiKeyStore.keys = [];
+    proxyApiKeyStore.keys.unshift(entry);
+    await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore);
+
+    res.json({
+      ok: true,
+      apiKey,
+      key: {
+        id: entry.id,
+        label: entry.label,
+        prefix: entry.prefix,
+        createdAt: entry.created_at,
+        expiresAt: entry.expires_at > 0 ? entry.expires_at : null,
+        active: true
+      },
+      summary: buildApiKeySummary()
+    });
+  } catch (err) {
+    res.status(400).json({
+      error: "api_key_generate_failed",
+      message: err.message
+    });
+  }
+});
+
+app.post("/admin/api-keys/revoke", async (req, res) => {
+  try {
+    const body = parseJsonBody(req);
+    const id = String(body?.id || "").trim();
+    if (!id) {
+      throw new Error("id is required.");
+    }
+    const keys = Array.isArray(proxyApiKeyStore.keys) ? proxyApiKeyStore.keys : [];
+    const targetIdx = keys.findIndex((x) => String(x?.id || "") === id);
+    if (targetIdx < 0) {
+      res.status(404).json({
+        error: "api_key_not_found",
+        message: "API key not found."
+      });
+      return;
+    }
+    keys.splice(targetIdx, 1);
+    await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore);
+    res.json({
+      ok: true,
+      id,
+      summary: buildApiKeySummary()
+    });
+  } catch (err) {
+    res.status(400).json({
+      error: "api_key_revoke_failed",
+      message: err.message
+    });
+  }
+});
+
+app.get("/admin/public-access/status", async (_req, res) => {
+  await checkCloudflaredInstalled(false).catch(() => {});
+  res.json({
+    ok: true,
+    status: getCloudflaredStatus()
+  });
+});
+
+app.post("/admin/public-access/install", async (_req, res) => {
+  try {
+    const result = await installCloudflaredBinary();
+    res.json({
+      ok: true,
+      result,
+      status: getCloudflaredStatus()
+    });
+  } catch (err) {
+    res.status(400).json({
+      error: "public_access_install_failed",
+      message: err.message,
+      status: getCloudflaredStatus()
+    });
+  }
+});
+
+app.post("/admin/public-access/start", async (req, res) => {
+  try {
+    const body = parseJsonBody(req);
+    const modeRaw = String(body?.mode || "").trim().toLowerCase();
+    const mode = VALID_CLOUDFLARED_MODES.has(modeRaw) ? modeRaw : cloudflaredRuntime.mode || config.publicAccess.defaultMode;
+    const token = body?.token === undefined ? undefined : String(body.token || "").trim();
+    const useHttp2 = body?.useHttp2 === undefined ? undefined : Boolean(body.useHttp2);
+    const autoInstall = body?.autoInstall === undefined ? undefined : Boolean(body.autoInstall);
+    const localPort = body?.localPort === undefined ? undefined : parseNumberEnv(body.localPort, Number(config.port), {
+      min: 1,
+      max: 65535,
+      integer: true
+    });
+
+    const status = await startCloudflaredTunnel({
+      mode,
+      token,
+      useHttp2,
+      localPort,
+      autoInstall
+    });
+
+    config.publicAccess.defaultMode = status.mode;
+    config.publicAccess.defaultUseHttp2 = status.useHttp2 !== false;
+    config.publicAccess.defaultTunnelToken = cloudflaredRuntime.tunnelToken || "";
+    config.publicAccess.localPort = Number(status.localPort || config.port);
+
+    res.json({
+      ok: true,
+      status
+    });
+  } catch (err) {
+    res.status(400).json({
+      error: "public_access_start_failed",
+      message: err.message
+    });
+  }
+});
+
+app.post("/admin/public-access/stop", async (_req, res) => {
+  try {
+    const status = await stopCloudflaredTunnel();
+    res.json({
+      ok: true,
+      status
+    });
+  } catch (err) {
+    res.status(400).json({
+      error: "public_access_stop_failed",
+      message: err.message
+    });
   }
 });
 
@@ -915,31 +1707,22 @@ app.post("/admin/auth-pool/remove", async (req, res) => {
     return;
   }
 
-  const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
-  codexOAuthStore = normalized.store;
-  const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], accountRef);
-  if (!target) {
+  const result = removeCodexPoolAccountFromStore(codexOAuthStore, accountRef);
+  if (!result.removed) {
     res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
     return;
   }
-  const targetEntryId = getCodexPoolEntryId(target);
-  const before = (codexOAuthStore.accounts || []).length;
-  codexOAuthStore.accounts = (codexOAuthStore.accounts || []).filter(
-    (x) => getCodexPoolEntryId(x) !== targetEntryId
-  );
-  const removed = before !== codexOAuthStore.accounts.length;
-  if (!removed) {
-    res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
-    return;
-  }
-  if (codexOAuthStore.active_account_id === targetEntryId) {
-    codexOAuthStore.active_account_id =
-      getCodexPoolEntryId(codexOAuthStore.accounts[0]) || null;
-  }
-  codexOAuthStore.token = codexOAuthStore.accounts[0]?.token || null;
+  codexOAuthStore = result.store;
   await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
   clearAuthContextCache();
-  res.json({ ok: true, entryId: targetEntryId, accountId: target.account_id, removed: true });
+  res.json({
+    ok: true,
+    entryId: result.removedEntryId,
+    accountId: result.removedAccountId,
+    removed: true,
+    remainingAccounts: result.remainingAccounts,
+    activeEntryId: result.activeEntryId
+  });
 });
 
 app.post("/admin/auth-pool/import", async (req, res) => {
@@ -1153,9 +1936,41 @@ app.post("/admin/config", async (req, res) => {
     if (typeof body.multiAccountStrategy === "string") {
       const strategy = body.multiAccountStrategy.trim().toLowerCase();
       if (!VALID_MULTI_ACCOUNT_STRATEGIES.has(strategy)) {
-        throw new Error("multiAccountStrategy must be one of: smart, round-robin, random, sticky");
+        throw new Error(`multiAccountStrategy must be one of: ${MULTI_ACCOUNT_STRATEGY_LIST}`);
       }
       config.codexOAuth.multiAccountStrategy = strategy;
+    }
+    if (typeof body.publicAccessMode === "string") {
+      const mode = String(body.publicAccessMode || "").trim().toLowerCase();
+      if (!VALID_CLOUDFLARED_MODES.has(mode)) {
+        throw new Error("publicAccessMode must be one of: quick, auth.");
+      }
+      config.publicAccess.defaultMode = mode;
+      cloudflaredRuntime.mode = mode;
+    }
+    if (body.publicAccessUseHttp2 !== undefined) {
+      const useHttp2 = Boolean(body.publicAccessUseHttp2);
+      config.publicAccess.defaultUseHttp2 = useHttp2;
+      cloudflaredRuntime.useHttp2 = useHttp2;
+    }
+    if (body.publicAccessAutoInstall !== undefined) {
+      config.publicAccess.autoInstall = true;
+    }
+    if (body.publicAccessLocalPort !== undefined) {
+      const parsed = parseNumberEnv(body.publicAccessLocalPort, NaN, {
+        min: 1,
+        max: 65535,
+        integer: true
+      });
+      if (!Number.isFinite(parsed)) {
+        throw new Error("publicAccessLocalPort must be a number between 1 and 65535.");
+      }
+      config.publicAccess.localPort = parsed;
+      cloudflaredRuntime.localPort = parsed;
+    }
+    if (body.publicAccessToken !== undefined) {
+      config.publicAccess.defaultTunnelToken = String(body.publicAccessToken || "").trim();
+      cloudflaredRuntime.tunnelToken = config.publicAccess.defaultTunnelToken;
     }
     if (body.preheatCooldownSeconds !== undefined) {
       const parsed = parseNumberEnv(body.preheatCooldownSeconds, NaN, {
@@ -1224,7 +2039,13 @@ app.post("/admin/config", async (req, res) => {
         preheatMinPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
         preheatMinSecondaryRemaining: config.codexPreheat.minSecondaryRemaining,
         modelRouterEnabled: config.modelRouter.enabled,
-        modelMappings: config.modelRouter.customMappings
+        modelMappings: config.modelRouter.customMappings,
+        publicAccess: {
+          mode: cloudflaredRuntime.mode || config.publicAccess.defaultMode,
+          useHttp2: cloudflaredRuntime.useHttp2 !== false,
+          autoInstall: config.publicAccess.autoInstall !== false,
+          localPort: Number(cloudflaredRuntime.localPort || config.port)
+        }
       }
     });
   } catch (err) {
@@ -1245,6 +2066,7 @@ app.post("/admin/test", async (req, res) => {
     res.status(400).json({ error: "test_failed", message: err.message });
   }
 });
+
 
 app.get("/v1/models", async (req, res) => {
   if (isAnthropicNativeRequest(req)) {
@@ -1357,12 +2179,32 @@ app.use("/v1/messages", async (req, res) => {
 
 app.use("/v1", async (req, res) => {
   res.locals.protocolType = "openai-v1";
-  if (config.upstreamMode === "gemini-v1beta") {
+  const incoming = new URL(req.originalUrl, "http://localhost");
+
+  if (isGeminiNativeAliasPath(incoming.pathname)) {
+    res.locals.protocolType = "gemini-v1beta-native";
+    const aliasedOriginalUrl = req.originalUrl.replace(/^\/v1\/models\//, "/v1beta/models/");
+    const previousOriginalUrl = req.originalUrl;
+    req.originalUrl = aliasedOriginalUrl;
+    try {
+      await handleGeminiNativeProxy(req, res);
+    } finally {
+      req.originalUrl = previousOriginalUrl;
+    }
+    return;
+  }
+
+  const selectedProtocol =
+    incoming.pathname === "/v1/chat/completions" && req.method === "POST"
+      ? chooseProtocolForV1ChatCompletions(req)
+      : config.upstreamMode;
+
+  if (selectedProtocol === "gemini-v1beta") {
     await handleGeminiProtocol(req, res);
     return;
   }
 
-  if (config.upstreamMode === "anthropic-v1") {
+  if (selectedProtocol === "anthropic-v1") {
     await handleAnthropicProtocol(req, res);
     return;
   }
@@ -1620,7 +2462,7 @@ app.use("/v1", async (req, res) => {
   Readable.fromWeb(upstream.body).pipe(res);
 });
 
-app.listen(config.port, config.host, () => {
+const mainServer = app.listen(config.port, config.host, () => {
   console.log(`codex-oauth-proxy listening on http://${config.host}:${config.port}`);
   console.log(`mode:   ${config.authMode}`);
   console.log(`upstream-mode: ${config.upstreamMode}`);
@@ -1641,6 +2483,45 @@ app.listen(config.port, config.host, () => {
   console.log(`dashboard:       http://${config.host}:${config.port}/dashboard/`);
   console.log(`proxy:           http://${config.host}:${config.port}/v1/*`);
   console.log(`preheat:         manual trigger only (dashboard button)`);
+});
+
+mainServer.on("error", (err) => {
+  if (err && err.code === "EADDRINUSE") {
+    console.error(
+      `[startup] Port ${config.host}:${config.port} is already in use. ` +
+      `Stop the existing process or run with a different PORT.`
+    );
+    process.exit(1);
+    return;
+  }
+  console.error(`[startup] Failed to start server: ${err?.message || err}`);
+  process.exit(1);
+});
+
+let gracefulExitStarted = false;
+async function gracefulShutdown(signal = "SIGTERM") {
+  if (gracefulExitStarted) return;
+  gracefulExitStarted = true;
+  console.log(`[shutdown] received ${signal}, cleaning up...`);
+  try {
+    if (proxyApiKeyStoreFlushTimer) {
+      clearTimeout(proxyApiKeyStoreFlushTimer);
+      proxyApiKeyStoreFlushTimer = null;
+    }
+    await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore).catch(() => {});
+    await stopCloudflaredTunnel().catch(() => {});
+  } finally {
+    mainServer.close(() => {
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(0), 1200).unref();
+  }
+}
+process.on("SIGINT", () => {
+  gracefulShutdown("SIGINT").catch(() => process.exit(0));
+});
+process.on("SIGTERM", () => {
+  gracefulShutdown("SIGTERM").catch(() => process.exit(0));
 });
 
 async function getAuthStatus() {
@@ -1963,14 +2844,18 @@ function getCodexEndpointKind(pathname) {
 
 function normalizeCodexResponsesRequestBody(rawBody) {
   if (!rawBody || rawBody.length === 0) {
-    const modelRoute = resolveModelRoute(config.codex.defaultModel, "codex-chatgpt");
+    const modelRoute = resolveCodexCompatibleRoute(config.codex.defaultModel);
+    const fallbackInstructions = config.codex.defaultInstructions;
     const fallback = {
       model: modelRoute.mappedModel,
       stream: true,
       store: false,
-      instructions: config.codex.defaultInstructions,
+      instructions: fallbackInstructions,
       reasoning: {
-        effort: config.codex.defaultReasoningEffort
+        effort: resolveReasoningEffort(undefined, {
+          input: [{ role: "user", content: [{ type: "input_text", text: "" }] }],
+          instructions: fallbackInstructions
+        }, modelRoute.mappedModel)
       },
       input: [{ role: "user", content: [{ type: "input_text", text: "" }] }]
     };
@@ -2003,7 +2888,7 @@ function normalizeCodexResponsesRequestBody(rawBody) {
 
   const wantsStream = parsed.stream === true;
   const normalized = { ...parsed };
-  const modelRoute = resolveModelRoute(normalized.model || config.codex.defaultModel, "codex-chatgpt");
+  const modelRoute = resolveCodexCompatibleRoute(normalized.model || config.codex.defaultModel);
   normalized.model = modelRoute.mappedModel;
   normalized.stream = true;
   if (normalized.store === undefined) normalized.store = false;
@@ -2020,7 +2905,7 @@ function normalizeCodexResponsesRequestBody(rawBody) {
     input: normalized.input,
     tools: normalized.tools,
     instructions: normalized.instructions
-  });
+  }, modelRoute.mappedModel);
   delete normalized.messages;
   delete normalized.reasoning_effort;
 
@@ -2055,7 +2940,7 @@ function normalizeChatCompletionsRequestBody(rawBody) {
     .map((msg) => (typeof msg.content === "string" ? msg.content : ""))
     .filter((text) => text.length > 0);
 
-  const modelRoute = resolveModelRoute(parsed.model || config.codex.defaultModel, "codex-chatgpt");
+  const modelRoute = resolveCodexCompatibleRoute(parsed.model || config.codex.defaultModel);
   const upstreamBody = {
     model: modelRoute.mappedModel,
     stream: true,
@@ -2067,14 +2952,14 @@ function normalizeChatCompletionsRequestBody(rawBody) {
         tools: parsed.tools,
         tool_choice: parsed.tool_choice,
         instructions: systemMessages.join("\n\n") || config.codex.defaultInstructions
-      })
+      }, modelRoute.mappedModel)
     },
     input: toResponsesInputFromChatMessages(messages)
   };
 
   if (parsed.temperature !== undefined) upstreamBody.temperature = parsed.temperature;
   if (parsed.top_p !== undefined) upstreamBody.top_p = parsed.top_p;
-  if (parsed.max_tokens !== undefined) upstreamBody.max_output_tokens = parsed.max_tokens;
+  // Some upstream Codex deployments reject max_output_tokens; keep compatibility by omitting it.
   if (parsed.tool_choice !== undefined) upstreamBody.tool_choice = normalizeChatToolChoice(parsed.tool_choice);
   if (parsed.tools !== undefined) upstreamBody.tools = normalizeChatTools(parsed.tools);
 
@@ -2894,6 +3779,24 @@ function parsePercentOrNull(value) {
   return Math.max(0, Math.min(100, n));
 }
 
+function parseJsonLoose(rawText) {
+  if (typeof rawText !== "string") return null;
+  const trimmed = rawText.trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+}
+
 function hasCodexUsageWindow(usageWindow) {
   if (!usageWindow || typeof usageWindow !== "object") return false;
   const windowMinutes = Number(usageWindow.window_minutes);
@@ -2932,15 +3835,54 @@ function readUsageUsedPercent(usageWindow) {
 
 function getCodexUsageWindowStats(account) {
   const usage = account?.usage_snapshot || null;
-  const primaryHasWindow = hasCodexUsageWindow(usage?.primary);
-  const secondaryHasWindow = hasCodexUsageWindow(usage?.secondary);
-  const primaryRemaining = primaryHasWindow ? readUsageRemainingPercent(usage?.primary) : null;
-  const secondaryRemaining = secondaryHasWindow ? readUsageRemainingPercent(usage?.secondary) : null;
-  const primaryUsed = primaryHasWindow ? readUsageUsedPercent(usage?.primary) : null;
-  const secondaryUsed = secondaryHasWindow ? readUsageUsedPercent(usage?.secondary) : null;
-  const primaryWindowMinutes = Number(usage?.primary?.window_minutes);
-  const secondaryWindowMinutes = Number(usage?.secondary?.window_minutes);
+  let primaryHasWindow = hasCodexUsageWindow(usage?.primary);
+  let secondaryHasWindow = hasCodexUsageWindow(usage?.secondary);
+  let primaryRemaining = primaryHasWindow ? readUsageRemainingPercent(usage?.primary) : null;
+  let secondaryRemaining = secondaryHasWindow ? readUsageRemainingPercent(usage?.secondary) : null;
+  let primaryUsed = primaryHasWindow ? readUsageUsedPercent(usage?.primary) : null;
+  let secondaryUsed = secondaryHasWindow ? readUsageUsedPercent(usage?.secondary) : null;
+  let primaryWindowMinutes = Number(usage?.primary?.window_minutes);
+  let secondaryWindowMinutes = Number(usage?.secondary?.window_minutes);
   const planType = String(usage?.plan_type || "").trim().toLowerCase();
+
+  // Free plans only expose one quota window. If legacy/bad snapshots contain both,
+  // collapse to a single effective window so dashboard and health remain consistent.
+  if (planType === "free") {
+    const windows = [];
+    if (primaryHasWindow) {
+      windows.push({
+        remaining: primaryRemaining,
+        used: primaryUsed,
+        minutes: Number.isFinite(primaryWindowMinutes) ? primaryWindowMinutes : null
+      });
+    }
+    if (secondaryHasWindow) {
+      windows.push({
+        remaining: secondaryRemaining,
+        used: secondaryUsed,
+        minutes: Number.isFinite(secondaryWindowMinutes) ? secondaryWindowMinutes : null
+      });
+    }
+
+    const pickScore = (w) => {
+      const rem = Number.isFinite(w?.remaining) ? w.remaining : 100;
+      const used = Number.isFinite(w?.used) ? w.used : 0;
+      return used > 0 || rem < 100 ? 1000 - rem + used : 0;
+    };
+    const preferred = windows
+      .map((w) => ({ w, s: pickScore(w) }))
+      .sort((a, b) => b.s - a.s)[0]?.w;
+
+    primaryHasWindow = Boolean(preferred);
+    secondaryHasWindow = false;
+    primaryRemaining = preferred?.remaining ?? null;
+    primaryUsed = preferred?.used ?? null;
+    primaryWindowMinutes = Number.isFinite(preferred?.minutes) ? preferred.minutes : 10080;
+    secondaryRemaining = null;
+    secondaryUsed = null;
+    secondaryWindowMinutes = null;
+  }
+
   const isSingleWindow = primaryHasWindow && !secondaryHasWindow;
   return {
     planType,
@@ -2974,9 +3916,12 @@ function classifyCodexPoolHealth(account, nowSec = Math.floor(Date.now() / 1000)
   const primaryRemaining = usageStats.primaryRemaining;
   const secondaryRemaining = usageStats.secondaryRemaining;
   const lowQuotaThreshold = resolveCodexLowQuotaThreshold(usageStats);
-  const hardLimited =
-    primaryRemaining !== null &&
-    (secondaryRemaining === null ? primaryRemaining <= 0 : primaryRemaining <= 0 && secondaryRemaining <= 0);
+  // For dual-window plans, either window reaching 0 means the account is not usable now.
+  // For single-window plans, only the primary window applies.
+  const hardLimited = usageStats.isSingleWindow
+    ? primaryRemaining !== null && primaryRemaining <= 0
+    : (primaryRemaining !== null && primaryRemaining <= 0) ||
+      (secondaryRemaining !== null && secondaryRemaining <= 0);
   const lowQuota =
     (primaryRemaining !== null && primaryRemaining <= lowQuotaThreshold) ||
     (secondaryRemaining !== null && secondaryRemaining <= LOW_QUOTA_THRESHOLD_DUAL_WINDOW);
@@ -3045,6 +3990,20 @@ function decorateCodexPoolAccount(account, activeEntryId = "", nowSec = Math.flo
   };
 }
 
+function compareCodexSmartDecorated(a, b) {
+  if (b.healthScore !== a.healthScore) return b.healthScore - a.healthScore;
+  if ((b.primaryRemaining ?? -1) !== (a.primaryRemaining ?? -1)) {
+    return (b.primaryRemaining ?? -1) - (a.primaryRemaining ?? -1);
+  }
+  if ((b.secondaryRemaining ?? -1) !== (a.secondaryRemaining ?? -1)) {
+    return (b.secondaryRemaining ?? -1) - (a.secondaryRemaining ?? -1);
+  }
+  const aUsed = Number(a.account?.last_used_at || 0);
+  const bUsed = Number(b.account?.last_used_at || 0);
+  if (aUsed !== bUsed) return aUsed - bUsed;
+  return String(a.entryId || "").localeCompare(String(b.entryId || ""));
+}
+
 function buildCodexPoolMetrics(accounts, activeEntryId = "") {
   const nowSec = Math.floor(Date.now() / 1000);
   const decorated = (Array.isArray(accounts) ? accounts : []).map((x) =>
@@ -3065,13 +4024,7 @@ function buildCodexPoolMetrics(accounts, activeEntryId = "") {
   const lowQuotaCount = decorated.filter((x) => x.lowQuota).length;
   const hardLimitedCount = decorated.filter((x) => x.hardLimited).length;
   const recommended = [...enabled]
-    .sort((a, b) => {
-      if (b.healthScore !== a.healthScore) return b.healthScore - a.healthScore;
-      const aUsed = Number(a.account?.last_used_at || 0);
-      const bUsed = Number(b.account?.last_used_at || 0);
-      if (aUsed !== bUsed) return aUsed - bUsed;
-      return String(a.entryId || "").localeCompare(String(b.entryId || ""));
-    })
+    .sort(compareCodexSmartDecorated)
     .slice(0, 3)
     .map((x) => x.entryId);
   return {
@@ -3100,10 +4053,14 @@ function buildCodexPoolMetrics(accounts, activeEntryId = "") {
 function getCodexEnabledAccounts(store) {
   if (!Array.isArray(store?.accounts)) return [];
   const nowSec = Math.floor(Date.now() / 1000);
-  const eligible = store.accounts.filter(
-    (x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec
-  );
-  if (eligible.length === 0) return [];
+  const enabledAccounts = store.accounts.filter((x) => x && x.enabled !== false);
+  if (enabledAccounts.length === 0) return [];
+  // If every account is cooling down, still allow fallback candidates instead of hard-failing
+  // with "No enabled OAuth accounts".
+  const eligible =
+    enabledAccounts.filter((x) => Number(x.cooldown_until || 0) <= nowSec).length > 0
+      ? enabledAccounts.filter((x) => Number(x.cooldown_until || 0) <= nowSec)
+      : [...enabledAccounts];
   const preferred = eligible.filter((x) => {
     const health = classifyCodexPoolHealth(x, nowSec);
     return health.status !== "limited" && !health.hardLimited;
@@ -3124,20 +4081,24 @@ function pickCodexAccountCandidates(store) {
   const strategy = config.codexOAuth.multiAccountStrategy;
   if (strategy === "smart") {
     const decorated = enabled.map((x) => decorateCodexPoolAccount(x, store.active_account_id || ""));
-    decorated.sort((a, b) => {
-      if (b.healthScore !== a.healthScore) return b.healthScore - a.healthScore;
-      if ((b.primaryRemaining ?? -1) !== (a.primaryRemaining ?? -1)) {
-        return (b.primaryRemaining ?? -1) - (a.primaryRemaining ?? -1);
-      }
-      if ((b.secondaryRemaining ?? -1) !== (a.secondaryRemaining ?? -1)) {
-        return (b.secondaryRemaining ?? -1) - (a.secondaryRemaining ?? -1);
-      }
-      const aUsed = Number(a.account?.last_used_at || 0);
-      const bUsed = Number(b.account?.last_used_at || 0);
-      if (aUsed !== bUsed) return aUsed - bUsed;
-      return String(a.entryId || "").localeCompare(String(b.entryId || ""));
-    });
-    return decorated.map((x) => x.account);
+    const preferred = decorated.filter((x) => x.healthStatus !== "limited" && !x.hardLimited);
+    const ranked = (preferred.length > 0 ? preferred : decorated).sort(compareCodexSmartDecorated);
+    return ranked.map((x) => x.account);
+  }
+  if (strategy === "manual") {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const activeRef = String(store.active_account_id || "").trim();
+    const pool = Array.isArray(store.accounts) ? store.accounts : [];
+    const activeReady = pool.find(
+      (x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec && getCodexPoolEntryId(x) === activeRef
+    );
+    if (activeReady) return [activeReady];
+    const activeEnabled = pool.find((x) => x && x.enabled !== false && getCodexPoolEntryId(x) === activeRef);
+    if (activeEnabled) return [activeEnabled];
+    const fallbackReady = pool.find((x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec);
+    if (fallbackReady) return [fallbackReady];
+    const fallbackEnabled = pool.find((x) => x && x.enabled !== false);
+    return fallbackEnabled ? [fallbackEnabled] : [];
   }
   if (strategy === "sticky" && store.active_account_id) {
     const primary = enabled.find((x) => getCodexPoolEntryId(x) === String(store.active_account_id));
@@ -3268,12 +4229,118 @@ function getCodexPoolCooldownSeconds(statusCode, failureCount) {
   return Math.min(180, 15 * Math.max(1, failureCount));
 }
 
+function isCodexTokenInvalidatedError(statusCode, reason) {
+  if (Number(statusCode || 0) !== 401) return false;
+  const text = String(reason || "").toLowerCase();
+  return (
+    text.includes("token_invalidated") ||
+    text.includes("authentication token has been invalidated") ||
+    text.includes("please try signing in again")
+  );
+}
+
 function findCodexPoolAccountByRef(accounts, ref) {
   const needle = String(ref || "").trim();
   if (!needle) return null;
   const byEntry = (accounts || []).find((x) => getCodexPoolEntryId(x) === needle);
   if (byEntry) return byEntry;
   return (accounts || []).find((x) => String(x.account_id || "") === needle) || null;
+}
+
+function selectCodexAccountForLogout(store, explicitRef = "") {
+  const accounts = Array.isArray(store?.accounts) ? store.accounts : [];
+  if (accounts.length === 0) return null;
+
+  const explicit = String(explicitRef || "").trim();
+  if (explicit) {
+    const byExplicit = findCodexPoolAccountByRef(accounts, explicit);
+    if (byExplicit) return byExplicit;
+  }
+
+  const activeRef = String(store?.active_account_id || "").trim();
+  if (activeRef) {
+    const byActive = findCodexPoolAccountByRef(accounts, activeRef);
+    if (byActive) return byActive;
+  }
+
+  const cacheAccountId = String(authContextCache.accountId || "").trim();
+  if (cacheAccountId) {
+    const byCache = findCodexPoolAccountByRef(accounts, cacheAccountId);
+    if (byCache) return byCache;
+  }
+
+  const tokenRef = deriveCodexPoolEntryIdFromToken(store?.token || null);
+  if (tokenRef) {
+    const byToken = findCodexPoolAccountByRef(accounts, tokenRef);
+    if (byToken) return byToken;
+  }
+
+  return accounts.find((x) => x && x.enabled !== false) || accounts[0] || null;
+}
+
+function removeCodexPoolAccountFromStore(storeInput, accountRef = "") {
+  const normalized = ensureCodexOAuthStoreShape(storeInput);
+  const store = normalized.store;
+  const accounts = Array.isArray(store.accounts) ? store.accounts : [];
+  const target = selectCodexAccountForLogout(store, accountRef);
+  if (!target) {
+    return {
+      removed: false,
+      removedEntryId: null,
+      removedAccountId: null,
+      remainingAccounts: accounts.length,
+      activeEntryId: String(store.active_account_id || "").trim() || null,
+      store
+    };
+  }
+
+  const removedEntryId = getCodexPoolEntryId(target);
+  const removedAccountId = String(target.account_id || "").trim() || null;
+  const nextAccounts = accounts.filter((x) => getCodexPoolEntryId(x) !== removedEntryId);
+  const removed = nextAccounts.length !== accounts.length;
+  if (!removed) {
+    return {
+      removed: false,
+      removedEntryId,
+      removedAccountId,
+      remainingAccounts: accounts.length,
+      activeEntryId: String(store.active_account_id || "").trim() || null,
+      store
+    };
+  }
+
+  store.accounts = nextAccounts;
+  if (nextAccounts.length === 0) {
+    store.active_account_id = null;
+    store.token = null;
+    store.rotation = { next_index: 0 };
+  } else {
+    let nextActive = null;
+    const currentActiveRef = String(store.active_account_id || "").trim();
+    if (currentActiveRef && currentActiveRef !== removedEntryId) {
+      nextActive = findCodexPoolAccountByRef(nextAccounts, currentActiveRef);
+    }
+    if (!nextActive || nextActive.enabled === false) {
+      nextActive = nextAccounts.find((x) => x && x.enabled !== false) || nextAccounts[0];
+    }
+
+    const nextActiveEntryId = getCodexPoolEntryId(nextActive);
+    const nextIdx = nextAccounts.findIndex((x) => getCodexPoolEntryId(x) === nextActiveEntryId);
+    store.active_account_id = nextActiveEntryId || null;
+    store.token = nextActive?.token || null;
+    store.rotation = {
+      next_index: nextIdx >= 0 && nextAccounts.length > 1 ? (nextIdx + 1) % nextAccounts.length : 0
+    };
+  }
+
+  return {
+    removed: true,
+    removedEntryId,
+    removedAccountId,
+    remainingAccounts: store.accounts.length,
+    activeEntryId: String(store.active_account_id || "").trim() || null,
+    store
+  };
 }
 
 async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
@@ -3286,11 +4353,31 @@ async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
   target.last_error = String(reason || "request_failed");
   const cooldownSeconds = getCodexPoolCooldownSeconds(statusCode, target.failure_count);
   const nowSec = Math.floor(Date.now() / 1000);
-  target.cooldown_until = nowSec + cooldownSeconds;
+  const tokenInvalidated = isCodexTokenInvalidatedError(statusCode, target.last_error);
+  if (tokenInvalidated) {
+    // Hard-disable invalidated identities to stop poisoning account rotation.
+    target.enabled = false;
+    target.cooldown_until = 0;
+  } else {
+    target.cooldown_until = nowSec + cooldownSeconds;
+  }
+  if (Number(statusCode || 0) === 429) {
+    const fallbackSnapshot = extractCodexUsageSnapshotFromLimitError(
+      target.last_error,
+      target.usage_snapshot || null,
+      "request_error"
+    );
+    if (fallbackSnapshot) {
+      target.usage_snapshot = fallbackSnapshot;
+      target.usage_updated_at = Number(fallbackSnapshot.fetched_at || nowSec) || nowSec;
+    }
+  }
   const targetEntryId = getCodexPoolEntryId(target);
   if (
     codexOAuthStore.active_account_id === targetEntryId &&
-    config.codexOAuth.multiAccountStrategy !== "sticky"
+    (tokenInvalidated ||
+      (config.codexOAuth.multiAccountStrategy !== "sticky" &&
+        config.codexOAuth.multiAccountStrategy !== "manual"))
   ) {
     codexOAuthStore.active_account_id = null;
   }
@@ -3409,6 +4496,86 @@ function applyCodexUsageSnapshotToStore(store, accountRef, snapshot) {
   target.usage_snapshot = snapshot;
   target.usage_updated_at = Number(snapshot.fetched_at || Math.floor(Date.now() / 1000));
   return true;
+}
+
+function extractCodexUsageSnapshotFromLimitError(rawText, previousSnapshot = null, source = "error") {
+  const parsed = parseJsonLoose(rawText);
+  const err = parsed?.error && typeof parsed.error === "object" ? parsed.error : null;
+  if (!err) return null;
+  const errType = String(err.type || err.code || "").trim().toLowerCase();
+  if (errType !== "usage_limit_reached") return null;
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const planTypeRaw = String(err.plan_type || previousSnapshot?.plan_type || "").trim().toLowerCase();
+  const planType = planTypeRaw || null;
+  const resetAt = parseCodexHeaderNumber(err.resets_at);
+  const resetInSeconds = parseCodexHeaderNumber(err.resets_in_seconds);
+  const effectiveResetAt =
+    resetAt ?? (Number.isFinite(resetInSeconds) ? nowSec + Math.max(0, resetInSeconds) : null);
+
+  const prevPrimary = previousSnapshot?.primary && hasCodexUsageWindow(previousSnapshot.primary)
+    ? {
+        used_percent: parsePercentOrNull(previousSnapshot.primary.used_percent),
+        remaining_percent: readUsageRemainingPercent(previousSnapshot.primary),
+        reset_after_seconds: parseCodexHeaderNumber(previousSnapshot.primary.reset_after_seconds),
+        reset_at: parseCodexHeaderNumber(previousSnapshot.primary.reset_at),
+        window_minutes: parseCodexHeaderNumber(previousSnapshot.primary.window_minutes),
+        over_secondary_limit_percent: parseCodexHeaderNumber(previousSnapshot.primary.over_secondary_limit_percent)
+      }
+    : null;
+  const weeklyMinutes =
+    parseCodexHeaderNumber(previousSnapshot?.secondary?.window_minutes) ||
+    parseCodexHeaderNumber(previousSnapshot?.primary?.window_minutes) ||
+    10080;
+  const weeklyWindow = {
+    used_percent: 100,
+    remaining_percent: 0,
+    reset_after_seconds: resetInSeconds,
+    reset_at: effectiveResetAt,
+    window_minutes: weeklyMinutes
+  };
+
+  // free plan => single weekly window only.
+  if (planType === "free") {
+    return {
+      fetched_at: nowSec,
+      source,
+      plan_type: "free",
+      active_limit: "weekly",
+      credits: previousSnapshot?.credits || {
+        has_credits: null,
+        unlimited: null,
+        balance: null
+      },
+      primary: {
+        ...weeklyWindow,
+        over_secondary_limit_percent: null
+      },
+      secondary: null,
+      raw_headers:
+        previousSnapshot?.raw_headers && typeof previousSnapshot.raw_headers === "object"
+          ? previousSnapshot.raw_headers
+          : {}
+    };
+  }
+
+  return {
+    fetched_at: nowSec,
+    source,
+    plan_type: planType,
+    active_limit: "secondary",
+    credits: previousSnapshot?.credits || {
+      has_credits: null,
+      unlimited: null,
+      balance: null
+    },
+    primary: prevPrimary,
+    secondary: weeklyWindow,
+    raw_headers:
+      previousSnapshot?.raw_headers && typeof previousSnapshot.raw_headers === "object"
+        ? previousSnapshot.raw_headers
+        : {}
+  };
 }
 
 async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, options = {}) {
@@ -3571,6 +4738,10 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig) {
   const snapshot = extractCodexUsageSnapshotFromHeaders(response.headers, "probe");
   if (!response.ok) {
     const raw = await response.text().catch(() => "");
+    const fallback = extractCodexUsageSnapshotFromLimitError(raw, account?.usage_snapshot || null, "probe_error");
+    if (fallback) {
+      return fallback;
+    }
     throw new Error(`HTTP ${response.status}: ${truncate(raw, 180)}`);
   }
   if (response.body) {
@@ -4118,6 +5289,119 @@ function resolveModelRoute(originalModel, targetMode = config.upstreamMode) {
   };
 }
 
+function detectModelFamily(modelId) {
+  const value = String(modelId || "").trim().toLowerCase();
+  if (!value) return "";
+  if (value.startsWith("gemini-")) return "gemini-v1beta";
+  if (
+    value.startsWith("claude-") ||
+    value.includes("claude") ||
+    value.includes("opus") ||
+    value.includes("sonnet") ||
+    value.includes("haiku")
+  ) {
+    return "anthropic-v1";
+  }
+  if (value.startsWith("gpt-") || value.includes("codex") || /^o\d/.test(value)) {
+    return "codex-chatgpt";
+  }
+  return "";
+}
+
+function resolveCustomModelRouteOnly(originalModel) {
+  const requestedModel =
+    typeof originalModel === "string" && originalModel.trim().length > 0
+      ? originalModel.trim()
+      : "";
+  if (!requestedModel || !config.modelRouter.enabled) return null;
+
+  const customMappings = config.modelRouter.customMappings || {};
+  if (customMappings[requestedModel]) {
+    return {
+      requestedModel,
+      mappedModel: customMappings[requestedModel],
+      routeType: "exact",
+      routeRule: requestedModel
+    };
+  }
+
+  let bestWildcard = null;
+  for (const [pattern, target] of Object.entries(customMappings)) {
+    if (!pattern.includes("*")) continue;
+    if (!wildcardMatch(pattern, requestedModel)) continue;
+    const specificity = pattern.length - (pattern.match(/\*/g)?.length || 0);
+    if (!bestWildcard || specificity > bestWildcard.specificity) {
+      bestWildcard = {
+        pattern,
+        target,
+        specificity
+      };
+    }
+  }
+
+  if (!bestWildcard) return null;
+  return {
+    requestedModel,
+    mappedModel: bestWildcard.target,
+    routeType: "wildcard",
+    routeRule: bestWildcard.pattern
+  };
+}
+
+function resolveCodexCompatibleRoute(originalModel) {
+  const route = resolveModelRoute(originalModel, "codex-chatgpt");
+  const family = detectModelFamily(route.mappedModel);
+  if (!family || family === "codex-chatgpt") return route;
+
+  const fallbackModel = resolveSystemModelRoute(route.requestedModel, "codex-chatgpt");
+  return {
+    requestedModel: route.requestedModel,
+    mappedModel: fallbackModel,
+    routeType: "system",
+    routeRule: "codex-chatgpt"
+  };
+}
+
+function extractRequestedModelFromOpenAICompatBody(rawBody, fallbackModel = config.codex.defaultModel) {
+  if (!rawBody || rawBody.length === 0) return fallbackModel;
+  try {
+    const parsed = JSON.parse(rawBody.toString("utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
+      if (model.length > 0) return model;
+    }
+  } catch {
+    return fallbackModel;
+  }
+  return fallbackModel;
+}
+
+function chooseProtocolForV1ChatCompletions(req) {
+  const requestedModel = extractRequestedModelFromOpenAICompatBody(req.rawBody, getModeDefaultModel(config.upstreamMode));
+  const customRoute = resolveCustomModelRouteOnly(requestedModel);
+  if (customRoute) {
+    const customFamily = detectModelFamily(customRoute.mappedModel);
+    if (customFamily) {
+      return customFamily;
+    }
+  }
+
+  if (config.upstreamMode === "codex-chatgpt") {
+    const requestFamily = detectModelFamily(requestedModel);
+    if (requestFamily === "gemini-v1beta" || requestFamily === "anthropic-v1") {
+      return requestFamily;
+    }
+  }
+
+  return config.upstreamMode;
+}
+
+function isGeminiNativeAliasPath(pathname) {
+  return /^\/v1\/models\/[^/:]+:(generateContent|streamGenerateContent|countTokens)$/.test(
+    String(pathname || "")
+  );
+}
+
 function uniqueNonEmptyModelIds(values) {
   return [...new Set((values || []).filter((x) => typeof x === "string" && x.trim().length > 0))];
 }
@@ -4284,26 +5568,53 @@ function extractBearerToken(req) {
   return (match[1] || "").trim();
 }
 
+function sanitizeUpstreamApiKeyCandidate(value) {
+  const key = String(value || "").trim();
+  if (!key) return "";
+  const shared = String(config.codexOAuth.sharedApiKey || "").trim();
+  if (shared && key === shared) return "";
+  return key;
+}
+
+function isLikelyGeminiApiKey(value) {
+  const key = String(value || "").trim();
+  // Typical Google API key format.
+  return /^AIza[0-9A-Za-z_-]{20,}$/.test(key);
+}
+
+function isLikelyAnthropicApiKey(value) {
+  const key = String(value || "").trim();
+  // Typical Anthropic key format.
+  return /^sk-ant-[0-9A-Za-z_-]{16,}$/i.test(key);
+}
+
 function resolveGeminiApiKey(req) {
+  const configuredKey = sanitizeUpstreamApiKeyCandidate(config.gemini.apiKey || "");
+  if (configuredKey && isLikelyGeminiApiKey(configuredKey)) return configuredKey;
+  if (!config.providerUpstream.allowRequestApiKeys) return "";
   const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
-  const queryKey = incoming.searchParams.get("key") || "";
-  const headerKey = readHeaderValue(req, "x-goog-api-key");
-  const bearerKey = extractBearerToken(req);
-  return headerKey || queryKey || config.gemini.apiKey || bearerKey;
+  const queryKey = sanitizeUpstreamApiKeyCandidate(incoming.searchParams.get("key") || "");
+  const headerKey = sanitizeUpstreamApiKeyCandidate(readHeaderValue(req, "x-goog-api-key"));
+  if (headerKey && isLikelyGeminiApiKey(headerKey)) return headerKey;
+  if (queryKey && isLikelyGeminiApiKey(queryKey)) return queryKey;
+  return "";
 }
 
 function resolveAnthropicApiKey(req) {
-  const headerKey = readHeaderValue(req, "x-api-key");
-  const bearerKey = extractBearerToken(req);
-  return headerKey || config.anthropic.apiKey || bearerKey;
+  const configuredKey = sanitizeUpstreamApiKeyCandidate(config.anthropic.apiKey || "");
+  if (configuredKey && isLikelyAnthropicApiKey(configuredKey)) return configuredKey;
+  if (!config.providerUpstream.allowRequestApiKeys) return "";
+  const headerKey = sanitizeUpstreamApiKeyCandidate(readHeaderValue(req, "x-api-key"));
+  if (headerKey && isLikelyAnthropicApiKey(headerKey)) return headerKey;
+  return "";
 }
 
 function isAnthropicNativeRequest(req) {
   return (
     config.upstreamMode === "anthropic-v1" ||
-    Boolean(readHeaderValue(req, "x-api-key")) ||
     Boolean(readHeaderValue(req, "anthropic-version")) ||
-    Boolean(readHeaderValue(req, "anthropic-beta"))
+    Boolean(readHeaderValue(req, "anthropic-beta")) ||
+    (config.providerUpstream.allowRequestApiKeys && Boolean(readHeaderValue(req, "x-api-key")))
   );
 }
 
@@ -4346,6 +5657,41 @@ function parseGeminiErrorMessage(rawText, fallbackMessage) {
     // ignore and fallback
   }
   return fallbackMessage;
+}
+
+function mapHttpStatusToAnthropicErrorType(httpStatus) {
+  const code = Number(httpStatus || 400);
+  if (code === 401 || code === 403) return "authentication_error";
+  if (code === 404) return "not_found_error";
+  if (code === 429) return "rate_limit_error";
+  if (code >= 500) return "api_error";
+  return "invalid_request_error";
+}
+
+function parseAnthropicErrorMessage(rawText, fallbackMessage) {
+  if (typeof rawText !== "string" || rawText.trim().length === 0) return fallbackMessage;
+  try {
+    const parsed = JSON.parse(rawText);
+    if (typeof parsed?.error?.message === "string" && parsed.error.message.trim().length > 0) {
+      return parsed.error.message;
+    }
+    if (typeof parsed?.message === "string" && parsed.message.trim().length > 0) {
+      return parsed.message;
+    }
+  } catch {
+    // ignore and fallback
+  }
+  return fallbackMessage;
+}
+
+function sendAnthropicError(res, { httpStatus = 400, message, type }) {
+  res.status(httpStatus).json({
+    type: "error",
+    error: {
+      type: type || mapHttpStatusToAnthropicErrorType(httpStatus),
+      message: String(message || "Anthropic request failed.")
+    }
+  });
 }
 
 function sendGeminiError(res, { httpStatus = 400, message, status }) {
@@ -4412,6 +5758,14 @@ async function handleGeminiNativeProxy(req, res) {
 
   if (!upstream.ok) {
     const raw = await upstream.text().catch(() => "");
+    if (
+      config.authMode === "codex-oauth" &&
+      isCodexMultiAccountEnabled() &&
+      (upstream.status === 401 || upstream.status === 403 || upstream.status === 429)
+    ) {
+      await handleGeminiNativeCompat(req, res);
+      return;
+    }
     sendGeminiError(res, {
       httpStatus: upstream.status,
       message: parseGeminiErrorMessage(
@@ -4496,12 +5850,30 @@ async function handleAnthropicNativeProxy(req, res) {
   try {
     upstream = await fetch(target.toString(), init);
   } catch (err) {
-    res.status(502).json({
-      type: "error",
-      error: {
-        type: "api_error",
-        message: err.message
-      }
+    sendAnthropicError(res, {
+      httpStatus: 502,
+      message: err.message,
+      type: "api_error"
+    });
+    return;
+  }
+
+  if (!upstream.ok) {
+    const raw = await upstream.text().catch(() => "");
+    if (
+      config.authMode === "codex-oauth" &&
+      isCodexMultiAccountEnabled() &&
+      (upstream.status === 401 || upstream.status === 403 || upstream.status === 429)
+    ) {
+      await handleAnthropicNativeCompat(req, res);
+      return;
+    }
+    sendAnthropicError(res, {
+      httpStatus: upstream.status,
+      message: parseAnthropicErrorMessage(
+        raw,
+        `Anthropic upstream request failed with HTTP ${upstream.status}.`
+      )
     });
     return;
   }
@@ -4674,15 +6046,20 @@ async function handleAnthropicProtocol(req, res) {
   res.locals.protocolType = "anthropic-v1-openai-compat";
   const incoming = new URL(req.originalUrl, "http://localhost");
   if (incoming.pathname !== "/v1/chat/completions") {
-    res.status(400).json({
-      error: "unsupported_endpoint",
-      message: "In UPSTREAM_MODE=anthropic-v1, currently only /v1/chat/completions is supported."
+    sendAnthropicError(res, {
+      httpStatus: 400,
+      message: "In UPSTREAM_MODE=anthropic-v1, currently only /v1/chat/completions is supported.",
+      type: "invalid_request_error"
     });
     return;
   }
 
   if (req.method !== "POST") {
-    res.status(405).json({ error: "method_not_allowed", message: "Use POST /v1/chat/completions." });
+    sendAnthropicError(res, {
+      httpStatus: 405,
+      message: "Use POST /v1/chat/completions.",
+      type: "invalid_request_error"
+    });
     return;
   }
 
@@ -4696,7 +6073,11 @@ async function handleAnthropicProtocol(req, res) {
   try {
     chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.anthropic.defaultModel);
   } catch (err) {
-    res.status(400).json({ error: "invalid_request", message: err.message });
+    sendAnthropicError(res, {
+      httpStatus: 400,
+      message: err.message,
+      type: "invalid_request_error"
+    });
     return;
   }
 
@@ -4744,7 +6125,13 @@ async function handleAnthropicProtocol(req, res) {
 
   const raw = await upstream.text();
   if (!upstream.ok) {
-    res.status(upstream.status).send(raw);
+    sendAnthropicError(res, {
+      httpStatus: upstream.status,
+      message: parseAnthropicErrorMessage(
+        raw,
+        `Anthropic upstream request failed with HTTP ${upstream.status}.`
+      )
+    });
     return;
   }
 
@@ -4752,7 +6139,11 @@ async function handleAnthropicProtocol(req, res) {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    res.status(502).json({ error: "invalid_upstream_json", message: "Anthropic returned non-JSON response." });
+    sendAnthropicError(res, {
+      httpStatus: 502,
+      message: "Anthropic returned non-JSON response.",
+      type: "api_error"
+    });
     return;
   }
 
@@ -4984,6 +6375,13 @@ function mapOpenAIFinishReasonToAnthropic(reason) {
   const value = String(reason || "").toLowerCase();
   if (value === "length") return "max_tokens";
   return "end_turn";
+}
+
+function isUnsupportedMaxOutputTokensError(statusCode, rawText) {
+  if (Number(statusCode || 0) !== 400) return false;
+  const text = String(rawText || "").toLowerCase();
+  if (!text) return false;
+  return text.includes("unsupported parameter") && text.includes("max_output_tokens");
 }
 
 function collectGeminiTextParts(parts) {
@@ -5278,7 +6676,7 @@ async function runCodexConversationViaOAuth({
               : model || config.codex.defaultModel,
           mappedModel: upstreamModel.trim()
         }
-      : resolveModelRoute(model || config.codex.defaultModel, "codex-chatgpt");
+      : resolveCodexCompatibleRoute(model || config.codex.defaultModel);
   const resolvedRequestedModel = route.requestedModel;
   const resolvedUpstreamModel = route.mappedModel;
   const instructions = typeof systemText === "string" && systemText.trim().length > 0 ? systemText : config.codex.defaultInstructions;
@@ -5288,14 +6686,12 @@ async function runCodexConversationViaOAuth({
     store: false,
     instructions,
     reasoning: {
-      effort: resolveReasoningEffort(undefined, { messages, instructions })
+      effort: resolveReasoningEffort(undefined, { messages, instructions }, resolvedUpstreamModel)
     },
     input: toResponsesInputFromChatMessages(messages)
   };
 
-  if (typeof max_tokens === "number" && Number.isFinite(max_tokens) && max_tokens > 0) {
-    baseBody.max_output_tokens = Math.floor(max_tokens);
-  }
+  // Intentionally omit max_output_tokens for broad upstream compatibility.
   if (typeof temperature === "number" && Number.isFinite(temperature)) baseBody.temperature = temperature;
   if (typeof top_p === "number" && Number.isFinite(top_p)) baseBody.top_p = top_p;
   if (Array.isArray(stop) && stop.length > 0) baseBody.stop = stop;
@@ -5329,6 +6725,14 @@ async function runCodexConversationViaOAuth({
 
     let activeBody = { ...baseBody };
     let requestResult = await sendCodexRequest(activeBody, "application/json");
+    if (!requestResult.response.ok) {
+      if (isUnsupportedMaxOutputTokensError(requestResult.response.status, requestResult.raw)) {
+        const fallbackBody = { ...baseBody };
+        delete fallbackBody.max_output_tokens;
+        activeBody = fallbackBody;
+        requestResult = await sendCodexRequest(activeBody, "application/json");
+      }
+    }
     if (!requestResult.response.ok) {
       const maybeStreamOnly =
         requestResult.response.status === 400 &&
@@ -5485,7 +6889,7 @@ async function handleGeminiNativeCompat(req, res) {
     return;
   }
   parsedReq.model = modelFromPath || parsedReq.model;
-  const codexRoute = resolveModelRoute(parsedReq.model, "codex-chatgpt");
+  const codexRoute = resolveCodexCompatibleRoute(parsedReq.model);
   res.locals.modelRoute = codexRoute;
 
   let result;
@@ -5565,7 +6969,7 @@ async function handleAnthropicNativeCompat(req, res) {
     return;
   }
 
-  const codexRoute = resolveModelRoute(parsedReq.model || config.anthropic.defaultModel, "codex-chatgpt");
+  const codexRoute = resolveCodexCompatibleRoute(parsedReq.model || config.anthropic.defaultModel);
   res.locals.modelRoute = codexRoute;
 
   let result;
@@ -5576,10 +6980,11 @@ async function handleAnthropicNativeCompat(req, res) {
       upstreamModel: codexRoute.mappedModel
     });
   } catch (err) {
-    res.status(401).json({
+    const statusCode = Number(err?.statusCode || 401);
+    res.status(statusCode).json({
       type: "error",
       error: {
-        type: "authentication_error",
+        type: mapHttpStatusToAnthropicErrorType(statusCode),
         message: err.message
       }
     });
@@ -5611,7 +7016,7 @@ async function handleGeminiOpenAICompatWithCodex(req, res) {
   }
 
   const { systemText, conversation } = splitSystemAndConversation(chatReq.messages);
-  const modelRoute = resolveModelRoute(chatReq.model || config.gemini.defaultModel, "codex-chatgpt");
+  const modelRoute = resolveCodexCompatibleRoute(chatReq.model || config.gemini.defaultModel);
   res.locals.modelRoute = modelRoute;
   let result;
   try {
@@ -5626,10 +7031,16 @@ async function handleGeminiOpenAICompatWithCodex(req, res) {
       stop: chatReq.stop
     });
   } catch (err) {
-    res.status(401).json({
-      error: "unauthorized",
+    const statusCode = Number(err?.statusCode || 401);
+    res.status(statusCode).json({
+      error: statusCode === 429 ? "usage_limit_reached" : "unauthorized",
       message: err.message,
-      hint: config.authMode === "profile-store" ? "Run profile store login first." : "Open /auth/login first."
+      hint:
+        statusCode === 401
+          ? config.authMode === "profile-store"
+            ? "Run profile store login first."
+            : "Open /auth/login first."
+          : null
     });
     return;
   }
@@ -5659,7 +7070,7 @@ async function handleAnthropicOpenAICompatWithCodex(req, res) {
   }
 
   const { systemText, conversation } = splitSystemAndConversation(chatReq.messages);
-  const modelRoute = resolveModelRoute(chatReq.model || config.anthropic.defaultModel, "codex-chatgpt");
+  const modelRoute = resolveCodexCompatibleRoute(chatReq.model || config.anthropic.defaultModel);
   res.locals.modelRoute = modelRoute;
   let result;
   try {
@@ -5674,10 +7085,16 @@ async function handleAnthropicOpenAICompatWithCodex(req, res) {
       stop: chatReq.stop
     });
   } catch (err) {
-    res.status(401).json({
-      error: "unauthorized",
+    const statusCode = Number(err?.statusCode || 401);
+    res.status(statusCode).json({
+      error: statusCode === 429 ? "usage_limit_reached" : "unauthorized",
       message: err.message,
-      hint: config.authMode === "profile-store" ? "Run profile store login first." : "Open /auth/login first."
+      hint:
+        statusCode === 401
+          ? config.authMode === "profile-store"
+            ? "Run profile store login first."
+            : "Open /auth/login first."
+          : null
     });
     return;
   }
@@ -5698,10 +7115,11 @@ async function handleAnthropicOpenAICompatWithCodex(req, res) {
 }
 
 async function runDirectChatCompletionTest(prompt) {
+  const modelRoute = resolveCodexCompatibleRoute(config.codex.defaultModel);
   const reasoningEffort = resolveReasoningEffort(undefined, {
     input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
     instructions: config.codex.defaultInstructions
-  });
+  }, modelRoute.mappedModel);
   if (config.upstreamMode === "codex-chatgpt") {
     return await runCodexDirectSelfTest(prompt, reasoningEffort);
   }
@@ -5888,27 +7306,81 @@ function parseReasoningEffortOrFallback(value, fallback, options = {}) {
   return fallback;
 }
 
-function resolveReasoningEffort(value, context = null) {
-  const requested = parseReasoningEffortOrFallback(value, null, { allowAdaptive: true });
-  if (requested && requested !== "adaptive") {
-    return requested;
-  }
-
-  const configured = parseReasoningEffortOrFallback(config.codex.defaultReasoningEffort, "medium", {
-    allowAdaptive: true
-  });
-
-  if (requested === "adaptive" || configured === "adaptive") {
-    return inferAdaptiveReasoningEffort(context);
-  }
-
-  return configured;
+function getGpt5MinorVersionForReasoning(modelId) {
+  const normalized = String(modelId || "").trim().toLowerCase();
+  if (!normalized.startsWith("gpt-5")) return null;
+  const match = normalized.match(/^gpt-5(?:\.(\d+))?(?:[-.].*)?$/);
+  if (!match) return null;
+  const minor = match[1] === undefined ? 0 : Number(match[1]);
+  return Number.isFinite(minor) ? minor : null;
 }
 
-function applyReasoningEffortDefaults(target, reasoningEffortFromRequest, context = null) {
+function getSupportedReasoningEffortsForModel(modelId) {
+  const normalized = String(modelId || "").trim().toLowerCase();
+  if (!normalized) return null;
+
+  const minor = getGpt5MinorVersionForReasoning(normalized);
+  if (minor === null) return null;
+
+  // OpenAI docs: models before gpt-5.1 do not support `none`;
+  // xhigh is available starting from gpt-5.1-codex-max and newer generations.
+  const isGpt51CodexMax = normalized.startsWith("gpt-5.1-codex-max");
+  const supportsNone = minor >= 1;
+  const supportsXhigh = minor >= 2 || isGpt51CodexMax;
+
+  const supported = isGpt51CodexMax ? new Set(["medium", "high"]) : new Set(["low", "medium", "high"]);
+  if (supportsNone) supported.add("none");
+  if (supportsXhigh) supported.add("xhigh");
+  return supported;
+}
+
+function clampReasoningEffortForModel(effort, modelId) {
+  if (!VALID_REASONING_EFFORTS.has(effort)) return effort;
+
+  const supported = getSupportedReasoningEffortsForModel(modelId);
+  if (!supported || supported.has(effort)) return effort;
+
+  const fallbackOrder = {
+    none: ["low", "medium", "high", "xhigh"],
+    low: ["medium", "high", "xhigh", "none"],
+    medium: ["high", "low", "xhigh", "none"],
+    high: ["medium", "low", "xhigh", "none"],
+    xhigh: ["high", "medium", "low", "none"]
+  };
+
+  const candidates = fallbackOrder[effort] || ["medium"];
+  for (const candidate of candidates) {
+    if (supported.has(candidate)) return candidate;
+  }
+  return "medium";
+}
+
+function resolveReasoningEffort(value, context = null, modelId = null) {
+  const requested = parseReasoningEffortOrFallback(value, null, { allowAdaptive: true });
+  let resolved = null;
+  if (requested && requested !== "adaptive") {
+    resolved = requested;
+  }
+
+  if (!resolved) {
+    const configured = parseReasoningEffortOrFallback(config.codex.defaultReasoningEffort, "medium", {
+      allowAdaptive: true
+    });
+
+    if (requested === "adaptive" || configured === "adaptive") {
+      resolved = inferAdaptiveReasoningEffort(context);
+    } else {
+      resolved = configured;
+    }
+  }
+
+  return clampReasoningEffortForModel(resolved, modelId);
+}
+
+function applyReasoningEffortDefaults(target, reasoningEffortFromRequest, context = null, modelId = null) {
   const hasReasoningObject = target.reasoning && typeof target.reasoning === "object" && !Array.isArray(target.reasoning);
   const existingEffort = hasReasoningObject ? target.reasoning.effort : null;
-  const resolvedEffort = resolveReasoningEffort(existingEffort ?? reasoningEffortFromRequest, context);
+  const resolvedEffort = resolveReasoningEffort(existingEffort ?? reasoningEffortFromRequest, context, modelId);
 
   target.reasoning = hasReasoningObject ? { ...target.reasoning } : {};
   target.reasoning.effort = resolvedEffort;
