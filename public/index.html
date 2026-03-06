@@ -146,6 +146,7 @@
         display: grid;
         gap: 12px;
         grid-template-columns: repeat(12, minmax(0, 1fr));
+        align-items: stretch;
       }
 
       .card {
@@ -197,6 +198,7 @@
 
       .card.span-12 {
         grid-column: 1 / -1;
+        overflow: visible;
       }
 
       @keyframes cardIn {
@@ -221,6 +223,13 @@
 
       .card.core-card {
         min-height: 0;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+
+      .card.core-card.runtime-card {
+        display: block;
       }
 
       .kv {
@@ -426,6 +435,10 @@
         margin-bottom: 8px;
       }
 
+      .custom-select.is-open {
+        z-index: 220;
+      }
+
       .custom-select__trigger {
         width: 100%;
         min-height: 36px;
@@ -526,6 +539,7 @@
         opacity: 1;
         transform: translateY(0) scale(1);
         pointer-events: auto;
+        z-index: 240;
       }
 
       .custom-select__option {
@@ -590,6 +604,8 @@
         overflow: auto;
         font-family: "JetBrains Mono", monospace;
         font-size: 12px;
+        position: relative;
+        z-index: 1;
       }
 
       table {
@@ -988,6 +1004,8 @@
         grid-template-columns: 1.3fr 1.3fr auto;
         gap: 6px;
         align-items: center;
+        position: relative;
+        z-index: 6;
       }
 
       .inline-row select,
@@ -1119,10 +1137,9 @@
 
       .pool-layout {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
         gap: 10px;
-        align-items: start;
-        grid-auto-rows: min-content;
+        align-items: stretch;
       }
 
       .pool-pane {
@@ -1130,7 +1147,14 @@
         border-radius: 9px;
         background: rgba(8, 15, 33, 0.45);
         padding: 9px;
-        align-self: start;
+        align-self: stretch;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .pool-layout > .pool-pane {
+        min-height: 100%;
       }
 
       .pool-pane > * + * {
@@ -1139,6 +1163,7 @@
 
       .pool-pane.pool-pane--full {
         margin-top: 10px;
+        min-height: 0;
       }
 
       .pool-pane h4 {
@@ -1154,6 +1179,7 @@
         gap: 6px;
         margin-bottom: 8px;
         min-height: 0;
+        flex: 1 1 auto;
         align-content: start;
       }
 
@@ -1185,6 +1211,10 @@
         padding: 8px;
       }
 
+      .runtime-subcard.runtime-subcard--api {
+        display: block;
+      }
+
       .runtime-subcard h4 {
         margin: 0 0 6px;
         font-size: 11px;
@@ -1206,8 +1236,75 @@
       }
 
       .runtime-inline-grid--public {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         margin-bottom: 6px;
+        align-items: stretch;
+        gap: 10px;
+      }
+
+      .runtime-inline-grid--public > div {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        gap: 4px;
+        min-width: 0;
+        width: 100%;
+      }
+
+      .runtime-inline-grid--public label {
+        display: flex;
+        align-items: center;
+        min-height: 18px;
+        margin: 0;
+      }
+
+      .runtime-inline-grid--public input,
+      .runtime-inline-grid--public select {
+        height: 42px;
+        width: 100%;
+        min-width: 0;
+        margin-bottom: 0;
+        border-radius: 12px;
+      }
+
+      .runtime-inline-grid--public .custom-select {
+        min-width: 0;
+        margin-bottom: 0;
+        width: 100%;
+      }
+
+      .runtime-inline-grid--public .custom-select__trigger {
+        width: 100%;
+        min-width: 0;
+        height: 42px;
+        min-height: 42px;
+        border-radius: 12px;
+        padding: 0 12px;
+      }
+
+      .runtime-inline-grid--public input[type="number"],
+      .runtime-inline-grid--public .custom-select__trigger {
+        box-sizing: border-box;
+        border-width: 1px;
+        border-style: solid;
+        border-color: var(--card-border);
+        background: rgba(0, 0, 0, 0.25);
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        line-height: 1;
+        box-shadow: none;
+      }
+
+      .runtime-inline-grid--public .custom-select.is-open .custom-select__trigger,
+      .runtime-inline-grid--public .custom-select__trigger:focus-visible,
+      .runtime-inline-grid--public input[type="number"]:focus {
+        border-color: rgba(102, 161, 255, 0.8);
+        box-shadow:
+          0 0 0 1px rgba(102, 161, 255, 0.5),
+          0 0 0 4px rgba(102, 161, 255, 0.14);
+      }
+
+      .runtime-inline-grid--public input[type="number"] {
+        padding-right: 30px;
       }
 
       .runtime-inline-grid--url {
@@ -1255,6 +1352,27 @@
         max-height: 180px;
         overflow: auto;
         padding-right: 2px;
+      }
+
+      .runtime-subcard--api .api-key-list {
+        height: 220px;
+        max-height: 220px;
+        overflow-y: scroll;
+        overflow-x: hidden;
+        scrollbar-gutter: stable both-edges;
+        padding-right: 6px;
+      }
+
+      .runtime-subcard--api .api-key-list::-webkit-scrollbar {
+        width: 12px;
+      }
+
+      .runtime-subcard--api .api-key-list::-webkit-scrollbar-track {
+        border-radius: 999px;
+      }
+
+      .runtime-subcard--api .api-key-list::-webkit-scrollbar-thumb {
+        border-width: 2px;
       }
 
       .api-key-item {
@@ -1336,7 +1454,7 @@
 
       .account-grid.compact {
         grid-template-columns: 1fr;
-        max-height: clamp(300px, 48vh, 640px);
+        max-height: clamp(220px, 34vh, 420px);
         overflow-y: auto;
         overflow-x: hidden;
         scrollbar-gutter: stable;
@@ -1345,6 +1463,8 @@
 
       .current-account-shell {
         min-height: 0;
+        flex: 0 0 auto;
+        display: block;
       }
 
       .account-card {
@@ -1360,6 +1480,9 @@
         padding: 10px;
         background:
           linear-gradient(180deg, rgba(20, 36, 72, 0.9), rgba(15, 30, 63, 0.9));
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
       }
 
       .account-card.active {
@@ -1385,8 +1508,14 @@
         flex: 0 0 auto;
       }
 
-      .account-card.compact .account-meta {
-        gap: 6px;
+      .account-card--current .usage-stack {
+        margin-top: 8px;
+        padding-top: 0;
+      }
+
+      .account-card--current .account-error,
+      .account-card--current .account-card-actions {
+        margin-top: 8px;
       }
 
       .account-card-actions {
@@ -1522,6 +1651,28 @@
         grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
         gap: 6px;
+      }
+
+      .account-card.compact .account-meta {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px 8px;
+      }
+
+      .account-card.compact .meta-item {
+        grid-template-columns: 1fr;
+        align-items: start;
+        gap: 2px;
+      }
+
+      .account-card.compact .meta-item .k {
+        margin-bottom: 1px;
+      }
+
+      .account-card.compact .meta-item .v {
+        justify-self: start;
+        text-align: left;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
       }
 
       .account-error {
@@ -1741,7 +1892,7 @@
       </div>
 
       <div class="grid">
-        <section class="card core-card">
+        <section class="card core-card runtime-card">
           <h3 data-i18n="runtime_title">Runtime</h3>
           <div class="kv-grid">
             <div class="kv"><div class="k" data-i18n="runtime_mode">Mode</div><div id="mode" class="mono">-</div></div>
@@ -1751,8 +1902,7 @@
           <div class="status" id="authBadge">loading...</div>
           <div class="btns">
             <button id="refreshBtn" data-i18n="runtime_refresh">Refresh</button>
-            <button id="loginBtn" data-i18n="runtime_oauth_login">OAuth Login</button>
-            <button id="addAccountBtn" data-i18n="runtime_add_account">Add Account</button>
+            <button id="loginBtn" data-i18n="runtime_connect_account">Connect Account</button>
             <button id="logoutBtn" class="secondary" data-i18n="runtime_logout_current">Logout Current</button>
           </div>
           <div class="runtime-control-grid">
@@ -1769,7 +1919,7 @@
               <input id="heartbeatSeconds" type="number" min="2" max="3600" step="1" value="7" />
             </div>
           </div>
-          <div class="runtime-subcard">
+          <div class="runtime-subcard runtime-subcard--api">
             <h4 data-i18n="api_keys_title">API Keys</h4>
             <div class="runtime-inline-grid">
               <div>
@@ -1793,7 +1943,6 @@
               <div class="account-empty account-empty--compact" data-i18n="api_keys_empty">No API keys yet.</div>
             </div>
           </div>
-          <div class="hint" data-i18n="runtime_hint">If you have used the Codex CLI before, it will automatically fetch and authenticate.</div>
         </section>
 
         <section class="card core-card">
@@ -1810,10 +1959,6 @@
             <div class="field">
               <label for="defaultModel" data-i18n="proxy_default_model">Default Model</label>
               <input id="defaultModel" />
-            </div>
-            <div class="field field--full">
-              <label for="upstreamBaseUrl" data-i18n="proxy_upstream_base_url">Upstream Base URL</label>
-              <input id="upstreamBaseUrl" />
             </div>
             <div class="field field--full">
               <label for="defaultInstructions" data-i18n="proxy_default_instructions">Default Instructions</label>
@@ -1945,11 +2090,6 @@
               <div class="metric-label" data-i18n="kpi_low_quota">Low Quota</div>
               <div id="poolLowQuotaCount" class="metric-value">0</div>
               <div class="metric-sub" data-i18n="kpi_low_quota_sub">remaining ≤ 20%</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-label" data-i18n="kpi_strategy">Strategy</div>
-              <div id="poolStrategy" class="metric-value metric-value--sm">-</div>
-              <div id="poolAuthState" class="metric-sub" data-i18n="pool_auth_unknown">auth: -</div>
             </div>
           </div>
           <div class="pool-layout">
@@ -2115,7 +2255,6 @@
       const AUTO_SAVE_DEBOUNCE_MS = 500;
       const CONFIG_FIELD_IDS = [
         "upstreamMode",
-        "upstreamBaseUrl",
         "defaultModel",
         "defaultInstructions",
         "defaultReasoningEffort",
@@ -2146,12 +2285,10 @@
           runtime_uptime: "Uptime",
           runtime_base_url: "Base URL",
           runtime_refresh: "Refresh",
-          runtime_oauth_login: "OAuth Login",
-          runtime_add_account: "Add Account",
+          runtime_connect_account: "Connect Account",
           runtime_logout_current: "Logout Current",
           runtime_language: "Language",
           runtime_heartbeat: "Status Heartbeat (s)",
-          runtime_hint: "If you have used the Codex CLI before, it will automatically fetch and authenticate.",
           runtime_authenticated: "AUTHENTICATED",
           runtime_not_authenticated: "NOT AUTHENTICATED",
           api_keys_title: "API Keys",
@@ -2195,7 +2332,6 @@
           public_access_status_error: "error={error}",
           proxy_config_title: "Proxy Config",
           proxy_upstream_mode: "Upstream Mode",
-          proxy_upstream_base_url: "Upstream Base URL",
           proxy_default_model: "Default Model",
           proxy_default_instructions: "Default Instructions",
           proxy_reasoning_effort: "Reasoning Effort",
@@ -2269,7 +2405,7 @@
           account_no_recommendation: "No recommendation yet.",
           account_no_recommendation_available: "No recommendation available.",
           account_loading_pool: "Loading account pool...",
-          account_no_pool_accounts: "No pooled accounts yet. Use OAuth Login / Add Account.",
+          account_no_pool_accounts: "No pooled accounts yet. Use Connect Account.",
           account_usage_not_fetched: "Usage snapshot not fetched yet.",
           account_name_unknown: "unnamed-account",
           account_slot: "Slot",
@@ -2394,12 +2530,10 @@
           runtime_uptime: "運行時間",
           runtime_base_url: "基礎 URL",
           runtime_refresh: "重新整理",
-          runtime_oauth_login: "OAuth 登入",
-          runtime_add_account: "新增帳號",
+          runtime_connect_account: "連接帳號",
           runtime_logout_current: "登出目前帳號",
           runtime_language: "語言",
           runtime_heartbeat: "狀態心跳檢查 (秒)",
-          runtime_hint: "如果你之前使用過 Codex CLI，系統會自動抓取並完成認證。",
           runtime_authenticated: "已認證",
           runtime_not_authenticated: "尚未認證",
           api_keys_title: "API 金鑰",
@@ -2443,7 +2577,6 @@
           public_access_status_error: "錯誤={error}",
           proxy_config_title: "代理設定",
           proxy_upstream_mode: "上游協定模式",
-          proxy_upstream_base_url: "上游基礎 URL",
           proxy_default_model: "預設模型",
           proxy_default_instructions: "預設指示詞",
           proxy_reasoning_effort: "思維長度",
@@ -2516,7 +2649,7 @@
           account_no_recommendation: "尚無推薦結果。",
           account_no_recommendation_available: "目前沒有可推薦的帳號。",
           account_loading_pool: "帳號池載入中...",
-          account_no_pool_accounts: "尚無池內帳號，請使用 OAuth 登入 / 新增帳號。",
+          account_no_pool_accounts: "尚無池內帳號，請使用連接帳號。",
           account_usage_not_fetched: "尚未抓取用量快照。",
           account_name_unknown: "未命名帳號",
           account_slot: "槽位",
@@ -4339,6 +4472,34 @@
         renderPublicAccessStatus(status);
       }
 
+      async function fetchPublicAccessStatus() {
+        const data = await api("/admin/public-access/status");
+        const status = data?.status || null;
+        renderPublicAccessStatus(status);
+        return status;
+      }
+
+      async function waitForPublicAccessReady(initialStatus, { timeoutMs = 15000, intervalMs = 700 } = {}) {
+        let status = initialStatus || null;
+        const hasUrl = (value) => String(value?.url || "").trim().length > 0;
+        if (hasUrl(status)) return status;
+
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, intervalMs));
+          status = await fetchPublicAccessStatus();
+          if (hasUrl(status)) return status;
+
+          const running = status?.running === true;
+          const installing = status?.installInProgress === true;
+          const err = String(status?.error || "").trim();
+          if ((!running && !installing) || (err && !installing)) {
+            return status;
+          }
+        }
+        return status;
+      }
+
       async function startPublicAccess() {
         const mode = String($("publicAccessMode").value || "quick").trim().toLowerCase();
         const payload = {
@@ -4356,8 +4517,9 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload)
         });
-        renderPublicAccessStatus(data?.status || null);
-        return data?.status || null;
+        const initialStatus = data?.status || null;
+        renderPublicAccessStatus(initialStatus);
+        return await waitForPublicAccessReady(initialStatus);
       }
 
       async function stopPublicAccess() {
@@ -4470,7 +4632,6 @@
       function buildConfigPayload() {
         return {
           upstreamMode: $("upstreamMode").value,
-          upstreamBaseUrl: $("upstreamBaseUrl").value,
           defaultModel: $("defaultModel").value,
           defaultInstructions: $("defaultInstructions").value,
           defaultReasoningEffort: $("defaultReasoningEffort").value,
@@ -4581,7 +4742,6 @@
 
       function applyServerConfigToForm(state) {
         $("upstreamMode").value = state.config.upstreamMode;
-        $("upstreamBaseUrl").value = state.config.upstreamBaseUrl;
         $("defaultModel").value = state.config.defaultModel;
         $("defaultInstructions").value = state.config.defaultInstructions;
         $("defaultReasoningEffort").value = state.config.defaultReasoningEffort || "medium";
@@ -4630,7 +4790,6 @@
 
         const accounts = Array.isArray(state.auth?.accounts) ? state.auth.accounts : [];
         lastAccounts = accounts;
-        const strategy = state.auth?.multiAccountStrategy || "-";
         const enabledCount = Number(state.auth?.enabledAccountCount || 0);
         const activeAccount = state.auth?.activeEntryId || state.auth?.activeAccountId || "";
         lastActiveEntryId = String(activeAccount || "");
@@ -4676,8 +4835,6 @@
         $("poolRiskHint").textContent = poolEnabled
           ? tt("pool_risk_hint_enabled", { enabled: enabledCount, total: accounts.length })
           : t("pool_risk_hint_disabled");
-        setTextAndPulse("poolStrategy", poolEnabled ? localizeStrategyName(strategy) : t("account_status_disabled"));
-        $("poolAuthState").textContent = authOk ? t("pool_auth_connected") : t("pool_auth_disconnected");
         $("allAccountsTitle").textContent = tt("all_accounts_with_count", { count: decorated.length });
 
         const activeItem =
@@ -4693,7 +4850,7 @@
           currentCard.textContent = t("account_no_active");
         }
 
-        const recommendationLimit = Math.min(8, Math.max(4, decorated.length));
+        const recommendationLimit = Math.min(4, decorated.length);
         let recommendations = [];
         if (Array.isArray(poolMetrics.recommendedEntryIds) && poolMetrics.recommendedEntryIds.length > 0) {
           recommendations = poolMetrics.recommendedEntryIds
@@ -4918,14 +5075,18 @@
         await switchCurrentAccountTo(targetRef);
       }
 
-      $("refreshBtn").addEventListener("click", refreshState);
-      $("loginBtn").addEventListener("click", () =>
-        window.open("/auth/login?prompt=login", "_blank")
-      );
-      $("addAccountBtn").addEventListener("click", () => {
+      function openAccountLoginFlow() {
+        const hasAccounts = Array.isArray(lastAccounts) && lastAccounts.length > 0;
+        if (!hasAccounts) {
+          window.open("/auth/login?prompt=login", "_blank");
+          return;
+        }
         const slot = getNextAccountSlot(2);
         window.open(`/auth/login?slot=${slot}&label=acc${slot}&prompt=login`, "_blank");
-      });
+      }
+
+      $("refreshBtn").addEventListener("click", refreshState);
+      $("loginBtn").addEventListener("click", openAccountLoginFlow);
       $("logoutBtn").addEventListener("click", async () => {
         try {
           const payload = {};
@@ -5057,7 +5218,6 @@
       }
 
       const debouncedSaveFields = [
-        "upstreamBaseUrl",
         "defaultModel",
         "defaultInstructions",
         "publicAccessToken",

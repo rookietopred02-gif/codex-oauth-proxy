@@ -817,8 +817,10 @@ function extractCloudflaredUrlFromLine(line) {
       return `https://${m[1]}`;
     }
   }
-  const generic = text.match(/https:\/\/[a-z0-9.-]+\.[a-z]{2,}/i);
-  if (generic && generic[0]) return generic[0];
+  const hostnameField = text.match(/(?:^|[\s{,])hostname["=: ]+["']?([a-z0-9.-]+\.[a-z]{2,})["']?/i);
+  if (hostnameField && hostnameField[1]) {
+    return `https://${hostnameField[1]}`;
+  }
   return "";
 }
 
