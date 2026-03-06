@@ -3410,16 +3410,40 @@
         return -1;
       }
 
+      function focusWithoutScroll(element) {
+        if (!(element instanceof HTMLElement) || typeof element.focus !== "function") return;
+        try {
+          element.focus({ preventScroll: true });
+        } catch {
+          element.focus();
+        }
+      }
+
+      function ensureMenuOptionVisible(state) {
+        if (!state || state.activeIndex < 0) return;
+        const buttons = Array.from(state.menu.querySelectorAll(".custom-select__option"));
+        const active = buttons[state.activeIndex];
+        if (!(active instanceof HTMLElement)) return;
+        const menuTop = state.menu.scrollTop;
+        const menuBottom = menuTop + state.menu.clientHeight;
+        const optionTop = active.offsetTop;
+        const optionBottom = optionTop + active.offsetHeight;
+        if (optionTop < menuTop) {
+          state.menu.scrollTop = optionTop;
+          return;
+        }
+        if (optionBottom > menuBottom) {
+          state.menu.scrollTop = optionBottom - state.menu.clientHeight;
+        }
+      }
+
       function syncCustomSelectActiveOption(state) {
         if (!state) return;
         const buttons = Array.from(state.menu.querySelectorAll(".custom-select__option"));
         buttons.forEach((button, index) => {
           button.classList.toggle("is-active", index === state.activeIndex);
         });
-        const active = buttons[state.activeIndex];
-        if (active instanceof HTMLElement) {
-          active.scrollIntoView({ block: "nearest" });
-        }
+        ensureMenuOptionVisible(state);
       }
 
       function syncCustomSelect(select) {
@@ -3462,7 +3486,7 @@
         select.selectedIndex = index;
         syncCustomSelect(select);
         closeCustomSelect(state);
-        state.trigger.focus();
+        focusWithoutScroll(state.trigger);
         if (select.value !== prevValue) {
           select.dispatchEvent(new Event("change", { bubbles: true }));
         }
@@ -3548,7 +3572,7 @@
             event.preventDefault();
             event.stopPropagation();
             if (select.disabled) return;
-            trigger.focus();
+            focusWithoutScroll(trigger);
             toggleCustomSelect(state);
           });
         }
@@ -4214,7 +4238,7 @@
             const lastUsedText = fmtUnixSec(Number(k?.lastUsedAt || 0));
             const label = String(k?.label || "").trim();
             const prefix = String(k?.prefix || "sk-");
-            const fullKey = String(transientApiKeyValues.get(String(k?.id || "")) || "").trim();
+            const fullKey = String(k?.value || transientApiKeyValues.get(String(k?.id || "")) || "").trim();
             const showLabel = label.length > 0 && label !== "generated-key" && label !== "unnamed";
             const titleText = fullKey || (showLabel ? label : prefix);
             const canRevoke = active;

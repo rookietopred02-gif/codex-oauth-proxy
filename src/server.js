@@ -424,6 +424,7 @@ function normalizeProxyApiKeyStore(raw) {
     }
     const label = String(item.label || "").trim() || "unnamed";
     const prefix = String(item.prefix || "").trim() || "sk-";
+    const value = String(item.value || item.apiKey || "").trim();
     const createdAt = Number(item.created_at || item.createdAt || nowSec);
     const lastUsedAt = Number(item.last_used_at || item.lastUsedAt || 0);
     const useCount = Number(item.use_count || item.useCount || 0);
@@ -433,6 +434,7 @@ function normalizeProxyApiKeyStore(raw) {
       id,
       label,
       prefix,
+      value,
       hash,
       created_at: Number.isFinite(createdAt) ? createdAt : nowSec,
       last_used_at: Number.isFinite(lastUsedAt) ? Math.max(0, Math.floor(lastUsedAt)) : 0,
@@ -520,6 +522,7 @@ function bootstrapLegacySharedApiKey(store, legacyKey, enabled = true) {
     id: "legacy-local-api-key",
     label: "legacy env LOCAL_API_KEY",
     prefix: key.slice(0, 10),
+    value: key,
     hash,
     created_at: nowSec,
     last_used_at: 0,
@@ -535,6 +538,16 @@ function extractProxyApiKeyFromRequest(req) {
   if (bearer) return bearer;
   const xApiKey = readHeaderValue(req, "x-api-key");
   if (xApiKey) return xApiKey.trim();
+  const xGoogApiKey = readHeaderValue(req, "x-goog-api-key");
+  if (xGoogApiKey) return xGoogApiKey.trim();
+  const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
+  const queryKey = String(
+    incoming.searchParams.get("key") ||
+      incoming.searchParams.get("api_key") ||
+      incoming.searchParams.get("x-api-key") ||
+      ""
+  ).trim();
+  if (queryKey) return queryKey;
   return "";
 }
 
@@ -573,6 +586,7 @@ function buildApiKeySummary() {
           id: String(entry.id || ""),
           label: String(entry.label || ""),
           prefix: String(entry.prefix || "sk-"),
+          value: String(entry.value || ""),
           createdAt: Number(entry.created_at || 0) || null,
           lastUsedAt: Number(entry.last_used_at || 0) || null,
           useCount: Number(entry.use_count || 0) || 0,
@@ -1220,7 +1234,8 @@ app.use((req, res, next) => {
 
   res.status(401).json({
     error: "invalid_api_key",
-    message: "Invalid API key. Set Authorization: Bearer <your_proxy_api_key>."
+    message:
+      "Invalid API key. Use one of: Authorization: Bearer <your_proxy_api_key>, x-api-key, x-goog-api-key, or ?key=<your_proxy_api_key>."
   });
 });
 
@@ -1502,6 +1517,7 @@ app.post("/admin/api-keys/generate", async (req, res) => {
       id,
       label,
       prefix: apiKey.slice(0, 10),
+      value: apiKey,
       hash: hashProxyApiKey(apiKey),
       created_at: nowSec,
       last_used_at: 0,
@@ -1521,6 +1537,7 @@ app.post("/admin/api-keys/generate", async (req, res) => {
         id: entry.id,
         label: entry.label,
         prefix: entry.prefix,
+        value: entry.value,
         createdAt: entry.created_at,
         expiresAt: entry.expires_at > 0 ? entry.expires_at : null,
         active: true
@@ -5673,13 +5690,49 @@ function isLikelyAnthropicApiKey(value) {
   return /^sk-ant-[0-9A-Za-z_-]{16,}$/i.test(key);
 }
 
+function extractGeminiRequestApiKeys(req) {
+  if (!config.providerUpstream.allowRequestApiKeys) {
+    return {
+      headerKey: "",
+      queryKey: ""
+    };
+  }
+  const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
+  return {
+    headerKey: sanitizeUpstreamApiKeyCandidate(readHeaderValue(req, "x-goog-api-key")),
+    queryKey: sanitizeUpstreamApiKeyCandidate(incoming.searchParams.get("key") || "")
+  };
+}
+
+function shouldForceGeminiUpstream(req) {
+  const forceHeader = String(readHeaderValue(req, "x-proxy-gemini-upstream") || "")
+    .trim()
+    .toLowerCase();
+  if (["1", "true", "yes", "on", "force"].includes(forceHeader)) return true;
+  const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
+  const forceQuery = String(incoming.searchParams.get("proxy_gemini_upstream") || "")
+    .trim()
+    .toLowerCase();
+  return ["1", "true", "yes", "on", "force"].includes(forceQuery);
+}
+
+function shouldPreferGeminiCompat(req) {
+  // In codex-oauth mode, Gemini should default to local compatibility mode so
+  // localhost/public proxy callers do not need a real Google API key.
+  if (config.authMode !== "codex-oauth") return false;
+  if (shouldForceGeminiUpstream(req)) return false;
+  return true;
+}
+
+function shouldFallbackGeminiUpstreamToCompat(req, httpStatus) {
+  return shouldPreferGeminiCompat(req) && [401, 403, 429].includes(Number(httpStatus || 0));
+}
+
 function resolveGeminiApiKey(req) {
+  if (shouldPreferGeminiCompat(req)) return "";
   const configuredKey = sanitizeUpstreamApiKeyCandidate(config.gemini.apiKey || "");
   if (configuredKey && isLikelyGeminiApiKey(configuredKey)) return configuredKey;
-  if (!config.providerUpstream.allowRequestApiKeys) return "";
-  const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
-  const queryKey = sanitizeUpstreamApiKeyCandidate(incoming.searchParams.get("key") || "");
-  const headerKey = sanitizeUpstreamApiKeyCandidate(readHeaderValue(req, "x-goog-api-key"));
+  const { headerKey, queryKey } = extractGeminiRequestApiKeys(req);
   if (headerKey && isLikelyGeminiApiKey(headerKey)) return headerKey;
   if (queryKey && isLikelyGeminiApiKey(queryKey)) return queryKey;
   return "";
@@ -5843,11 +5896,7 @@ async function handleGeminiNativeProxy(req, res) {
 
   if (!upstream.ok) {
     const raw = await upstream.text().catch(() => "");
-    if (
-      config.authMode === "codex-oauth" &&
-      isCodexMultiAccountEnabled() &&
-      (upstream.status === 401 || upstream.status === 403 || upstream.status === 429)
-    ) {
+    if (shouldFallbackGeminiUpstreamToCompat(req, upstream.status)) {
       await handleGeminiNativeCompat(req, res);
       return;
     }
@@ -6080,6 +6129,10 @@ async function handleGeminiProtocol(req, res) {
 
   const raw = await upstream.text();
   if (!upstream.ok) {
+    if (shouldFallbackGeminiUpstreamToCompat(req, upstream.status)) {
+      await handleGeminiOpenAICompatWithCodex(req, res);
+      return;
+    }
     sendGeminiError(res, {
       httpStatus: upstream.status,
       message: parseGeminiErrorMessage(raw, `Gemini upstream request failed with HTTP ${upstream.status}.`)
