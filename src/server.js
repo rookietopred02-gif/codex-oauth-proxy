@@ -35,6 +35,8 @@ const VALID_CLOUDFLARED_MODES = new Set(["quick", "auth"]);
 const LOW_QUOTA_THRESHOLD_DUAL_WINDOW = 20;
 const LOW_QUOTA_THRESHOLD_SINGLE_WINDOW = 30;
 const OFFICIAL_OPENAI_MODELS = [
+  "gpt-5.4",
+  "gpt-5.4-pro",
   "gpt-5.3-codex",
   "gpt-5-codex",
   "gpt-5",
@@ -223,7 +225,7 @@ const config = {
     )
   },
   codex: {
-    defaultModel: process.env.CODEX_DEFAULT_MODEL || "gpt-5.3-codex",
+    defaultModel: process.env.CODEX_DEFAULT_MODEL || "gpt-5.4",
     defaultInstructions: process.env.CODEX_DEFAULT_INSTRUCTIONS || "You are a helpful assistant.",
     defaultReasoningEffort: parseReasoningEffortOrFallback(
       process.env.CODEX_DEFAULT_REASONING_EFFORT,
@@ -585,7 +587,35 @@ function buildApiKeySummary() {
 
 function resolveCloudflaredBin() {
   const configured = String(config.publicAccess.cloudflaredBinPath || "").trim();
-  if (configured) return configured;
+  if (configured && fsSync.existsSync(configured)) return configured;
+
+  const binDir = path.join(rootDir, "bin");
+  const bundledDefault = path.join(binDir, DEFAULT_CLOUDFLARED_BIN);
+  if (fsSync.existsSync(bundledDefault)) return bundledDefault;
+
+  try {
+    const entries = fsSync
+      .readdirSync(binDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .filter((name) => {
+        const lower = name.toLowerCase();
+        if (process.platform === "win32") {
+          return /^cloudflared(?:-\d+)?\.exe$/.test(lower);
+        }
+        return /^cloudflared(?:-\d+)?$/.test(lower);
+      })
+      .map((name) => {
+        const fullPath = path.join(binDir, name);
+        const stat = fsSync.statSync(fullPath);
+        return { fullPath, mtimeMs: Number(stat.mtimeMs || 0) };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    if (entries[0]?.fullPath) return entries[0].fullPath;
+  } catch {
+    // ignore local bin discovery failures and fall back to PATH resolution
+  }
+
   return DEFAULT_CLOUDFLARED_BIN;
 }
 
@@ -624,6 +654,46 @@ function resolveCloudflaredAssetMeta() {
   };
 }
 
+function isLikelyCloudflaredBinaryPayload(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 1024) return false;
+  if (process.platform === "win32") {
+    return bytes[0] === 0x4d && bytes[1] === 0x5a;
+  }
+  if (process.platform === "linux") {
+    return bytes[0] === 0x7f && bytes[1] === 0x45 && bytes[2] === 0x4c && bytes[3] === 0x46;
+  }
+  if (process.platform === "darwin") {
+    const magicBE = bytes.readUInt32BE(0);
+    const magicLE = bytes.readUInt32LE(0);
+    return (
+      magicBE === 0xfeedface ||
+      magicBE === 0xfeedfacf ||
+      magicBE === 0xcafebabe ||
+      magicLE === 0xcefaedfe ||
+      magicLE === 0xcffaedfe ||
+      magicLE === 0xbebafeca
+    );
+  }
+  return true;
+}
+
+function resolveCloudflaredInstallPath(assetMeta) {
+  const installDir = path.join(rootDir, "bin");
+  const configuredPath = String(config.publicAccess.cloudflaredBinPath || "").trim();
+  let installPath = configuredPath || path.join(installDir, assetMeta.binaryName);
+
+  if (cloudflaredRuntime.running) {
+    const activeBin = path.resolve(resolveCloudflaredBin());
+    const targetBin = path.resolve(installPath);
+    if (activeBin === targetBin) {
+      const parsed = path.parse(assetMeta.binaryName);
+      installPath = path.join(installDir, `${parsed.name}-${Date.now()}${parsed.ext}`);
+    }
+  }
+
+  return { installDir, installPath };
+}
+
 async function installCloudflaredBinary() {
   if (cloudflaredInstallPromise) {
     return cloudflaredInstallPromise;
@@ -637,21 +707,32 @@ async function installCloudflaredBinary() {
     let tempPath = "";
     try {
       const assetMeta = resolveCloudflaredAssetMeta();
-      const installDir = path.join(rootDir, "bin");
-      const configuredPath = String(config.publicAccess.cloudflaredBinPath || "").trim();
-      const installPath = configuredPath || path.join(installDir, assetMeta.binaryName);
-      await fs.mkdir(path.dirname(installPath), { recursive: true });
+      const { installDir, installPath } = resolveCloudflaredInstallPath(assetMeta);
+      await fs.mkdir(installDir, { recursive: true });
 
-      const response = await fetch(assetMeta.downloadUrl, {
-        method: "GET",
-        redirect: "follow",
-        headers: { "user-agent": "codex-oauth-proxy/0.1.0" }
-      });
+      const downloadAbort = new AbortController();
+      const downloadTimeout = setTimeout(() => downloadAbort.abort(), 120000);
+      let response;
+      try {
+        response = await fetch(assetMeta.downloadUrl, {
+          method: "GET",
+          redirect: "follow",
+          headers: { "user-agent": "codex-oauth-proxy/0.1.0", accept: "application/octet-stream" },
+          signal: downloadAbort.signal
+        });
+      } catch (err) {
+        if (err?.name === "AbortError") {
+          throw new Error("cloudflared download timed out after 120 seconds.");
+        }
+        throw err;
+      } finally {
+        clearTimeout(downloadTimeout);
+      }
       if (!response.ok) {
         throw new Error(`cloudflared download failed: HTTP ${response.status} ${response.statusText}`);
       }
       const bytes = Buffer.from(await response.arrayBuffer());
-      if (!Buffer.isBuffer(bytes) || bytes.length < 64 * 1024) {
+      if (!Buffer.isBuffer(bytes) || bytes.length < 64 * 1024 || !isLikelyCloudflaredBinaryPayload(bytes)) {
         throw new Error("cloudflared download produced invalid payload.");
       }
 
@@ -677,6 +758,8 @@ async function installCloudflaredBinary() {
       const message = `installed (${assetMeta.assetName})`;
       cloudflaredRuntime.installMessage = message;
       cloudflaredRuntime.installUpdatedAt = Math.floor(Date.now() / 1000);
+      cloudflaredRuntime.error = "";
+      updateCloudflaredOutput(`${message} -> ${installPath}`);
       return {
         installed: true,
         path: installPath,
@@ -686,6 +769,8 @@ async function installCloudflaredBinary() {
     } catch (err) {
       cloudflaredRuntime.installMessage = String(err?.message || err || "install_failed");
       cloudflaredRuntime.installUpdatedAt = Math.floor(Date.now() / 1000);
+      cloudflaredRuntime.error = cloudflaredRuntime.installMessage;
+      updateCloudflaredOutput(`install failed: ${cloudflaredRuntime.installMessage}`);
       if (tempPath) {
         await fs.unlink(tempPath).catch(() => {});
       }
@@ -7322,13 +7407,29 @@ function getSupportedReasoningEffortsForModel(modelId) {
   const minor = getGpt5MinorVersionForReasoning(normalized);
   if (minor === null) return null;
 
-  // OpenAI docs: models before gpt-5.1 do not support `none`;
-  // xhigh is available starting from gpt-5.1-codex-max and newer generations.
+  // Capability matrix based on OpenAI model docs:
+  // - Base GPT-5.x (non-codex, non-pro): `none` starts from 5.1, `xhigh` starts from 5.2 (incl. 5.4).
+  // - Codex family: generally low/medium/high, with xhigh available from newer codex generations.
+  //   (and no `none`).
+  // - Pro family: gpt-5-pro => high only; gpt-5.2+/5.4-pro => medium/high/xhigh.
+  const isCodex = normalized.includes("-codex");
+  const isPro = normalized.includes("-pro");
+  const isGpt5Pro = normalized.startsWith("gpt-5-pro");
   const isGpt51CodexMax = normalized.startsWith("gpt-5.1-codex-max");
-  const supportsNone = minor >= 1;
+
+  if (isGpt5Pro) {
+    return new Set(["high"]);
+  }
+
+  // gpt-5.2+/5.4 pro family
+  if (isPro) {
+    return new Set(["medium", "high", "xhigh"]);
+  }
+
+  const supportsNone = !isCodex && minor >= 1;
   const supportsXhigh = minor >= 2 || isGpt51CodexMax;
 
-  const supported = isGpt51CodexMax ? new Set(["medium", "high"]) : new Set(["low", "medium", "high"]);
+  const supported = isGpt51CodexMax ? new Set(["none", "medium", "high"]) : new Set(["low", "medium", "high"]);
   if (supportsNone) supported.add("none");
   if (supportsXhigh) supported.add("xhigh");
   return supported;

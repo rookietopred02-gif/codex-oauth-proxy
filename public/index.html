@@ -416,6 +416,169 @@
         color: #eaf0ff;
       }
 
+      .native-select-hidden {
+        display: none !important;
+      }
+
+      .custom-select {
+        position: relative;
+        width: 100%;
+        margin-bottom: 8px;
+      }
+
+      .custom-select__trigger {
+        width: 100%;
+        min-height: 36px;
+        height: 36px;
+        padding: 0 12px;
+        justify-content: space-between;
+        gap: 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(130, 164, 232, 0.38);
+        background:
+          linear-gradient(180deg, rgba(20, 38, 81, 0.98), rgba(12, 24, 55, 0.98));
+        box-shadow:
+          inset 0 0 0 1px rgba(132, 171, 247, 0.1),
+          0 8px 22px rgba(5, 10, 26, 0.22);
+      }
+
+      .custom-select__trigger:hover {
+        transform: none;
+        background:
+          linear-gradient(180deg, rgba(24, 48, 101, 1), rgba(14, 29, 66, 1));
+        border-color: rgba(127, 176, 255, 0.62);
+        box-shadow:
+          inset 0 0 0 1px rgba(152, 196, 255, 0.12),
+          0 10px 24px rgba(11, 20, 48, 0.28);
+      }
+
+      .custom-select.is-open .custom-select__trigger,
+      .custom-select__trigger:focus-visible {
+        outline: none;
+        border-color: rgba(108, 170, 255, 0.88);
+        box-shadow:
+          0 0 0 1px rgba(102, 161, 255, 0.52),
+          0 0 0 4px rgba(102, 161, 255, 0.14),
+          0 12px 28px rgba(12, 22, 52, 0.34);
+      }
+
+      .custom-select.is-disabled .custom-select__trigger {
+        cursor: not-allowed;
+        opacity: 0.56;
+      }
+
+      .custom-select__value {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: left;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        line-height: 1;
+      }
+
+      .custom-select__icon {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        color: #9eb9f9;
+        transition: transform 0.18s ease, color 0.18s ease;
+      }
+
+      .custom-select.is-open .custom-select__icon {
+        transform: rotate(180deg);
+        color: #d8e7ff;
+      }
+
+      .custom-select__menu {
+        position: absolute;
+        top: calc(100% + 8px);
+        left: 0;
+        right: 0;
+        z-index: 48;
+        display: grid;
+        gap: 4px;
+        padding: 7px;
+        max-height: min(300px, 42vh);
+        overflow: auto;
+        border-radius: 12px;
+        border: 1px solid rgba(140, 176, 242, 0.3);
+        background:
+          linear-gradient(180deg, rgba(18, 35, 74, 0.98), rgba(10, 20, 46, 0.98));
+        box-shadow:
+          0 18px 42px rgba(4, 10, 25, 0.46),
+          inset 0 0 0 1px rgba(132, 164, 223, 0.08);
+        opacity: 0;
+        transform: translateY(8px) scale(0.985);
+        transform-origin: top center;
+        pointer-events: none;
+        transition:
+          opacity 0.16s ease,
+          transform 0.18s ease;
+      }
+
+      .custom-select.is-open .custom-select__menu {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        pointer-events: auto;
+      }
+
+      .custom-select__option {
+        width: 100%;
+        min-height: 34px;
+        height: auto;
+        padding: 8px 10px;
+        justify-content: flex-start;
+        border-radius: 9px;
+        border: 1px solid transparent;
+        background: transparent;
+        box-shadow: none;
+        transform: none;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        line-height: 1.25;
+        text-align: left;
+        white-space: normal;
+      }
+
+      .custom-select__option::before {
+        display: none;
+      }
+
+      .custom-select__option:hover,
+      .custom-select__option:focus-visible {
+        transform: none;
+        outline: none;
+        background: rgba(101, 160, 255, 0.12);
+        border-color: rgba(111, 173, 255, 0.24);
+        box-shadow: inset 0 0 0 1px rgba(111, 173, 255, 0.08);
+      }
+
+      .custom-select__option.is-active {
+        background: rgba(103, 161, 255, 0.14);
+        border-color: rgba(124, 184, 255, 0.28);
+      }
+
+      .custom-select__option.is-selected {
+        color: #f7fbff;
+        background:
+          linear-gradient(180deg, rgba(106, 169, 255, 0.3), rgba(61, 113, 220, 0.24));
+        border-color: rgba(127, 179, 255, 0.42);
+        box-shadow:
+          inset 0 0 0 1px rgba(168, 206, 255, 0.12),
+          0 8px 18px rgba(10, 20, 40, 0.18);
+      }
+
+      .custom-select__option.is-disabled {
+        opacity: 0.42;
+        cursor: not-allowed;
+      }
+
       textarea {
         resize: vertical;
         min-height: 68px;
@@ -904,6 +1067,13 @@
         margin-bottom: 10px;
       }
 
+      .recent-req-kpis {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 8px;
+        margin: 10px 0 12px;
+      }
+
       .metric-card {
         border: 1px solid rgba(160, 188, 240, 0.24);
         background: rgba(17, 29, 60, 0.88);
@@ -1105,6 +1275,8 @@
       .api-key-item-title {
         font-size: 12px;
         font-weight: 600;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
 
       .api-key-item-sub {
@@ -1692,7 +1864,6 @@
               <span data-i18n="public_access_http2">Use HTTP/2</span>
             </label>
             <div class="btns">
-              <button id="publicAccessRefreshBtn" data-i18n="public_access_refresh">Refresh Status</button>
               <button id="publicAccessInstallBtn" class="secondary" data-i18n="public_access_install">Install cloudflared</button>
               <button id="publicAccessStartBtn" data-i18n="public_access_start">Start Tunnel</button>
               <button id="publicAccessStopBtn" class="secondary" data-i18n="public_access_stop">Stop Tunnel</button>
@@ -1837,6 +2008,28 @@
             <button id="refreshReqBtn" data-i18n="recent_requests_refresh">Refresh Requests</button>
             <button id="clearReqBtn" class="secondary" data-i18n="recent_requests_clear">Clear Records</button>
           </div>
+          <div class="recent-req-kpis">
+            <div class="metric-card">
+              <div class="metric-label" data-i18n="recent_requests_total_requests">Total Requests</div>
+              <div id="recentReqCount" class="metric-value">0</div>
+              <div class="metric-sub" data-i18n="recent_requests_total_requests_sub">shown rows</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label" data-i18n="recent_requests_total_input">Total Input</div>
+              <div id="recentReqInputTotal" class="metric-value">0</div>
+              <div class="metric-sub" data-i18n="recent_requests_total_input_sub">sum of input tokens</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label" data-i18n="recent_requests_total_output">Total Output</div>
+              <div id="recentReqOutputTotal" class="metric-value">0</div>
+              <div class="metric-sub" data-i18n="recent_requests_total_output_sub">sum of output tokens</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label" data-i18n="recent_requests_total_tokens">Total</div>
+              <div id="recentReqGrandTotal" class="metric-value">0</div>
+              <div class="metric-sub" data-i18n="recent_requests_total_tokens_sub">input + output total</div>
+            </div>
+          </div>
           <div class="log">
             <table>
               <thead>
@@ -1904,7 +2097,11 @@
       let requestDetailMap = new Map();
       let activeRequestDetailId = "";
       let lastApiKeySummary = { keys: [] };
+      let transientApiKeyValues = new Map();
       let lastPublicAccessStatus = null;
+      const customSelectRegistry = new Map();
+      let customSelectSeq = 0;
+      let activeCustomSelectKey = "";
       const UI_LANG_STORAGE_KEY = "codex_proxy_dashboard_ui_lang";
       const HEARTBEAT_SECONDS_STORAGE_KEY = "codex_proxy_dashboard_heartbeat_seconds";
       const HEARTBEAT_MIN_SECONDS = 2;
@@ -2142,6 +2339,14 @@
           recent_requests_title: "Recent Proxy Requests",
           recent_requests_refresh: "Refresh Requests",
           recent_requests_clear: "Clear Records",
+          recent_requests_total_requests: "Total Requests",
+          recent_requests_total_requests_sub: "shown rows",
+          recent_requests_total_input: "Total Input",
+          recent_requests_total_input_sub: "sum of input tokens",
+          recent_requests_total_output: "Total Output",
+          recent_requests_total_output_sub: "sum of output tokens",
+          recent_requests_total_tokens: "Total",
+          recent_requests_total_tokens_sub: "input + output total",
           recent_requests_time: "Time",
           recent_requests_method: "Method",
           recent_requests_path: "Path",
@@ -2381,6 +2586,14 @@
           recent_requests_title: "近期代理請求",
           recent_requests_refresh: "刷新請求",
           recent_requests_clear: "清除紀錄",
+          recent_requests_total_requests: "請求總數",
+          recent_requests_total_requests_sub: "目前顯示筆數",
+          recent_requests_total_input: "輸入總計",
+          recent_requests_total_input_sub: "輸入 Token 加總",
+          recent_requests_total_output: "輸出總計",
+          recent_requests_total_output_sub: "輸出 Token 加總",
+          recent_requests_total_tokens: "總量",
+          recent_requests_total_tokens_sub: "輸入與輸出總和",
           recent_requests_time: "時間",
           recent_requests_method: "方法",
           recent_requests_path: "路徑",
@@ -2725,6 +2938,7 @@
         });
         renderModelOptions();
         renderMappingsTable();
+        syncAllCustomSelects();
         if (activeRequestDetailId) {
           openRequestDetailModal(activeRequestDetailId);
         }
@@ -2736,6 +2950,7 @@
         const stored = readStoredString(UI_LANG_STORAGE_KEY);
         const resolved = normalizeUiLang(stored || select.value || "en");
         select.value = resolved;
+        syncCustomSelect(select);
         applyUiLanguage(resolved, { persist: false });
         select.addEventListener("change", () => {
           applyUiLanguage(select.value, { persist: true });
@@ -3129,6 +3344,301 @@
         const m = Math.floor(remain / 60);
         const s = remain % 60;
         return isZh ? `${m}分 ${s}秒` : `${m}m ${s}s`;
+      }
+
+      function sumRecentRequestTotals(rows) {
+        return (Array.isArray(rows) ? rows : []).reduce(
+          (acc, row) => {
+            const input = Number(row?.inputTokens);
+            const output = Number(row?.outputTokens);
+            const total = Number(row?.totalTokens);
+            const hasInput = Number.isFinite(input);
+            const hasOutput = Number.isFinite(output);
+            const hasTotal = Number.isFinite(total);
+            acc.count += 1;
+            if (hasInput) acc.input += input;
+            if (hasOutput) acc.output += output;
+            if (hasTotal) acc.total += total;
+            else if (hasInput || hasOutput) acc.total += (hasInput ? input : 0) + (hasOutput ? output : 0);
+            return acc;
+          },
+          { count: 0, input: 0, output: 0, total: 0 }
+        );
+      }
+
+      function getCustomSelectKey(select) {
+        if (!(select instanceof HTMLSelectElement)) return "";
+        if (!select.dataset.customSelectKey) {
+          customSelectSeq += 1;
+          select.dataset.customSelectKey = `custom-select-${customSelectSeq}`;
+        }
+        return select.dataset.customSelectKey;
+      }
+
+      function getCustomSelectState(select) {
+        return customSelectRegistry.get(getCustomSelectKey(select)) || null;
+      }
+
+      function closeCustomSelect(state) {
+        if (!state) return;
+        state.wrapper.classList.remove("is-open");
+        state.activeIndex = -1;
+        if (activeCustomSelectKey === state.key) activeCustomSelectKey = "";
+        state.trigger.setAttribute("aria-expanded", "false");
+      }
+
+      function closeAllCustomSelects(exceptKey = "") {
+        for (const state of customSelectRegistry.values()) {
+          if (exceptKey && state.key === exceptKey) continue;
+          closeCustomSelect(state);
+        }
+      }
+
+      function getSelectableOptionIndex(select, startIndex = 0, direction = 1) {
+        const options = Array.from(select.options || []);
+        if (options.length === 0) return -1;
+        const step = direction >= 0 ? 1 : -1;
+        let idx = Number.isFinite(startIndex) ? startIndex : 0;
+        idx = Math.max(0, Math.min(options.length - 1, idx));
+        for (let i = 0; i < options.length; i += 1) {
+          const option = options[idx];
+          if (option && !option.disabled) return idx;
+          idx += step;
+          if (idx < 0) idx = options.length - 1;
+          if (idx >= options.length) idx = 0;
+        }
+        return -1;
+      }
+
+      function syncCustomSelectActiveOption(state) {
+        if (!state) return;
+        const buttons = Array.from(state.menu.querySelectorAll(".custom-select__option"));
+        buttons.forEach((button, index) => {
+          button.classList.toggle("is-active", index === state.activeIndex);
+        });
+        const active = buttons[state.activeIndex];
+        if (active instanceof HTMLElement) {
+          active.scrollIntoView({ block: "nearest" });
+        }
+      }
+
+      function syncCustomSelect(select) {
+        const state = getCustomSelectState(select);
+        if (!state) return;
+        const selectedOption = select.selectedOptions?.[0] || select.options?.[0] || null;
+        state.valueEl.textContent = selectedOption ? String(selectedOption.textContent || "").trim() : "";
+        state.valueEl.title = state.valueEl.textContent;
+        state.trigger.disabled = select.disabled;
+        state.wrapper.classList.toggle("is-disabled", select.disabled);
+        state.menu.innerHTML = "";
+        Array.from(select.options || []).forEach((option, index) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "custom-select__option";
+          if (option.selected) button.classList.add("is-selected");
+          if (option.disabled) button.classList.add("is-disabled");
+          button.dataset.optionIndex = String(index);
+          button.textContent = String(option.textContent || "").trim();
+          button.disabled = option.disabled;
+          button.tabIndex = -1;
+          state.menu.appendChild(button);
+        });
+        state.activeIndex = getSelectableOptionIndex(select, Math.max(0, select.selectedIndex), 1);
+        syncCustomSelectActiveOption(state);
+      }
+
+      function syncAllCustomSelects() {
+        document.querySelectorAll("select").forEach((select) => {
+          if (select instanceof HTMLSelectElement) syncCustomSelect(select);
+        });
+      }
+
+      function selectCustomSelectOption(state, index) {
+        if (!state) return;
+        const select = state.select;
+        const option = select.options?.[index];
+        if (!option || option.disabled) return;
+        const prevValue = select.value;
+        select.selectedIndex = index;
+        syncCustomSelect(select);
+        closeCustomSelect(state);
+        state.trigger.focus();
+        if (select.value !== prevValue) {
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+
+      function moveCustomSelectActive(state, direction) {
+        if (!state) return;
+        const options = Array.from(state.select.options || []);
+        if (options.length === 0) return;
+        let nextIndex = state.activeIndex;
+        if (nextIndex < 0) nextIndex = getSelectableOptionIndex(state.select, 0, 1);
+        for (let i = 0; i < options.length; i += 1) {
+          nextIndex += direction >= 0 ? 1 : -1;
+          if (nextIndex < 0) nextIndex = options.length - 1;
+          if (nextIndex >= options.length) nextIndex = 0;
+          if (!options[nextIndex]?.disabled) {
+            state.activeIndex = nextIndex;
+            syncCustomSelectActiveOption(state);
+            return;
+          }
+        }
+      }
+
+      function openCustomSelect(state) {
+        if (!state || state.select.disabled) return;
+        closeAllCustomSelects(state.key);
+        state.activeIndex = getSelectableOptionIndex(state.select, Math.max(0, state.select.selectedIndex), 1);
+        syncCustomSelectActiveOption(state);
+        state.wrapper.classList.add("is-open");
+        state.trigger.setAttribute("aria-expanded", "true");
+        activeCustomSelectKey = state.key;
+      }
+
+      function toggleCustomSelect(state) {
+        if (!state) return;
+        if (state.wrapper.classList.contains("is-open")) {
+          closeCustomSelect(state);
+          return;
+        }
+        openCustomSelect(state);
+      }
+
+      function enhanceSelect(select) {
+        if (!(select instanceof HTMLSelectElement)) return null;
+        const existing = getCustomSelectState(select);
+        if (existing) return existing;
+
+        const key = getCustomSelectKey(select);
+        select.classList.add("native-select-hidden");
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "custom-select";
+        wrapper.dataset.selectProxyFor = select.id || key;
+
+        const trigger = document.createElement("button");
+        trigger.type = "button";
+        trigger.className = "custom-select__trigger";
+        trigger.setAttribute("aria-haspopup", "listbox");
+        trigger.setAttribute("aria-expanded", "false");
+
+        const valueEl = document.createElement("span");
+        valueEl.className = "custom-select__value";
+
+        const iconEl = document.createElement("span");
+        iconEl.className = "custom-select__icon";
+        iconEl.innerHTML =
+          '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3.2 5.8 8 10.6l4.8-4.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+        const menu = document.createElement("div");
+        menu.className = "custom-select__menu";
+        menu.setAttribute("role", "listbox");
+
+        trigger.append(valueEl, iconEl);
+        wrapper.append(trigger, menu);
+        select.insertAdjacentElement("afterend", wrapper);
+
+        const state = { key, select, wrapper, trigger, valueEl, menu, activeIndex: -1 };
+        customSelectRegistry.set(key, state);
+
+        const label = select.id ? document.querySelector(`label[for="${select.id}"]`) : null;
+        if (label instanceof HTMLElement) {
+          label.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (select.disabled) return;
+            trigger.focus();
+            toggleCustomSelect(state);
+          });
+        }
+
+        trigger.addEventListener("click", (event) => {
+          event.preventDefault();
+          toggleCustomSelect(state);
+        });
+
+        trigger.addEventListener("keydown", (event) => {
+          if (select.disabled) return;
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            if (!state.wrapper.classList.contains("is-open")) openCustomSelect(state);
+            else moveCustomSelectActive(state, 1);
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            event.preventDefault();
+            if (!state.wrapper.classList.contains("is-open")) openCustomSelect(state);
+            else moveCustomSelectActive(state, -1);
+            return;
+          }
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (!state.wrapper.classList.contains("is-open")) openCustomSelect(state);
+            else selectCustomSelectOption(state, state.activeIndex);
+            return;
+          }
+          if (event.key === "Escape") {
+            closeCustomSelect(state);
+          }
+        });
+
+        menu.addEventListener("click", (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLElement)) return;
+          const optionButton = target.closest(".custom-select__option");
+          if (!(optionButton instanceof HTMLButtonElement)) return;
+          const index = Number(optionButton.dataset.optionIndex);
+          if (!Number.isFinite(index)) return;
+          selectCustomSelectOption(state, index);
+        });
+
+        menu.addEventListener("mousemove", (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLElement)) return;
+          const optionButton = target.closest(".custom-select__option");
+          if (!(optionButton instanceof HTMLButtonElement)) return;
+          const index = Number(optionButton.dataset.optionIndex);
+          if (!Number.isFinite(index)) return;
+          state.activeIndex = index;
+          syncCustomSelectActiveOption(state);
+        });
+
+        const observer = new MutationObserver(() => syncCustomSelect(select));
+        observer.observe(select, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+          attributes: true,
+          attributeFilter: ["disabled"]
+        });
+        state.observer = observer;
+
+        select.addEventListener("change", () => syncCustomSelect(select));
+
+        syncCustomSelect(select);
+        return state;
+      }
+
+      function initCustomSelects() {
+        document.querySelectorAll("select").forEach((select) => enhanceSelect(select));
+        document.addEventListener("click", (event) => {
+          const target = event.target;
+          if (!(target instanceof HTMLElement)) return;
+          if (target.closest(".custom-select")) return;
+          closeAllCustomSelects();
+        });
+        document.addEventListener("keydown", (event) => {
+          if (event.key !== "Escape") return;
+          closeAllCustomSelects();
+        });
+        window.addEventListener(
+          "resize",
+          () => {
+            closeAllCustomSelects();
+          },
+          { passive: true }
+        );
       }
 
       function shortId(value) {
@@ -3650,6 +4160,8 @@
 
         if (fromPrev && options.includes(fromPrev)) fromSelect.value = fromPrev;
         if (toPrev && options.includes(toPrev)) toSelect.value = toPrev;
+        syncCustomSelect(fromSelect);
+        syncCustomSelect(toSelect);
       }
 
       async function loadModelCandidates(forceRefresh = false) {
@@ -3682,6 +4194,10 @@
       function renderApiKeySummary(summary) {
         const container = $("apiKeyList");
         const keys = Array.isArray(summary?.keys) ? summary.keys : [];
+        const visibleIds = new Set(keys.map((k) => String(k?.id || "")));
+        for (const id of Array.from(transientApiKeyValues.keys())) {
+          if (!visibleIds.has(id)) transientApiKeyValues.delete(id);
+        }
         lastApiKeySummary = { ...(summary || {}), keys };
         if (keys.length === 0) {
           container.innerHTML = `<div class="account-empty account-empty--compact">${escapeHtml(t("api_keys_empty"))}</div>`;
@@ -3696,12 +4212,15 @@
             const expiresText = expiresAt > 0 ? fmtUnixSec(expiresAt) : t("api_keys_never_expires");
             const createdText = fmtUnixSec(Number(k?.createdAt || 0));
             const lastUsedText = fmtUnixSec(Number(k?.lastUsedAt || 0));
-            const label = String(k?.label || "unnamed");
+            const label = String(k?.label || "").trim();
             const prefix = String(k?.prefix || "sk-");
+            const fullKey = String(transientApiKeyValues.get(String(k?.id || "")) || "").trim();
+            const showLabel = label.length > 0 && label !== "generated-key" && label !== "unnamed";
+            const titleText = fullKey || (showLabel ? label : prefix);
             const canRevoke = active;
             return `<article class="api-key-item">
               <div class="api-key-item-head">
-                <div class="api-key-item-title">${escapeHtml(label)} <span class="mono">${escapeHtml(prefix)}...</span></div>
+                <div class="api-key-item-title mono">${escapeHtml(titleText)}</div>
                 <span class="pill ${tone}">${escapeHtml(statusLabel)}</span>
               </div>
               <div class="api-key-item-sub">${escapeHtml(
@@ -3733,22 +4252,28 @@
         lastPublicAccessStatus = status || null;
         const statusEl = $("publicAccessStatus");
         const urlEl = $("publicAccessUrl");
+        const installBtn = $("publicAccessInstallBtn");
+        const startBtn = $("publicAccessStartBtn");
+        const stopBtn = $("publicAccessStopBtn");
         if (!statusEl || !urlEl) return;
         if (!status || typeof status !== "object") {
           statusEl.textContent = "-";
           urlEl.textContent = "-";
+          if (installBtn) installBtn.disabled = false;
+          if (startBtn) startBtn.disabled = false;
+          if (stopBtn) stopBtn.disabled = false;
           return;
         }
         const installed = status.installed === true;
         const running = status.running === true;
         const installing = status.installInProgress === true;
-        const statusLabel = installed
-          ? installing
-            ? t("public_access_status_installing")
-            : running
-            ? t("public_access_status_running")
-            : t("public_access_status_stopped")
-          : t("public_access_status_not_installed");
+        const statusLabel = installing
+          ? t("public_access_status_installing")
+          : installed
+            ? running
+              ? t("public_access_status_running")
+              : t("public_access_status_stopped")
+            : t("public_access_status_not_installed");
         const mode = String(status.mode || "quick");
         const localPort = Number(status.localPort || 0) || Number($("publicAccessLocalPort").value || 8787);
         const useHttp2 = status.useHttp2 === true ? "on" : "off";
@@ -3771,6 +4296,9 @@
         }
         statusEl.textContent = segments.join("\n");
         urlEl.textContent = url || "-";
+        if (installBtn) installBtn.disabled = installing;
+        if (startBtn) startBtn.disabled = installing;
+        if (stopBtn) stopBtn.disabled = installing || !running;
       }
 
       function applyPublicAccessConfigFromState(state) {
@@ -3782,14 +4310,9 @@
         $("publicAccessMode").value = mode === "auth" ? "auth" : "quick";
         $("publicAccessHttp2").checked = useHttp2;
         $("publicAccessLocalPort").value = String(localPort);
+        syncCustomSelect($("publicAccessMode"));
         updatePublicAccessTokenUI();
         renderPublicAccessStatus(status);
-      }
-
-      async function refreshPublicAccessStatus() {
-        const data = await api("/admin/public-access/status");
-        renderPublicAccessStatus(data?.status || null);
-        return data?.status || null;
       }
 
       async function startPublicAccess() {
@@ -3833,8 +4356,12 @@
           })
         });
         const keyValue = String(data?.apiKey || "").trim();
+        const keyId = String(data?.key?.id || "").trim();
         const wrap = $("apiKeyGeneratedWrap");
         const valueEl = $("apiKeyGeneratedValue");
+        if (keyId && keyValue) {
+          transientApiKeyValues.set(keyId, keyValue);
+        }
         wrap.hidden = !keyValue;
         valueEl.textContent = keyValue || "-";
         $("apiKeyLabel").value = "";
@@ -3869,7 +4396,10 @@
         }
         if (!res.ok) {
           const msg = data?.message || data?.error || text || `HTTP ${res.status}`;
-          throw new Error(msg);
+          const error = new Error(msg);
+          error.status = res.status;
+          error.data = data;
+          throw error;
         }
         return data;
       }
@@ -4041,6 +4571,7 @@
         renderMappingsTable();
         renderModelOptions();
         applyPublicAccessConfigFromState(state);
+        syncAllCustomSelects();
       }
 
       function renderState(state, options = {}) {
@@ -4196,6 +4727,11 @@
                 .join("");
 
         const rows = (state.stats?.recentRequests || []).slice(0, 80);
+        const requestTotals = sumRecentRequestTotals(rows);
+        setTextAndPulse("recentReqCount", String(requestTotals.count), false);
+        setTextAndPulse("recentReqInputTotal", fmtToken(requestTotals.input), false);
+        setTextAndPulse("recentReqOutputTotal", fmtToken(requestTotals.output), false);
+        setTextAndPulse("recentReqGrandTotal", fmtToken(requestTotals.total), false);
         requestDetailMap = new Map();
         $("reqTable").innerHTML = rows
           .map((r, idx) => {
@@ -4410,13 +4946,6 @@
         }
       });
       $("publicAccessMode").addEventListener("change", updatePublicAccessTokenUI);
-      $("publicAccessRefreshBtn").addEventListener("click", async () => {
-        try {
-          await refreshPublicAccessStatus();
-        } catch (err) {
-          alert(tt("alert_public_access_refresh_failed", { message: err.message }));
-        }
-      });
       $("publicAccessStartBtn").addEventListener("click", async () => {
         try {
           await startPublicAccess();
@@ -4434,11 +4963,27 @@
         }
       });
       $("publicAccessInstallBtn").addEventListener("click", async () => {
+        const previousStatus =
+          lastPublicAccessStatus && typeof lastPublicAccessStatus === "object" ? { ...lastPublicAccessStatus } : {};
+        renderPublicAccessStatus({
+          ...previousStatus,
+          installInProgress: true,
+          installMessage: t("public_access_status_installing"),
+          error: ""
+        });
         try {
           const data = await api("/admin/public-access/install", { method: "POST" });
           renderPublicAccessStatus(data?.status || null);
           await refreshState(true);
         } catch (err) {
+          renderPublicAccessStatus(
+            err?.data?.status || {
+              ...previousStatus,
+              installInProgress: false,
+              error: err.message,
+              installMessage: err.message
+            }
+          );
           alert(tt("alert_public_access_install_failed", { message: err.message }));
         }
       });
@@ -4596,6 +5141,7 @@
       $("runTestBtn").addEventListener("click", runTest);
       $("runPreheatBtn").addEventListener("click", () => runPreheatNow(true));
 
+      initCustomSelects();
       initLanguageControl();
       initInteractiveFx();
       initRuntimeHeartbeatControl();
