@@ -1281,8 +1281,7 @@
         padding: 0 12px;
       }
 
-      .runtime-inline-grid--public input[type="number"],
-      .runtime-inline-grid--public .custom-select__trigger {
+      .runtime-inline-grid--public input[type="number"] {
         box-sizing: border-box;
         border-width: 1px;
         border-style: solid;
@@ -1292,6 +1291,27 @@
         font-size: 12px;
         line-height: 1;
         box-shadow: none;
+      }
+
+      .runtime-inline-grid--public .custom-select__trigger {
+        box-sizing: border-box;
+        border-width: 1px;
+        border-style: solid;
+        border-color: rgba(130, 164, 232, 0.38);
+        background:
+          linear-gradient(180deg, rgba(20, 38, 81, 0.98), rgba(12, 24, 55, 0.98));
+        font-family: "JetBrains Mono", monospace;
+        font-size: 12px;
+        line-height: 1;
+        box-shadow:
+          inset 0 0 0 1px rgba(132, 171, 247, 0.1),
+          0 8px 22px rgba(5, 10, 26, 0.22);
+      }
+
+      .runtime-inline-grid--public .custom-select__trigger:hover {
+        background:
+          linear-gradient(180deg, rgba(24, 48, 101, 1), rgba(14, 29, 66, 1));
+        border-color: rgba(127, 176, 255, 0.62);
       }
 
       .runtime-inline-grid--public .custom-select.is-open .custom-select__trigger,
