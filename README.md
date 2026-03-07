@@ -26,6 +26,7 @@ AUTH_MODE=codex-oauth
 # Dashboard label: openai-v1 (internally codex-chatgpt)
 UPSTREAM_MODE=codex-chatgpt
 UPSTREAM_BASE_URL=https://chatgpt.com/backend-api
+CODEX_DEFAULT_MODEL=gpt-5.4
 CODEX_DEFAULT_REASONING_EFFORT=adaptive
 CODEX_PREHEAT_BATCH_SIZE=2
 ```
@@ -80,9 +81,10 @@ http://127.0.0.1:8787/v1
 
 API key:
 
-- for localhost usage, any non-empty placeholder string is fine
+- if no proxy API keys are configured, requests can be sent without a proxy API key
+- once you generate dashboard API keys or set `LOCAL_API_KEY` / `PROXY_API_KEY`, callers must send one of those keys
 - in `gemini-v1beta` / `anthropic-v1`, API key can be left empty to use local protocol facade powered by Codex OAuth
-- with Model Router enabled, model IDs can be remapped across protocols (for example `gpt-5.3-codex -> gemini-2.5-pro`)
+- with Model Router enabled, model IDs can be remapped across protocols (for example `gpt-5.4 -> gemini-2.5-pro`)
 
 Supported endpoints:
 
@@ -96,7 +98,7 @@ Example:
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model":"gpt-5.3-codex",
+    "model":"gpt-5.4",
     "messages":[{"role":"user","content":"say hello"}],
     "stream": true
   }'
@@ -106,7 +108,7 @@ Model Router examples:
 
 ```json
 {
-  "gpt-5.3-codex": "gemini-2.5-pro",
+  "gpt-5.4": "gemini-2.5-pro",
   "gpt-4*": "gemini-2.5-flash",
   "claude-*": "claude-sonnet-4-6"
 }
@@ -114,7 +116,7 @@ Model Router examples:
 
 Priority:
 
-- exact mapping (`gpt-5.3-codex`) wins first
+- exact mapping (`gpt-5.4`) wins first
 - wildcard mapping (`gpt-4*`) wins second
 - system fallback mapping wins last
 

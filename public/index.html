@@ -439,6 +439,12 @@
         z-index: 220;
       }
 
+      .custom-select.menu-up .custom-select__menu {
+        top: auto;
+        bottom: calc(100% + 8px);
+        transform-origin: bottom center;
+      }
+
       .custom-select__trigger {
         width: 100%;
         min-height: 36px;
@@ -3668,9 +3674,25 @@
         closeAllCustomSelects(state.key);
         state.activeIndex = getSelectableOptionIndex(state.select, Math.max(0, state.select.selectedIndex), 1);
         syncCustomSelectActiveOption(state);
+        positionCustomSelectMenu(state);
         state.wrapper.classList.add("is-open");
         state.trigger.setAttribute("aria-expanded", "true");
         activeCustomSelectKey = state.key;
+      }
+
+      function positionCustomSelectMenu(state) {
+        if (!state) return;
+        state.wrapper.classList.remove("menu-up");
+        state.menu.style.maxHeight = "";
+        const triggerRect = state.trigger.getBoundingClientRect();
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+        const estimatedMenuHeight = Math.min(Math.max(state.menu.scrollHeight || 0, 180), 320);
+        const spaceBelow = viewportHeight - triggerRect.bottom - 16;
+        const spaceAbove = triggerRect.top - 16;
+        const openUp = spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow;
+        const usableHeight = Math.max(140, Math.min(320, openUp ? spaceAbove - 8 : spaceBelow - 8));
+        state.menu.style.maxHeight = `${usableHeight}px`;
+        state.wrapper.classList.toggle("menu-up", openUp);
       }
 
       function toggleCustomSelect(state) {
