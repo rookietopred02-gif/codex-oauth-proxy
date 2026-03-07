@@ -2882,6 +2882,17 @@ function extractOpenAICodexPrincipalId(accessToken) {
   return null;
 }
 
+function normalizeOpenAICodexPlanType(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return null;
+  return raw.replace(/[^a-z0-9_-]+/g, "-");
+}
+
+function extractOpenAICodexPlanType(accessToken) {
+  const authClaim = extractOpenAICodexAuthClaim(accessToken);
+  return normalizeOpenAICodexPlanType(authClaim?.chatgpt_plan_type || authClaim?.plan_type || "");
+}
+
 function extractOpenAICodexEmail(accessToken) {
   const payload = decodeJwtPayload(accessToken);
   const profileClaim = payload?.["https://api.openai.com/profile"];
@@ -3692,14 +3703,31 @@ function deriveCodexAccountIdFromToken(tokenLike) {
   return `acct_${crypto.createHash("sha1").update(fingerprintSource).digest("hex").slice(0, 12)}`;
 }
 
-function deriveCodexPoolEntryIdFromToken(tokenLike) {
+function buildCodexPoolEntryId(principalId, accountId, planType = null) {
+  const normalizedPlanType = normalizeOpenAICodexPlanType(planType);
+  if (principalId) {
+    return normalizedPlanType ? `${principalId}::plan:${normalizedPlanType}` : principalId;
+  }
+  if (accountId) {
+    return normalizedPlanType ? `acct:${accountId}::plan:${normalizedPlanType}` : `acct:${accountId}`;
+  }
+  return "";
+}
+
+function deriveCodexPoolEntryIdFromToken(tokenLike, options = {}) {
   const accessToken = tokenLike?.access_token || tokenLike?.access || "";
   const principalId = extractOpenAICodexPrincipalId(accessToken);
-  if (principalId) return principalId;
   const accountId = extractOpenAICodexAccountId(accessToken);
-  if (accountId) return `acct:${accountId}`;
+  const planType =
+    normalizeOpenAICodexPlanType(options.planType) ||
+    extractOpenAICodexPlanType(accessToken) ||
+    normalizeOpenAICodexPlanType(tokenLike?.usage_snapshot?.plan_type) ||
+    normalizeOpenAICodexPlanType(tokenLike?.plan_type);
+  const structuredId = buildCodexPoolEntryId(principalId, accountId, planType);
+  if (structuredId) return structuredId;
   const fingerprintSource = `${accessToken.slice(0, 48)}|${tokenLike?.refresh_token || tokenLike?.refresh || ""}`;
-  return `entry_${crypto.createHash("sha1").update(fingerprintSource).digest("hex").slice(0, 16)}`;
+  const fallbackId = `entry_${crypto.createHash("sha1").update(fingerprintSource).digest("hex").slice(0, 16)}`;
+  return planType ? `${fallbackId}::plan:${planType}` : fallbackId;
 }
 
 function getCodexPoolEntryId(accountEntry) {
@@ -3730,7 +3758,10 @@ function sanitizeCodexAccountEntry(raw) {
 
   const normalizedToken = normalizeToken(token, token);
   const tokenAccountId = extractOpenAICodexAccountId(normalizedToken.access_token || "");
-  const tokenEntryId = deriveCodexPoolEntryIdFromToken(normalizedToken);
+  const persistedPlanType =
+    normalizeOpenAICodexPlanType(raw?.usage_snapshot?.plan_type) ||
+    normalizeOpenAICodexPlanType(raw?.plan_type);
+  const tokenEntryId = deriveCodexPoolEntryIdFromToken(normalizedToken, { planType: persistedPlanType });
   const fallbackAccountId = String(raw.account_id || raw.accountId || "").trim();
   const fallbackEntryId = String(raw.identity_id || raw.entry_id || raw.account_id || "").trim();
   const accountId = tokenAccountId || fallbackAccountId;
@@ -3810,7 +3841,8 @@ function ensureCodexOAuthStoreShape(store) {
   if (src.token?.access_token) {
     const tokenNormalized = normalizeToken(src.token, src.token);
     const accountId = deriveCodexAccountIdFromToken(tokenNormalized);
-    const entryId = deriveCodexPoolEntryIdFromToken(tokenNormalized);
+    const activePlanType = normalizeOpenAICodexPlanType(src?.usage_snapshot?.plan_type);
+    const entryId = deriveCodexPoolEntryIdFromToken(tokenNormalized, { planType: activePlanType });
     const idx = out.accounts.findIndex((x) => getCodexPoolEntryId(x) === entryId);
     if (idx >= 0) {
       out.accounts[idx].identity_id = entryId;
@@ -3834,7 +3866,7 @@ function ensureCodexOAuthStoreShape(store) {
         usage_updated_at: 0
       });
     }
-    if (!out.active_account_id) out.active_account_id = entryId;
+    if (out.active_account_id !== entryId) out.active_account_id = entryId;
     changed = true;
   }
 
@@ -3846,10 +3878,16 @@ function ensureCodexOAuthStoreShape(store) {
     const activeRef = String(out.active_account_id);
     const hasDirect = out.accounts.some((x) => getCodexPoolEntryId(x) === activeRef);
     if (!hasDirect) {
+      const byLegacyPlanless = out.accounts.find((x) => getCodexPoolEntryId(x).startsWith(`${activeRef}::plan:`));
+      if (byLegacyPlanless) {
+        out.active_account_id = getCodexPoolEntryId(byLegacyPlanless);
+        changed = true;
+      } else {
       const byLegacyAccountId = out.accounts.find((x) => String(x.account_id || "") === activeRef);
       if (byLegacyAccountId) {
         out.active_account_id = getCodexPoolEntryId(byLegacyAccountId);
         changed = true;
+      }
       }
     }
   }
@@ -4226,13 +4264,16 @@ function pickCodexAccountCandidates(store) {
 
 function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
   const accountId = deriveCodexAccountIdFromToken(normalizedToken);
-  const entryId = deriveCodexPoolEntryIdFromToken(normalizedToken);
+  const planType =
+    normalizeOpenAICodexPlanType(options.planType) || extractOpenAICodexPlanType(normalizedToken?.access_token || "");
+  const entryId = deriveCodexPoolEntryIdFromToken(normalizedToken, { planType });
   const tokenEmail = extractOpenAICodexEmail(normalizedToken?.access_token || "");
   const label = typeof options.label === "string" ? options.label.trim() : "";
   const slot = parseSlotValue(options.slot);
   const forceReplaceSlot =
     options.force === true || options.force === 1 || String(options.force || "").trim() === "1";
   const nowSec = Math.floor(Date.now() / 1000);
+  const usageSnapshot = options.usageSnapshot && typeof options.usageSnapshot === "object" ? options.usageSnapshot : null;
   if (!Array.isArray(store.accounts)) store.accounts = [];
 
   const existingIdx = store.accounts.findIndex((x) => getCodexPoolEntryId(x) === entryId);
@@ -4290,7 +4331,11 @@ function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
         ? currentSlot
         : resolvedIncomingSlot ?? store.accounts[targetIdx].slot ?? null,
       last_error: "",
-      cooldown_until: 0
+      cooldown_until: 0,
+      usage_snapshot: usageSnapshot || store.accounts[targetIdx].usage_snapshot || null,
+      usage_updated_at: usageSnapshot
+        ? Number(usageSnapshot.fetched_at || nowSec) || nowSec
+        : Number(store.accounts[targetIdx].usage_updated_at || 0)
     };
   } else {
     store.accounts.push({
@@ -4305,8 +4350,8 @@ function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
       failure_count: 0,
       cooldown_until: 0,
       last_error: "",
-      usage_snapshot: null,
-      usage_updated_at: 0
+      usage_snapshot: usageSnapshot,
+      usage_updated_at: usageSnapshot ? Number(usageSnapshot.fetched_at || nowSec) || nowSec : 0
     });
   }
 
@@ -4320,7 +4365,7 @@ function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
   const resolvedAccount = store.accounts.find((x) => getCodexPoolEntryId(x) === entryId);
   const resolvedSlot = Number(resolvedAccount?.slot || 0) || null;
 
-  return { accountId, entryId, slot: resolvedSlot, action, email: tokenEmail || null };
+  return { accountId, entryId, slot: resolvedSlot, action, email: tokenEmail || null, planType };
 }
 
 function shouldRotateCodexAccountForStatus(statusCode) {
@@ -7726,46 +7771,62 @@ async function completeOAuthCallback({ code, state }) {
     const shaped = ensureCodexOAuthStoreShape(oauthRuntime.store);
     Object.keys(oauthRuntime.store).forEach((key) => delete oauthRuntime.store[key]);
     Object.assign(oauthRuntime.store, shaped.store);
+    let probe = null;
+    let probedSnapshot = null;
+    let detectedPlanType =
+      normalizeOpenAICodexPlanType(callbackSummary?.planType) ||
+      extractOpenAICodexPlanType(normalizedToken.access_token || "");
+
+    try {
+      probedSnapshot = await withTimeout(
+        fetchCodexUsageSnapshotForAccount(
+          {
+            token: normalizeToken(normalizedToken, normalizedToken),
+            account_id: callbackSummary.accountId || null,
+            identity_id: callbackSummary.entryId || null,
+            usage_snapshot: null
+          },
+          oauthRuntime.oauth
+        ),
+        12000,
+        "Usage probe timed out."
+      );
+      detectedPlanType =
+        normalizeOpenAICodexPlanType(probedSnapshot?.plan_type) || detectedPlanType;
+      probe = {
+        ok: true,
+        planType: detectedPlanType,
+        snapshot: probedSnapshot
+      };
+    } catch (err) {
+      probe = {
+        ok: false,
+        error: String(err?.message || err || "usage_probe_failed")
+      };
+    }
+
     const upsert = upsertCodexOAuthAccount(oauthRuntime.store, normalizedToken, {
       label: pending.label || "",
       slot: pending.slot,
-      force: pending.force
+      force: pending.force,
+      planType: detectedPlanType,
+      usageSnapshot: probedSnapshot
     });
     callbackSummary = {
       accountId: upsert.accountId,
       entryId: upsert.entryId || callbackSummary.entryId,
       email: upsert.email || callbackSummary.email,
       slot: upsert.slot,
-      action: upsert.action
+      action: upsert.action,
+      planType: upsert.planType || detectedPlanType || null
     };
 
-    if (callbackSummary.entryId) {
-      let probe = null;
-      try {
-        probe = await withTimeout(
-          refreshCodexUsageSnapshotInStore(
-            oauthRuntime.store,
-            callbackSummary.entryId,
-            oauthRuntime.oauth,
-            { includeDisabled: true }
-          ),
-          12000,
-          "Usage probe timed out."
-        );
-      } catch (err) {
-        probe = {
-          ok: false,
-          error: String(err?.message || err || "usage_probe_failed")
-        };
-      }
-
-      if (probe?.ok) {
-        callbackSummary.planType = probe.planType || null;
-        callbackSummary.usageFetched = true;
-      } else if (probe) {
-        callbackSummary.usageFetched = false;
-        callbackSummary.usageFetchError = probe.error || probe.skipped || "usage_probe_failed";
-      }
+    if (probe?.ok) {
+      callbackSummary.planType = probe.planType || callbackSummary.planType || null;
+      callbackSummary.usageFetched = true;
+    } else if (probe) {
+      callbackSummary.usageFetched = false;
+      callbackSummary.usageFetchError = probe.error || probe.skipped || "usage_probe_failed";
     }
   }
 
