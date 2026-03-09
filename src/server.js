@@ -2407,15 +2407,21 @@ app.use((req, res, next) => {
   };
 
   res.on("finish", () => {
-    const tokenUsage = normalizeTokenUsage(res.locals?.tokenUsage);
-    const modelRoute = res.locals?.modelRoute || null;
-    const authAccountId = res.locals?.authAccountId || null;
-    const authAccountLabel = resolveAuditAccountLabel(authAccountId);
     const responseContentType = parseContentType(res.getHeader("content-type"));
     const responsePacket = formatPayloadForAudit(Buffer.concat(responseChunks), responseContentType);
     const rawPath = req.originalUrl || req.url || "";
     const safePath = sanitizeAuditPath(rawPath);
     const protocolType = inferProtocolType(safePath, res.locals?.protocolType);
+    const tokenUsage =
+      normalizeTokenUsage(res.locals?.tokenUsage) ||
+      extractTokenUsageFromAuditResponse({
+        protocolType,
+        responseContentType,
+        responsePacket
+      });
+    const modelRoute = res.locals?.modelRoute || null;
+    const authAccountId = res.locals?.authAccountId || null;
+    const authAccountLabel = resolveAuditAccountLabel(authAccountId);
 
     runtimeStats.totalRequests += 1;
     if (res.statusCode >= 200 && res.statusCode < 400) runtimeStats.okRequests += 1;
@@ -2749,6 +2755,26 @@ app.use("/v1", async (req, res) => {
 
   if (!upstream.body) {
     res.end();
+    return;
+  }
+
+  const upstreamContentType = parseContentType(upstream.headers.get("content-type") || "");
+  if (upstream.ok && upstreamContentType.includes("event-stream")) {
+    try {
+      const streamResult = await pipeSseAndCaptureTokenUsage(upstream, res);
+      if (streamResult?.usage) {
+        res.locals.tokenUsage = streamResult.usage;
+      }
+    } catch (err) {
+      if (!res.headersSent) {
+        res.status(502).json({
+          error: "invalid_upstream_sse",
+          message: err.message
+        });
+      } else {
+        res.end();
+      }
+    }
     return;
   }
 
@@ -3495,6 +3521,65 @@ function extractCompletedResponseFromJson(rawText) {
   return parsed;
 }
 
+async function pipeSseAndCaptureTokenUsage(upstream, res) {
+  if (!upstream.body) {
+    throw new Error("No upstream SSE body.");
+  }
+
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let usage = null;
+
+  const handleSseBlock = (block) => {
+    if (!block || typeof block !== "string") return;
+    for (const line of block.split(/\r?\n/)) {
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+
+      let parsed;
+      try {
+        parsed = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+
+      usage = mergeNormalizedTokenUsage(
+        usage,
+        parsed?.response?.usage || parsed?.message?.usage || parsed?.usage || parsed?.usageMetadata || null
+      );
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      res.write(Buffer.from(value));
+      buffer += decoder.decode(value, { stream: true });
+    }
+
+    let separatorIndex = buffer.indexOf("\n\n");
+    while (separatorIndex !== -1) {
+      const block = buffer.slice(0, separatorIndex);
+      buffer = buffer.slice(separatorIndex + 2);
+      handleSseBlock(block);
+      separatorIndex = buffer.indexOf("\n\n");
+    }
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim().length > 0) {
+    handleSseBlock(buffer);
+  }
+
+  res.end();
+  return {
+    usage: toChatUsageFromNormalizedTokenUsage(usage)
+  };
+}
+
 async function pipeCodexSseAsChatCompletions(upstream, res, model) {
   if (!upstream.body) {
     throw new Error("No upstream SSE body.");
@@ -3751,12 +3836,118 @@ function normalizeTokenUsage(usage) {
   const hasTotal = Number.isFinite(totalTokens);
 
   if (!hasInput && !hasOutput && !hasTotal) return null;
+  const resolvedTotalTokens =
+    hasTotal ? totalTokens : (hasInput ? inputTokens : 0) + (hasOutput ? outputTokens : 0);
 
   return {
     inputTokens: hasInput ? inputTokens : null,
     outputTokens: hasOutput ? outputTokens : null,
-    totalTokens: hasTotal ? totalTokens : null
+    totalTokens: Number.isFinite(resolvedTotalTokens) ? resolvedTotalTokens : null
   };
+}
+
+function mergeNormalizedTokenUsage(current, next) {
+  const currentUsage = normalizeTokenUsage(current);
+  const nextUsage = normalizeTokenUsage(next);
+  if (!currentUsage) return nextUsage;
+  if (!nextUsage) return currentUsage;
+
+  return normalizeTokenUsage({
+    inputTokens: nextUsage.inputTokens ?? currentUsage.inputTokens,
+    outputTokens: nextUsage.outputTokens ?? currentUsage.outputTokens,
+    totalTokens: nextUsage.totalTokens ?? currentUsage.totalTokens
+  });
+}
+
+function toChatUsageFromNormalizedTokenUsage(usage) {
+  const normalized = normalizeTokenUsage(usage);
+  if (!normalized) return null;
+  return {
+    prompt_tokens: Number(normalized.inputTokens || 0),
+    completion_tokens: Number(normalized.outputTokens || 0),
+    total_tokens: Number(normalized.totalTokens || 0)
+  };
+}
+
+function parseSseUsageFromAuditPayload(packetText, options = {}) {
+  if (!packetText || typeof packetText !== "string") return null;
+  const usageRootPath = typeof options.usageRootPath === "string" ? options.usageRootPath.trim() : "";
+  let usage = null;
+
+  const readUsageObject = (event) => {
+    if (!event || typeof event !== "object") return null;
+    if (!usageRootPath) {
+      return event?.usage || event?.usageMetadata || event?.message?.usage || event?.response?.usage || null;
+    }
+    const paths = usageRootPath.split(".").filter(Boolean);
+    let cursor = event;
+    for (const key of paths) {
+      if (!cursor || typeof cursor !== "object") return null;
+      cursor = cursor[key];
+    }
+    return cursor || null;
+  };
+
+  for (const line of packetText.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      continue;
+    }
+
+    usage = mergeNormalizedTokenUsage(usage, readUsageObject(parsed));
+  }
+
+  return usage;
+}
+
+function extractTokenUsageFromAuditResponse({ protocolType, responseContentType, responsePacket }) {
+  if (!responsePacket || typeof responsePacket !== "string") return null;
+  const contentType = String(responseContentType || "").toLowerCase();
+  const protocol = String(protocolType || "").toLowerCase();
+  const trimmedPacket = responsePacket.trim();
+
+  if (contentType.includes("json") || trimmedPacket.startsWith("{") || trimmedPacket.startsWith("[")) {
+    const parsed = parseJsonLoose(responsePacket);
+    if (parsed && typeof parsed === "object") {
+      const jsonUsage =
+        parsed?.usage ||
+        parsed?.response?.usage ||
+        parsed?.usageMetadata ||
+        parsed?.message?.usage ||
+        parsed?.error?.usage ||
+        null;
+      const normalizedJsonUsage = normalizeTokenUsage(jsonUsage);
+      if (normalizedJsonUsage) return normalizedJsonUsage;
+    }
+  }
+
+  const looksLikeSse =
+    contentType.includes("event-stream") || /(^|\n)\s*(event:|data:)/.test(responsePacket);
+  if (!looksLikeSse) return null;
+
+  const completed = extractCompletedResponseFromSse(responsePacket);
+  const completedUsage = normalizeTokenUsage(completed?.usage);
+  if (completedUsage) return completedUsage;
+
+  if (protocol.includes("anthropic")) {
+    const anthropicUsage =
+      parseSseUsageFromAuditPayload(responsePacket) ||
+      parseSseUsageFromAuditPayload(responsePacket, { usageRootPath: "message.usage" });
+    if (anthropicUsage) return anthropicUsage;
+  }
+
+  if (protocol.includes("gemini")) {
+    const geminiUsage = parseSseUsageFromAuditPayload(responsePacket);
+    if (geminiUsage) return geminiUsage;
+  }
+
+  return parseSseUsageFromAuditPayload(responsePacket);
 }
 
 function convertResponsesToChatCompletion(response) {
