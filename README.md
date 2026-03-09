@@ -39,14 +39,14 @@ UPSTREAM_MODE=gemini-v1beta
 # Optional:
 # - empty => local Gemini-compatible facade (no real Gemini key needed)
 # - set key => pass-through to official Gemini upstream
-GEMINI_API_KEY=
+GEMINI_API_KEY=UR_API_KEY
 
 # Anthropic
 UPSTREAM_MODE=anthropic-v1
 # Optional:
 # - empty => local Anthropic-compatible facade (no real Anthropic key needed)
 # - set key => pass-through to official Anthropic upstream
-ANTHROPIC_API_KEY=
+ANTHROPIC_API_KEY=UR_API_KEY
 ```
 
 ## 3. Start
