@@ -634,6 +634,8 @@ function extractProxyApiKeyFromRequest(req) {
   if (bearer) return bearer;
   const xApiKey = readHeaderValue(req, "x-api-key");
   if (xApiKey) return xApiKey.trim();
+  const apiKey = readHeaderValue(req, "api-key");
+  if (apiKey) return apiKey.trim();
   const xGoogApiKey = readHeaderValue(req, "x-goog-api-key");
   if (xGoogApiKey) return xGoogApiKey.trim();
   const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
@@ -641,6 +643,8 @@ function extractProxyApiKeyFromRequest(req) {
     incoming.searchParams.get("key") ||
       incoming.searchParams.get("api_key") ||
       incoming.searchParams.get("x-api-key") ||
+      incoming.searchParams.get("api-key") ||
+      incoming.searchParams.get("apikey") ||
       ""
   ).trim();
   if (queryKey) return queryKey;
@@ -1210,7 +1214,7 @@ function sanitizeAuditPayload(text) {
     (_m, p1, _token, p3) => `${p1}[REDACTED]${p3}`
   );
   out = out.replace(
-    /("?(?:access_token|refresh_token|id_token|api_key|x-api-key|x-goog-api-key)"?\s*:\s*")([^"]+)(")/gi,
+    /("?(?:access_token|refresh_token|id_token|api_key|x-api-key|api-key|apikey|x-goog-api-key)"?\s*:\s*")([^"]+)(")/gi,
     (_m, p1, _token, p3) => `${p1}[REDACTED]${p3}`
   );
   out = out.replace(/(Bearer\s+)[A-Za-z0-9._\-~+/=]+/gi, "$1[REDACTED]");
@@ -1275,6 +1279,8 @@ function sanitizeAuditPath(urlLike) {
     parsed.searchParams.delete("key");
     parsed.searchParams.delete("api_key");
     parsed.searchParams.delete("x-api-key");
+    parsed.searchParams.delete("api-key");
+    parsed.searchParams.delete("apikey");
     const search = parsed.search || "";
     return `${parsed.pathname}${search}`;
   } catch {
@@ -1333,7 +1339,7 @@ app.use((req, res, next) => {
   res.status(401).json({
     error: "invalid_api_key",
     message:
-      "Invalid API key. Use one of: Authorization: Bearer <your_proxy_api_key>, x-api-key, x-goog-api-key, or ?key=<your_proxy_api_key>."
+      "Invalid API key. Use one of: Authorization: Bearer <your_proxy_api_key>, x-api-key, api-key, x-goog-api-key, or ?key=<your_proxy_api_key>."
   });
 });
 
@@ -6946,7 +6952,9 @@ function resolveAnthropicApiKey(req) {
   const configuredKey = sanitizeUpstreamApiKeyCandidate(config.anthropic.apiKey || "");
   if (configuredKey && isLikelyAnthropicApiKey(configuredKey)) return configuredKey;
   if (!config.providerUpstream.allowRequestApiKeys) return "";
-  const headerKey = sanitizeUpstreamApiKeyCandidate(readHeaderValue(req, "x-api-key"));
+  const headerKey = sanitizeUpstreamApiKeyCandidate(
+    readHeaderValue(req, "x-api-key") || readHeaderValue(req, "api-key")
+  );
   if (headerKey && isLikelyAnthropicApiKey(headerKey)) return headerKey;
   return "";
 }
@@ -6956,7 +6964,8 @@ function isAnthropicNativeRequest(req) {
     config.upstreamMode === "anthropic-v1" ||
     Boolean(readHeaderValue(req, "anthropic-version")) ||
     Boolean(readHeaderValue(req, "anthropic-beta")) ||
-    (config.providerUpstream.allowRequestApiKeys && Boolean(readHeaderValue(req, "x-api-key")))
+    (config.providerUpstream.allowRequestApiKeys &&
+      Boolean(readHeaderValue(req, "x-api-key") || readHeaderValue(req, "api-key")))
   );
 }
 
