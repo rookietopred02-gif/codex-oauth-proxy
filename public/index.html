@@ -817,6 +817,10 @@
         gap: 12px;
       }
 
+      .req-detail-card--full {
+        grid-column: 1 / -1;
+      }
+
       .req-detail-card {
         border: 1px solid rgba(255, 255, 255, 0.16);
         border-radius: 12px;
@@ -1221,12 +1225,54 @@
         display: block;
       }
 
+      .runtime-subcard.runtime-subcard--compact {
+        margin-top: 8px;
+      }
+
       .runtime-subcard h4 {
         margin: 0 0 6px;
         font-size: 11px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         color: #d9e4ff;
+      }
+
+      .compact-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .compact-grid .field {
+        min-width: 0;
+      }
+
+      .compact-grid .field > input,
+      .compact-grid .field > select {
+        margin-bottom: 0;
+      }
+
+      .compact-grid .field--full {
+        grid-column: 1 / -1;
+      }
+
+      .compact-inline-check {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 2px;
+      }
+
+      .compact-inline-check input[type="checkbox"] {
+        width: auto;
+        margin: 0;
+      }
+
+      .compact-note {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.25;
       }
 
       .runtime-inline-grid {
@@ -1783,6 +1829,10 @@
           grid-template-columns: 1fr;
         }
 
+        .compact-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
         .kv-grid {
           grid-template-columns: 1fr;
         }
@@ -1839,6 +1889,10 @@
         }
 
         .req-detail-code-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .compact-grid {
           grid-template-columns: 1fr;
         }
       }
@@ -1930,7 +1984,10 @@
             <button id="refreshBtn" data-i18n="runtime_refresh">Refresh</button>
             <button id="loginBtn" data-i18n="runtime_connect_account">Connect Account</button>
             <button id="logoutBtn" class="secondary" data-i18n="runtime_logout_current">Logout Current</button>
+            <button id="exportTokensBtn" class="secondary" data-i18n="runtime_export_tokens">Export Tokens</button>
+            <button id="importTokensBtn" class="secondary" data-i18n="runtime_import_tokens">Import Tokens</button>
           </div>
+          <input id="tokenImportDirectoryInput" type="file" accept=".json,application/json" webkitdirectory directory multiple hidden />
           <div class="runtime-control-grid">
             <div class="runtime-language">
               <label for="languageSelect" data-i18n="runtime_language">Language</label>
@@ -2010,6 +2067,86 @@
                 <option value="random" data-i18n="strategy_random">random</option>
                 <option value="sticky" data-i18n="strategy_sticky">sticky</option>
               </select>
+            </div>
+          </div>
+          <div class="runtime-subcard runtime-subcard--compact">
+            <h4 data-i18n="auto_compact_title">Auto Compact</h4>
+            <div class="compact-grid">
+              <div class="field">
+                <label for="autoCompactEnabled" data-i18n="auto_compact_enabled">Enabled</label>
+                <label class="checkline compact-inline-check">
+                  <input id="autoCompactEnabled" type="checkbox" />
+                  <span data-i18n="auto_compact_enabled_desc">Automatically reduce context before upstream call</span>
+                </label>
+              </div>
+              <div class="field">
+                <label for="autoCompactMode" data-i18n="auto_compact_mode">Mode</label>
+                <select id="autoCompactMode">
+                  <option value="deterministic" data-i18n="auto_compact_mode_deterministic">deterministic</option>
+                  <option value="hybrid" data-i18n="auto_compact_mode_hybrid">hybrid</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="autoCompactTriggerRatio" data-i18n="auto_compact_trigger_ratio">Trigger Ratio</label>
+                <input id="autoCompactTriggerRatio" type="number" min="0.1" max="1.5" step="0.01" />
+              </div>
+              <div class="field">
+                <label for="autoCompactL1Ratio" data-i18n="auto_compact_l1_ratio">L1 Ratio</label>
+                <input id="autoCompactL1Ratio" type="number" min="0.1" max="1.5" step="0.01" />
+              </div>
+              <div class="field">
+                <label for="autoCompactL2Ratio" data-i18n="auto_compact_l2_ratio">L2 Ratio</label>
+                <input id="autoCompactL2Ratio" type="number" min="0.1" max="1.5" step="0.01" />
+              </div>
+              <div class="field">
+                <label for="autoCompactL3Ratio" data-i18n="auto_compact_l3_ratio">L3 Ratio</label>
+                <input id="autoCompactL3Ratio" type="number" min="0.1" max="1.5" step="0.01" />
+              </div>
+              <div class="field">
+                <label for="autoCompactKeepLastTurns" data-i18n="auto_compact_keep_last_turns">Keep Last Turns</label>
+                <input id="autoCompactKeepLastTurns" type="number" min="1" max="20" step="1" />
+              </div>
+              <div class="field">
+                <label for="autoCompactKeepLastToolRounds" data-i18n="auto_compact_keep_last_tool_rounds">Keep Last Tool Rounds</label>
+                <input id="autoCompactKeepLastToolRounds" type="number" min="0" max="20" step="1" />
+              </div>
+              <div class="field">
+                <label for="autoCompactToolOutputMaxChars" data-i18n="auto_compact_tool_output_max_chars">Tool Output Max Chars</label>
+                <input id="autoCompactToolOutputMaxChars" type="number" min="1000" max="100000" step="100" />
+              </div>
+              <div class="field">
+                <label for="autoCompactSummaryMaxChars" data-i18n="auto_compact_summary_max_chars">Summary Max Chars</label>
+                <input id="autoCompactSummaryMaxChars" type="number" min="500" max="20000" step="100" />
+              </div>
+              <div class="field">
+                <label for="autoCompactRetryOnContextError" data-i18n="auto_compact_retry_on_context_error">Retry on context error</label>
+                <label class="checkline compact-inline-check">
+                  <input id="autoCompactRetryOnContextError" type="checkbox" />
+                  <span data-i18n="auto_compact_retry_on_context_error_desc">Retry once with stronger compaction</span>
+                </label>
+              </div>
+              <div class="field">
+                <label for="autoCompactMaxRetries" data-i18n="auto_compact_max_retries">Max Retries</label>
+                <input id="autoCompactMaxRetries" type="number" min="0" max="2" step="1" />
+              </div>
+              <div class="field">
+                <label for="autoCompactSummarizerEnabled" data-i18n="auto_compact_summarizer_enabled">Summarizer Enabled</label>
+                <label class="checkline compact-inline-check">
+                  <input id="autoCompactSummarizerEnabled" type="checkbox" />
+                  <span data-i18n="auto_compact_summarizer_enabled_desc">Use model summarizer for stronger L3</span>
+                </label>
+              </div>
+              <div class="field">
+                <label for="autoCompactSummarizerModel" data-i18n="auto_compact_summarizer_model">Summarizer Model</label>
+                <input id="autoCompactSummarizerModel" />
+              </div>
+              <div class="field">
+                <label for="autoCompactSummarizerTimeoutMs" data-i18n="auto_compact_summarizer_timeout_ms">Summarizer Timeout (ms)</label>
+                <input id="autoCompactSummarizerTimeoutMs" type="number" min="1000" max="60000" step="100" />
+              </div>
+            </div>
+            <div class="compact-note" data-i18n="auto_compact_note">
+              deterministic mode is local-only. hybrid mode currently falls back to deterministic when summarizer is unavailable.
             </div>
           </div>
           <div class="autosave-status" id="configAutoSaveStatus"></div>
@@ -2206,6 +2343,9 @@
                   <th data-i18n="recent_requests_input">Input</th>
                   <th data-i18n="recent_requests_output">Output</th>
                   <th data-i18n="recent_requests_total">Total</th>
+                  <th data-i18n="recent_requests_compact">Compact</th>
+                  <th data-i18n="recent_requests_level">Level</th>
+                  <th data-i18n="recent_requests_retry">Retry</th>
                   <th data-i18n="recent_requests_status">Status</th>
                   <th data-i18n="recent_requests_latency">Latency</th>
                 </tr>
@@ -2237,6 +2377,13 @@
             <div id="reqDetailResMeta" class="req-detail-code-meta mono">-</div>
             <div class="req-detail-code-wrap">
               <pre id="reqDetailResCode" class="req-detail-code mono">(empty)</pre>
+            </div>
+          </details>
+          <details class="req-detail-card req-detail-card--full" open>
+            <summary data-i18n="request_detail_compact_metadata">Compact Metadata</summary>
+            <div id="reqDetailCompactMeta" class="req-detail-code-meta mono">-</div>
+            <div class="req-detail-code-wrap">
+              <pre id="reqDetailCompactCode" class="req-detail-code mono">(empty)</pre>
             </div>
           </details>
         </div>
@@ -2293,7 +2440,22 @@
         "preheatBatchSize",
         "preheatMinPrimaryRemaining",
         "preheatMinSecondaryRemaining",
-        "modelRouterEnabled"
+        "modelRouterEnabled",
+        "autoCompactEnabled",
+        "autoCompactMode",
+        "autoCompactTriggerRatio",
+        "autoCompactL1Ratio",
+        "autoCompactL2Ratio",
+        "autoCompactL3Ratio",
+        "autoCompactKeepLastTurns",
+        "autoCompactKeepLastToolRounds",
+        "autoCompactToolOutputMaxChars",
+        "autoCompactSummaryMaxChars",
+        "autoCompactRetryOnContextError",
+        "autoCompactMaxRetries",
+        "autoCompactSummarizerEnabled",
+        "autoCompactSummarizerModel",
+        "autoCompactSummarizerTimeoutMs"
       ];
       const FX_ENABLED_STORAGE_KEY = "codex_proxy_dashboard_fx_enabled";
       const FX_CARD_SELECTOR = ".card, .metric-card, .account-card, .recommend-item";
@@ -2313,6 +2475,8 @@
           runtime_refresh: "Refresh",
           runtime_connect_account: "Connect Account",
           runtime_logout_current: "Logout Current",
+          runtime_export_tokens: "Export Tokens",
+          runtime_import_tokens: "Import Tokens",
           runtime_language: "Language",
           runtime_heartbeat: "Status Heartbeat (s)",
           runtime_authenticated: "AUTHENTICATED",
@@ -2362,6 +2526,29 @@
           proxy_default_instructions: "Default Instructions",
           proxy_reasoning_effort: "Reasoning Effort",
           proxy_pool_strategy: "Account Pool Strategy",
+          auto_compact_title: "Auto Compact",
+          auto_compact_enabled: "Enabled",
+          auto_compact_enabled_desc: "Automatically reduce context before upstream call",
+          auto_compact_mode: "Mode",
+          auto_compact_mode_deterministic: "deterministic",
+          auto_compact_mode_hybrid: "hybrid",
+          auto_compact_trigger_ratio: "Trigger Ratio",
+          auto_compact_l1_ratio: "L1 Ratio",
+          auto_compact_l2_ratio: "L2 Ratio",
+          auto_compact_l3_ratio: "L3 Ratio",
+          auto_compact_keep_last_turns: "Keep Last Turns",
+          auto_compact_keep_last_tool_rounds: "Keep Last Tool Rounds",
+          auto_compact_tool_output_max_chars: "Tool Output Max Chars",
+          auto_compact_summary_max_chars: "Summary Max Chars",
+          auto_compact_retry_on_context_error: "Retry on context error",
+          auto_compact_retry_on_context_error_desc: "Retry once with stronger compaction",
+          auto_compact_max_retries: "Max Retries",
+          auto_compact_summarizer_enabled: "Summarizer Enabled",
+          auto_compact_summarizer_enabled_desc: "Use model summarizer for stronger L3",
+          auto_compact_summarizer_model: "Summarizer Model",
+          auto_compact_summarizer_timeout_ms: "Summarizer Timeout (ms)",
+          auto_compact_note:
+            "Deterministic mode runs locally. Hybrid can optionally call a summarizer and falls back to deterministic.",
           reasoning_adaptive: "adaptive (auto)",
           reasoning_none: "none",
           reasoning_low: "low",
@@ -2477,6 +2664,7 @@
           request_detail_request_packet: "Request Packet",
           request_detail_response_packet: "Response Packet",
           request_detail_content_type: "content-type: {type}",
+          request_detail_compact_metadata: "Compact Metadata",
           request_detail_empty: "(empty)",
           req_meta_request_time: "Request Time",
           req_meta_latency: "Latency",
@@ -2515,6 +2703,9 @@
           recent_requests_input: "Input",
           recent_requests_output: "Output",
           recent_requests_total: "Total",
+          recent_requests_compact: "Compact",
+          recent_requests_level: "Level",
+          recent_requests_retry: "Retry",
           recent_requests_status: "Status",
           recent_requests_latency: "Latency",
           quota_remaining_percent_title: "remaining quota percent",
@@ -2537,6 +2728,12 @@
           alert_api_key_generate_failed: "Generate API key failed: {message}",
           alert_api_key_revoke_failed: "Revoke API key failed: {message}",
           alert_api_key_copy_failed: "Copy API key failed: {message}",
+          alert_token_export_empty: "No account tokens to export.",
+          alert_token_export_success: "Exported {count} token files.",
+          alert_token_export_failed: "Export tokens failed: {message}",
+          alert_token_import_no_json: "No valid JSON token files found in selected folder.",
+          alert_token_import_success: "Imported {count} tokens.",
+          alert_token_import_failed: "Import tokens failed: {message}",
           alert_public_access_start_failed: "Start public access failed: {message}",
           alert_public_access_stop_failed: "Stop public access failed: {message}",
           alert_public_access_install_failed: "Install cloudflared failed: {message}",
@@ -2558,6 +2755,8 @@
           runtime_refresh: "重新整理",
           runtime_connect_account: "連接帳號",
           runtime_logout_current: "登出目前帳號",
+          runtime_export_tokens: "導出 Token",
+          runtime_import_tokens: "導入 Token",
           runtime_language: "語言",
           runtime_heartbeat: "狀態心跳檢查 (秒)",
           runtime_authenticated: "已認證",
@@ -2607,6 +2806,29 @@
           proxy_default_instructions: "預設指示詞",
           proxy_reasoning_effort: "思維長度",
           proxy_pool_strategy: "帳號池策略",
+          auto_compact_title: "自動壓縮",
+          auto_compact_enabled: "啟用",
+          auto_compact_enabled_desc: "送往上游前自動縮減上下文",
+          auto_compact_mode: "模式",
+          auto_compact_mode_deterministic: "deterministic",
+          auto_compact_mode_hybrid: "hybrid",
+          auto_compact_trigger_ratio: "觸發比例",
+          auto_compact_l1_ratio: "L1 比例",
+          auto_compact_l2_ratio: "L2 比例",
+          auto_compact_l3_ratio: "L3 比例",
+          auto_compact_keep_last_turns: "保留最近輪次",
+          auto_compact_keep_last_tool_rounds: "保留最近工具輪次",
+          auto_compact_tool_output_max_chars: "工具輸出最大字元",
+          auto_compact_summary_max_chars: "摘要最大字元",
+          auto_compact_retry_on_context_error: "遇到上下文超限時重試",
+          auto_compact_retry_on_context_error_desc: "以更高壓縮等級重試一次",
+          auto_compact_max_retries: "最大重試次數",
+          auto_compact_summarizer_enabled: "啟用摘要器",
+          auto_compact_summarizer_enabled_desc: "L3 可用模型摘要；失敗會回退 deterministic",
+          auto_compact_summarizer_model: "摘要模型",
+          auto_compact_summarizer_timeout_ms: "摘要逾時（毫秒）",
+          auto_compact_note:
+            "deterministic 為本地壓縮；hybrid 可選擇啟用摘要器，失敗會自動回退本地壓縮。",
           reasoning_adaptive: "自適應（自動）",
           reasoning_none: "無",
           reasoning_low: "低",
@@ -2721,6 +2943,7 @@
           request_detail_request_packet: "請求封包",
           request_detail_response_packet: "回應封包",
           request_detail_content_type: "內容類型：{type}",
+          request_detail_compact_metadata: "壓縮中繼資料",
           request_detail_empty: "（空）",
           req_meta_request_time: "請求時間",
           req_meta_latency: "延遲",
@@ -2759,6 +2982,9 @@
           recent_requests_input: "輸入",
           recent_requests_output: "輸出",
           recent_requests_total: "總量",
+          recent_requests_compact: "壓縮",
+          recent_requests_level: "層級",
+          recent_requests_retry: "重試",
           recent_requests_status: "狀態",
           recent_requests_latency: "延遲",
           quota_remaining_percent_title: "剩餘額度百分比",
@@ -2781,6 +3007,12 @@
           alert_api_key_generate_failed: "產生 API 金鑰失敗：{message}",
           alert_api_key_revoke_failed: "撤銷 API 金鑰失敗：{message}",
           alert_api_key_copy_failed: "複製 API 金鑰失敗：{message}",
+          alert_token_export_empty: "沒有可導出的帳號 Token。",
+          alert_token_export_success: "已導出 {count} 個 Token 檔案。",
+          alert_token_export_failed: "導出 Token 失敗：{message}",
+          alert_token_import_no_json: "選取的資料夾中找不到有效的 JSON Token 檔案。",
+          alert_token_import_success: "已導入 {count} 個 Token。",
+          alert_token_import_failed: "導入 Token 失敗：{message}",
           alert_public_access_start_failed: "啟動公網訪問失敗：{message}",
           alert_public_access_stop_failed: "停止公網訪問失敗：{message}",
           alert_public_access_install_failed: "安裝 cloudflared 失敗：{message}",
@@ -2850,6 +3082,21 @@
           ["預設指示詞", "默认指令词"],
           ["思維長度", "思维长度"],
           ["帳號池策略", "账号池策略"],
+          ["自動壓縮", "自动压缩"],
+          ["送往上游前自動縮減上下文", "送往上游前自动缩减上下文"],
+          ["觸發比例", "触发比例"],
+          ["保留最近輪次", "保留最近轮次"],
+          ["保留最近工具輪次", "保留最近工具轮次"],
+          ["工具輸出最大字元", "工具输出最大字符"],
+          ["摘要最大字元", "摘要最大字符"],
+          ["遇到上下文超限時重試", "遇到上下文超限时重试"],
+          ["以更高壓縮等級重試一次", "以更高压缩等级重试一次"],
+          ["最大重試次數", "最大重试次数"],
+          ["啟用摘要器", "启用摘要器"],
+          ["摘要逾時（毫秒）", "摘要超时（毫秒）"],
+          ["壓縮中繼資料", "压缩中继资料"],
+          ["壓縮", "压缩"],
+          ["層級", "层级"],
           ["智慧（健康優先）", "智能（健康优先）"],
           ["手動（僅目前帳號）", "手动（仅当前账号）"],
           ["自我測試", "自测"],
@@ -3956,6 +4203,25 @@
         $("reqDetailResMeta").textContent = tt("request_detail_content_type", { type: resCt || "-" });
         $("reqDetailReqCode").textContent = safeCodeText(row?.requestPacket);
         $("reqDetailResCode").textContent = safeCodeText(row?.responsePacket);
+        const compactMeta = row?.autoCompactMeta && typeof row.autoCompactMeta === "object" ? row.autoCompactMeta : null;
+        const compactSummary = compactMeta
+          ? [
+              `applied=${compactMeta.applied === true ? "yes" : "no"}`,
+              `level=${Number.isFinite(Number(compactMeta.level)) ? Number(compactMeta.level) : 0}`,
+              `reason=${String(compactMeta.reason || "-")}`,
+              `mode=${String(compactMeta.mode || "-")}`,
+              `retry=${compactMeta.retryTriggered === true ? "yes" : "no"}`,
+              `before=${fmtToken(compactMeta.estimatedBefore)}`,
+              `after=${fmtToken(compactMeta.estimatedAfter)}`,
+              `ratio=${Number.isFinite(Number(compactMeta.ratioBefore)) ? Number(compactMeta.ratioBefore).toFixed(2) : "-"}→${
+                Number.isFinite(Number(compactMeta.ratioAfter)) ? Number(compactMeta.ratioAfter).toFixed(2) : "-"
+              }`
+            ].join(" | ")
+          : "-";
+        $("reqDetailCompactMeta").textContent = compactSummary;
+        $("reqDetailCompactCode").textContent = compactMeta
+          ? JSON.stringify(compactMeta, null, 2)
+          : t("request_detail_empty");
 
         const backdrop = $("reqDetailBackdrop");
         backdrop.hidden = false;
@@ -4687,7 +4953,24 @@
           preheatMinPrimaryRemaining: Number($("preheatMinPrimaryRemaining").value || 0),
           preheatMinSecondaryRemaining: Number($("preheatMinSecondaryRemaining").value || 0),
           modelRouterEnabled: $("modelRouterEnabled").checked,
-          modelMappings: currentMappings
+          modelMappings: currentMappings,
+          autoCompact: {
+            enabled: $("autoCompactEnabled").checked,
+            mode: $("autoCompactMode").value,
+            triggerRatio: Number($("autoCompactTriggerRatio").value || 0),
+            l1Ratio: Number($("autoCompactL1Ratio").value || 0),
+            l2Ratio: Number($("autoCompactL2Ratio").value || 0),
+            l3Ratio: Number($("autoCompactL3Ratio").value || 0),
+            keepLastTurns: Number($("autoCompactKeepLastTurns").value || 0),
+            keepLastToolRounds: Number($("autoCompactKeepLastToolRounds").value || 0),
+            toolOutputMaxChars: Number($("autoCompactToolOutputMaxChars").value || 0),
+            summaryMaxChars: Number($("autoCompactSummaryMaxChars").value || 0),
+            retryOnContextError: $("autoCompactRetryOnContextError").checked,
+            maxRetries: Number($("autoCompactMaxRetries").value || 0),
+            summarizerEnabled: $("autoCompactSummarizerEnabled").checked,
+            summarizerModel: String($("autoCompactSummarizerModel").value || "").trim(),
+            summarizerTimeoutMs: Number($("autoCompactSummarizerTimeoutMs").value || 0)
+          }
         };
       }
 
@@ -4796,6 +5079,22 @@
         currentMappings = { ...(state.config.modelMappings || {}) };
         renderMappingsTable();
         renderModelOptions();
+        const autoCompact = state?.config?.autoCompact || {};
+        $("autoCompactEnabled").checked = autoCompact.enabled !== false;
+        $("autoCompactMode").value = String(autoCompact.mode || "deterministic");
+        $("autoCompactTriggerRatio").value = Number(autoCompact.triggerRatio ?? 0.72);
+        $("autoCompactL1Ratio").value = Number(autoCompact.l1Ratio ?? 0.72);
+        $("autoCompactL2Ratio").value = Number(autoCompact.l2Ratio ?? 0.82);
+        $("autoCompactL3Ratio").value = Number(autoCompact.l3Ratio ?? 0.9);
+        $("autoCompactKeepLastTurns").value = Number(autoCompact.keepLastTurns ?? 6);
+        $("autoCompactKeepLastToolRounds").value = Number(autoCompact.keepLastToolRounds ?? 4);
+        $("autoCompactToolOutputMaxChars").value = Number(autoCompact.toolOutputMaxChars ?? 12000);
+        $("autoCompactSummaryMaxChars").value = Number(autoCompact.summaryMaxChars ?? 6000);
+        $("autoCompactRetryOnContextError").checked = autoCompact.retryOnContextError !== false;
+        $("autoCompactMaxRetries").value = Number(autoCompact.maxRetries ?? 1);
+        $("autoCompactSummarizerEnabled").checked = autoCompact.summarizerEnabled === true;
+        $("autoCompactSummarizerModel").value = String(autoCompact.summarizerModel || "gpt-5-mini");
+        $("autoCompactSummarizerTimeoutMs").value = Number(autoCompact.summarizerTimeoutMs ?? 12000);
         applyPublicAccessConfigFromState(state);
         syncAllCustomSelects();
       }
@@ -4966,6 +5265,11 @@
               r.requestedModel && r.mappedModel
                 ? `${escapeHtml(r.requestedModel)} → ${escapeHtml(r.mappedModel)}`
                 : "";
+            const compactApplied = r?.autoCompactApplied === true;
+            const compactLevel = Number.isFinite(Number(r?.autoCompactLevel))
+              ? Math.max(0, Math.floor(Number(r.autoCompactLevel)))
+              : 0;
+            const compactRetry = r?.autoCompactRetry === true;
             return `<tr class="req-row" tabindex="0" data-req-id="${escapeHtml(requestId)}">
               <td>${t}</td>
               <td>${r.method}</td>
@@ -4973,6 +5277,9 @@
               <td>${fmtToken(r.inputTokens)}</td>
               <td>${fmtToken(r.outputTokens)}</td>
               <td>${fmtToken(r.totalTokens)}</td>
+              <td>${compactApplied ? "Y" : "-"}</td>
+              <td>${compactApplied ? `L${compactLevel}` : "-"}</td>
+              <td>${compactRetry ? "Y" : "-"}</td>
               <td class="${statusClass}">${r.status}</td>
               <td>${r.durationMs} ms</td>
             </tr>`;
@@ -5127,6 +5434,185 @@
         window.open(`/auth/login?slot=${slot}&label=acc${slot}&prompt=login`, "_blank");
       }
 
+      function isAbortLikeError(err) {
+        if (!err) return false;
+        const name = String(err.name || "");
+        const message = String(err.message || "").toLowerCase();
+        return name === "AbortError" || message.includes("aborted") || message.includes("cancel");
+      }
+
+      function sanitizeExportFileName(name, fallback) {
+        const normalized = String(name || "")
+          .trim()
+          .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+          .replace(/-{2,}/g, "-")
+          .replace(/^-+|-+$/g, "");
+        const base = normalized || fallback;
+        const withExt = /\.json$/i.test(base) ? base : `${base}.json`;
+        return withExt.slice(0, 128);
+      }
+
+      function triggerBlobDownload(fileName, payloadObject) {
+        const blob = new Blob([JSON.stringify(payloadObject || {}, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = fileName;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+      }
+
+      function collectTokenCandidatesFromParsedJson(parsed) {
+        const candidates = [];
+        const pushObject = (value) => {
+          if (value && typeof value === "object" && !Array.isArray(value)) {
+            candidates.push(value);
+          }
+        };
+
+        if (!parsed || typeof parsed !== "object") return candidates;
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) pushObject(item);
+          return candidates;
+        }
+
+        if (Array.isArray(parsed.tokens)) {
+          for (const tokenItem of parsed.tokens) pushObject(tokenItem);
+        }
+        if (Array.isArray(parsed.files)) {
+          for (const fileItem of parsed.files) {
+            if (fileItem && typeof fileItem === "object" && fileItem.payload && typeof fileItem.payload === "object") {
+              candidates.push(fileItem.payload);
+            } else {
+              pushObject(fileItem);
+            }
+          }
+        }
+        if (parsed.payload && typeof parsed.payload === "object") {
+          candidates.push(parsed.payload);
+        }
+        pushObject(parsed);
+        return candidates;
+      }
+
+      async function parseTokenCandidatesFromFiles(fileList) {
+        const tokens = [];
+        for (const file of fileList) {
+          if (!(file instanceof File)) continue;
+          if (!/\.json$/i.test(file.name)) continue;
+          let text = "";
+          try {
+            text = await file.text();
+          } catch {
+            continue;
+          }
+          if (!text.trim()) continue;
+          try {
+            const parsed = JSON.parse(text);
+            const candidates = collectTokenCandidatesFromParsedJson(parsed);
+            for (const candidate of candidates) {
+              tokens.push(candidate);
+            }
+          } catch {
+            continue;
+          }
+        }
+        return tokens;
+      }
+
+      async function pickJsonFilesFromDirectoryInput() {
+        const input = $("tokenImportDirectoryInput");
+        if (!(input instanceof HTMLInputElement)) return [];
+        input.value = "";
+        return new Promise((resolve) => {
+          const finalize = () => {
+            const files = Array.from(input.files || []).filter((file) => file instanceof File);
+            resolve(files);
+          };
+          input.addEventListener("change", finalize, { once: true });
+          input.click();
+        });
+      }
+
+      async function collectJsonFilesFromDirectoryHandle(dirHandle, outputFiles) {
+        if (!dirHandle || typeof dirHandle.values !== "function") return;
+        for await (const handle of dirHandle.values()) {
+          if (!handle) continue;
+          if (handle.kind === "directory") {
+            await collectJsonFilesFromDirectoryHandle(handle, outputFiles);
+            continue;
+          }
+          if (handle.kind !== "file") continue;
+          if (!/\.json$/i.test(handle.name || "")) continue;
+          try {
+            const file = await handle.getFile();
+            if (file instanceof File) outputFiles.push(file);
+          } catch {
+            continue;
+          }
+        }
+      }
+
+      async function exportTokensToFolder() {
+        const data = await api("/admin/auth-pool/export");
+        const files = Array.isArray(data?.files) ? data.files : [];
+        if (files.length === 0) {
+          alert(t("alert_token_export_empty"));
+          return;
+        }
+
+        if (typeof window.showDirectoryPicker === "function") {
+          const dir = await window.showDirectoryPicker({ mode: "readwrite", id: "codex-oauth-token-export" });
+          for (let i = 0; i < files.length; i += 1) {
+            const fileDef = files[i] || {};
+            const fileName = sanitizeExportFileName(String(fileDef.fileName || ""), `token-${i + 1}.json`);
+            const payload = fileDef.payload && typeof fileDef.payload === "object" ? fileDef.payload : {};
+            const handle = await dir.getFileHandle(fileName, { create: true });
+            const writable = await handle.createWritable();
+            await writable.write(JSON.stringify(payload, null, 2));
+            await writable.close();
+          }
+          alert(tt("alert_token_export_success", { count: files.length }));
+          return;
+        }
+
+        for (let i = 0; i < files.length; i += 1) {
+          const fileDef = files[i] || {};
+          const fileName = sanitizeExportFileName(String(fileDef.fileName || ""), `token-${i + 1}.json`);
+          const payload = fileDef.payload && typeof fileDef.payload === "object" ? fileDef.payload : {};
+          triggerBlobDownload(fileName, payload);
+        }
+        alert(tt("alert_token_export_success", { count: files.length }));
+      }
+
+      async function importTokensFromFolder() {
+        let files = [];
+        if (typeof window.showDirectoryPicker === "function") {
+          const dir = await window.showDirectoryPicker({ mode: "read", id: "codex-oauth-token-import" });
+          const fromDir = [];
+          await collectJsonFilesFromDirectoryHandle(dir, fromDir);
+          files = fromDir;
+        } else {
+          files = await pickJsonFilesFromDirectoryInput();
+        }
+
+        const tokens = await parseTokenCandidatesFromFiles(files);
+        if (tokens.length === 0) {
+          alert(t("alert_token_import_no_json"));
+          return;
+        }
+
+        const data = await api("/admin/auth-pool/import", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ tokens, replace: false })
+        });
+        await refreshState(true);
+        alert(tt("alert_token_import_success", { count: Number(data?.imported || tokens.length) }));
+      }
+
       $("refreshBtn").addEventListener("click", refreshState);
       $("loginBtn").addEventListener("click", openAccountLoginFlow);
       $("logoutBtn").addEventListener("click", async () => {
@@ -5141,6 +5627,22 @@
           await refreshState();
         } catch (err) {
           alert(tt("alert_logout_failed", { message: err.message }));
+        }
+      });
+      $("exportTokensBtn").addEventListener("click", async () => {
+        try {
+          await exportTokensToFolder();
+        } catch (err) {
+          if (isAbortLikeError(err)) return;
+          alert(tt("alert_token_export_failed", { message: err.message }));
+        }
+      });
+      $("importTokensBtn").addEventListener("click", async () => {
+        try {
+          await importTokensFromFolder();
+        } catch (err) {
+          if (isAbortLikeError(err)) return;
+          alert(tt("alert_token_import_failed", { message: err.message }));
         }
       });
       $("apiKeyGenerateBtn").addEventListener("click", async () => {
@@ -5254,6 +5756,10 @@
         "multiAccountStrategy",
         "publicAccessMode",
         "publicAccessHttp2",
+        "autoCompactEnabled",
+        "autoCompactMode",
+        "autoCompactRetryOnContextError",
+        "autoCompactSummarizerEnabled"
       ];
       for (const id of instantSaveFields) {
         $(id).addEventListener("change", () => triggerAutoSaveNow());
@@ -5267,7 +5773,18 @@
         "preheatCooldownSeconds",
         "preheatBatchSize",
         "preheatMinPrimaryRemaining",
-        "preheatMinSecondaryRemaining"
+        "preheatMinSecondaryRemaining",
+        "autoCompactTriggerRatio",
+        "autoCompactL1Ratio",
+        "autoCompactL2Ratio",
+        "autoCompactL3Ratio",
+        "autoCompactKeepLastTurns",
+        "autoCompactKeepLastToolRounds",
+        "autoCompactToolOutputMaxChars",
+        "autoCompactSummaryMaxChars",
+        "autoCompactMaxRetries",
+        "autoCompactSummarizerModel",
+        "autoCompactSummarizerTimeoutMs"
       ];
       for (const id of debouncedSaveFields) {
         $(id).addEventListener("input", () => scheduleAutoSave());
