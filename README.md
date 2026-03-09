@@ -64,6 +64,7 @@ http://127.0.0.1:8787/dashboard/
 Use the dashboard to:
 
 - trigger OAuth login/logout
+- switch UI language (`English` / `繁體中文` / `简体中文`)
 - edit runtime proxy settings
 - edit Model Router mappings (`exact` + `*` wildcard)
 - tune default reasoning effort (`adaptive|none|low|medium|high|xhigh`)
