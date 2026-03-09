@@ -1,0 +1,4 @@
+Commit: da69c62d3193db2707bf7a630028d3aeb6eed1df
+Short: da69c62
+Date: 2026-03-07 23:32:24 +0800
+Subject: Make OAuth account pool identity plan-aware

@@ -63,35 +63,6 @@ const OFFICIAL_ANTHROPIC_MODELS = [
   "claude-3-7-sonnet-latest",
   "claude-3-5-haiku-latest"
 ];
-const DEFAULT_COMPACT_MODEL_CONTEXT_LIMIT = 128000;
-const MODEL_CONTEXT_LIMITS = {
-  "gpt-5.4": 400000,
-  "gpt-5.4-pro": 400000,
-  "gpt-5.3-codex": 400000,
-  "gpt-5.2-codex": 400000,
-  "gpt-5.1-codex-max": 400000,
-  "gpt-5.1-codex": 400000,
-  "gpt-5.1-codex-mini": 400000,
-  "gpt-5-codex": 400000,
-  "gpt-5": 400000,
-  "gpt-5-mini": 200000,
-  "gpt-4.1": 128000,
-  "gpt-4.1-mini": 128000,
-  "gpt-4o": 128000,
-  o3: 200000,
-  "o4-mini": 200000
-};
-const CONTEXT_OVERFLOW_ERROR_PATTERNS = [
-  "context_length_exceeded",
-  "context length exceeded",
-  "context window",
-  "maximum context length",
-  "too many tokens",
-  "prompt is too long",
-  "input is too large",
-  "input exceeds the context window",
-  "request too large"
-];
 const OAUTH_CALLBACK_SUCCESS_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -281,59 +252,6 @@ const config = {
       max: 65535,
       integer: true
     })
-  },
-  autoCompact: {
-    enabled: parseBooleanEnv(process.env.AUTO_COMPACT_ENABLED, true),
-    mode: String(process.env.AUTO_COMPACT_MODE || "deterministic").trim().toLowerCase(),
-    triggerRatio: parseNumberEnv(process.env.AUTO_COMPACT_TRIGGER_RATIO, 0.72, {
-      min: 0.1,
-      max: 1.5
-    }),
-    l1Ratio: parseNumberEnv(process.env.AUTO_COMPACT_L1_RATIO, 0.72, {
-      min: 0.1,
-      max: 1.5
-    }),
-    l2Ratio: parseNumberEnv(process.env.AUTO_COMPACT_L2_RATIO, 0.82, {
-      min: 0.1,
-      max: 1.5
-    }),
-    l3Ratio: parseNumberEnv(process.env.AUTO_COMPACT_L3_RATIO, 0.9, {
-      min: 0.1,
-      max: 1.5
-    }),
-    keepLastTurns: parseNumberEnv(process.env.AUTO_COMPACT_KEEP_LAST_TURNS, 6, {
-      min: 1,
-      max: 20,
-      integer: true
-    }),
-    keepLastToolRounds: parseNumberEnv(process.env.AUTO_COMPACT_KEEP_LAST_TOOL_ROUNDS, 4, {
-      min: 0,
-      max: 20,
-      integer: true
-    }),
-    toolOutputMaxChars: parseNumberEnv(process.env.AUTO_COMPACT_TOOL_OUTPUT_MAX_CHARS, 12000, {
-      min: 1000,
-      max: 100000,
-      integer: true
-    }),
-    summaryMaxChars: parseNumberEnv(process.env.AUTO_COMPACT_SUMMARY_MAX_CHARS, 6000, {
-      min: 500,
-      max: 20000,
-      integer: true
-    }),
-    retryOnContextError: parseBooleanEnv(process.env.AUTO_COMPACT_RETRY_ON_CONTEXT_ERROR, true),
-    maxRetries: parseNumberEnv(process.env.AUTO_COMPACT_MAX_RETRIES, 1, {
-      min: 0,
-      max: 2,
-      integer: true
-    }),
-    summarizerEnabled: parseBooleanEnv(process.env.AUTO_COMPACT_SUMMARIZER_ENABLED, false),
-    summarizerModel: String(process.env.AUTO_COMPACT_SUMMARIZER_MODEL || "gpt-5-mini").trim() || "gpt-5-mini",
-    summarizerTimeoutMs: parseNumberEnv(process.env.AUTO_COMPACT_SUMMARIZER_TIMEOUT_MS, 12000, {
-      min: 1000,
-      max: 60000,
-      integer: true
-    })
   }
 };
 
@@ -368,20 +286,6 @@ if (!VALID_CLOUDFLARED_MODES.has(config.publicAccess.defaultMode)) {
   config.publicAccess.defaultMode = "quick";
 }
 config.publicAccess.autoInstall = true;
-
-if (!["deterministic", "hybrid"].includes(config.autoCompact.mode)) {
-  config.autoCompact.mode = "deterministic";
-}
-if (!(config.autoCompact.l1Ratio <= config.autoCompact.l2Ratio && config.autoCompact.l2Ratio <= config.autoCompact.l3Ratio)) {
-  const ratios = [config.autoCompact.l1Ratio, config.autoCompact.l2Ratio, config.autoCompact.l3Ratio].sort(
-    (a, b) => a - b
-  );
-  [config.autoCompact.l1Ratio, config.autoCompact.l2Ratio, config.autoCompact.l3Ratio] = ratios;
-}
-config.autoCompact.triggerRatio = Math.max(
-  0.1,
-  Math.min(1.5, Number.isFinite(config.autoCompact.triggerRatio) ? config.autoCompact.triggerRatio : config.autoCompact.l1Ratio)
-);
 
 const pendingAuth = new Map();
 let codexCallbackServer = null;
@@ -634,8 +538,6 @@ function extractProxyApiKeyFromRequest(req) {
   if (bearer) return bearer;
   const xApiKey = readHeaderValue(req, "x-api-key");
   if (xApiKey) return xApiKey.trim();
-  const apiKey = readHeaderValue(req, "api-key");
-  if (apiKey) return apiKey.trim();
   const xGoogApiKey = readHeaderValue(req, "x-goog-api-key");
   if (xGoogApiKey) return xGoogApiKey.trim();
   const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
@@ -643,8 +545,6 @@ function extractProxyApiKeyFromRequest(req) {
     incoming.searchParams.get("key") ||
       incoming.searchParams.get("api_key") ||
       incoming.searchParams.get("x-api-key") ||
-      incoming.searchParams.get("api-key") ||
-      incoming.searchParams.get("apikey") ||
       ""
   ).trim();
   if (queryKey) return queryKey;
@@ -1214,7 +1114,7 @@ function sanitizeAuditPayload(text) {
     (_m, p1, _token, p3) => `${p1}[REDACTED]${p3}`
   );
   out = out.replace(
-    /("?(?:access_token|refresh_token|id_token|api_key|x-api-key|api-key|apikey|x-goog-api-key)"?\s*:\s*")([^"]+)(")/gi,
+    /("?(?:access_token|refresh_token|id_token|api_key|x-api-key|x-goog-api-key)"?\s*:\s*")([^"]+)(")/gi,
     (_m, p1, _token, p3) => `${p1}[REDACTED]${p3}`
   );
   out = out.replace(/(Bearer\s+)[A-Za-z0-9._\-~+/=]+/gi, "$1[REDACTED]");
@@ -1260,6 +1160,20 @@ function inferProtocolType(pathName, localProtocolType = "") {
   return config.upstreamMode;
 }
 
+function isAnthropicNativeMessagesPath(pathname) {
+  const path = String(pathname || "");
+  return path === "/v1/messages" || path === "/v1/messages/count_tokens";
+}
+
+function normalizeCherryAnthropicAgentOriginalUrl(originalUrl) {
+  const incoming = new URL(String(originalUrl || "/"), "http://localhost");
+  const match = incoming.pathname.match(
+    /^\/v1\/chat\/completions\/v1\/messages(\/count_tokens)?\/?$/
+  );
+  if (!match) return null;
+  return `/v1/messages${match[1] || ""}${incoming.search}`;
+}
+
 function resolveAuditAccountLabel(accountRef = "") {
   const needle = String(accountRef || "").trim();
   if (!needle) return "";
@@ -1279,8 +1193,6 @@ function sanitizeAuditPath(urlLike) {
     parsed.searchParams.delete("key");
     parsed.searchParams.delete("api_key");
     parsed.searchParams.delete("x-api-key");
-    parsed.searchParams.delete("api-key");
-    parsed.searchParams.delete("apikey");
     const search = parsed.search || "";
     return `${parsed.pathname}${search}`;
   } catch {
@@ -1339,7 +1251,7 @@ app.use((req, res, next) => {
   res.status(401).json({
     error: "invalid_api_key",
     message:
-      "Invalid API key. Use one of: Authorization: Bearer <your_proxy_api_key>, x-api-key, api-key, x-goog-api-key, or ?key=<your_proxy_api_key>."
+      "Invalid API key. Use one of: Authorization: Bearer <your_proxy_api_key>, x-api-key, x-goog-api-key, or ?key=<your_proxy_api_key>."
   });
 });
 
@@ -1579,23 +1491,6 @@ app.get("/admin/state", async (_req, res) => {
           useHttp2: cloudflaredRuntime.useHttp2 !== false,
           autoInstall: config.publicAccess.autoInstall !== false,
           localPort: Number(cloudflaredRuntime.localPort || config.port)
-        },
-        autoCompact: {
-          enabled: config.autoCompact.enabled !== false,
-          mode: config.autoCompact.mode,
-          triggerRatio: config.autoCompact.triggerRatio,
-          l1Ratio: config.autoCompact.l1Ratio,
-          l2Ratio: config.autoCompact.l2Ratio,
-          l3Ratio: config.autoCompact.l3Ratio,
-          keepLastTurns: config.autoCompact.keepLastTurns,
-          keepLastToolRounds: config.autoCompact.keepLastToolRounds,
-          toolOutputMaxChars: config.autoCompact.toolOutputMaxChars,
-          summaryMaxChars: config.autoCompact.summaryMaxChars,
-          retryOnContextError: config.autoCompact.retryOnContextError !== false,
-          maxRetries: config.autoCompact.maxRetries,
-          summarizerEnabled: config.autoCompact.summarizerEnabled === true,
-          summarizerModel: config.autoCompact.summarizerModel,
-          summarizerTimeoutMs: config.autoCompact.summarizerTimeoutMs
         }
       },
       auth: authStatus,
@@ -2409,140 +2304,6 @@ app.post("/admin/config", async (req, res) => {
     if (body.modelMappings !== undefined) {
       config.modelRouter.customMappings = sanitizeModelMappings(body.modelMappings);
     }
-
-    const autoCompactBody =
-      body.autoCompact && typeof body.autoCompact === "object" && !Array.isArray(body.autoCompact)
-        ? body.autoCompact
-        : body;
-    const autoCompactModeValue =
-      typeof autoCompactBody.mode === "string"
-        ? autoCompactBody.mode
-        : typeof autoCompactBody.autoCompactMode === "string"
-          ? autoCompactBody.autoCompactMode
-          : undefined;
-    if (autoCompactModeValue !== undefined) {
-      const mode = String(autoCompactModeValue || "").trim().toLowerCase();
-      if (!["deterministic", "hybrid"].includes(mode)) {
-        throw new Error("autoCompact.mode must be one of: deterministic, hybrid.");
-      }
-      config.autoCompact.mode = mode;
-    }
-    const parseRatioSetting = (rawValue, fieldName, fallback) => {
-      if (rawValue === undefined) return fallback;
-      const parsed = parseNumberEnv(rawValue, NaN, { min: 0.1, max: 1.5 });
-      if (!Number.isFinite(parsed)) throw new Error(`${fieldName} must be between 0.1 and 1.5.`);
-      return parsed;
-    };
-    const parseIntSetting = (rawValue, fieldName, min, max, fallback) => {
-      if (rawValue === undefined) return fallback;
-      const parsed = parseNumberEnv(rawValue, NaN, { min, max, integer: true });
-      if (!Number.isFinite(parsed)) throw new Error(`${fieldName} must be between ${min} and ${max}.`);
-      return parsed;
-    };
-
-    if (autoCompactBody.enabled !== undefined || autoCompactBody.autoCompactEnabled !== undefined) {
-      const value =
-        autoCompactBody.enabled !== undefined ? autoCompactBody.enabled : autoCompactBody.autoCompactEnabled;
-      config.autoCompact.enabled = Boolean(value);
-    }
-    config.autoCompact.triggerRatio = parseRatioSetting(
-      autoCompactBody.triggerRatio ?? autoCompactBody.autoCompactTriggerRatio,
-      "autoCompact.triggerRatio",
-      config.autoCompact.triggerRatio
-    );
-    config.autoCompact.l1Ratio = parseRatioSetting(
-      autoCompactBody.l1Ratio ?? autoCompactBody.autoCompactL1Ratio,
-      "autoCompact.l1Ratio",
-      config.autoCompact.l1Ratio
-    );
-    config.autoCompact.l2Ratio = parseRatioSetting(
-      autoCompactBody.l2Ratio ?? autoCompactBody.autoCompactL2Ratio,
-      "autoCompact.l2Ratio",
-      config.autoCompact.l2Ratio
-    );
-    config.autoCompact.l3Ratio = parseRatioSetting(
-      autoCompactBody.l3Ratio ?? autoCompactBody.autoCompactL3Ratio,
-      "autoCompact.l3Ratio",
-      config.autoCompact.l3Ratio
-    );
-    config.autoCompact.keepLastTurns = parseIntSetting(
-      autoCompactBody.keepLastTurns ?? autoCompactBody.autoCompactKeepLastTurns,
-      "autoCompact.keepLastTurns",
-      1,
-      20,
-      config.autoCompact.keepLastTurns
-    );
-    config.autoCompact.keepLastToolRounds = parseIntSetting(
-      autoCompactBody.keepLastToolRounds ?? autoCompactBody.autoCompactKeepLastToolRounds,
-      "autoCompact.keepLastToolRounds",
-      0,
-      20,
-      config.autoCompact.keepLastToolRounds
-    );
-    config.autoCompact.toolOutputMaxChars = parseIntSetting(
-      autoCompactBody.toolOutputMaxChars ?? autoCompactBody.autoCompactToolOutputMaxChars,
-      "autoCompact.toolOutputMaxChars",
-      1000,
-      100000,
-      config.autoCompact.toolOutputMaxChars
-    );
-    config.autoCompact.summaryMaxChars = parseIntSetting(
-      autoCompactBody.summaryMaxChars ?? autoCompactBody.autoCompactSummaryMaxChars,
-      "autoCompact.summaryMaxChars",
-      500,
-      20000,
-      config.autoCompact.summaryMaxChars
-    );
-    if (
-      autoCompactBody.retryOnContextError !== undefined ||
-      autoCompactBody.autoCompactRetryOnContextError !== undefined
-    ) {
-      const value =
-        autoCompactBody.retryOnContextError !== undefined
-          ? autoCompactBody.retryOnContextError
-          : autoCompactBody.autoCompactRetryOnContextError;
-      config.autoCompact.retryOnContextError = Boolean(value);
-    }
-    config.autoCompact.maxRetries = parseIntSetting(
-      autoCompactBody.maxRetries ?? autoCompactBody.autoCompactMaxRetries,
-      "autoCompact.maxRetries",
-      0,
-      2,
-      config.autoCompact.maxRetries
-    );
-    if (
-      autoCompactBody.summarizerEnabled !== undefined ||
-      autoCompactBody.autoCompactSummarizerEnabled !== undefined
-    ) {
-      const value =
-        autoCompactBody.summarizerEnabled !== undefined
-          ? autoCompactBody.summarizerEnabled
-          : autoCompactBody.autoCompactSummarizerEnabled;
-      config.autoCompact.summarizerEnabled = Boolean(value);
-    }
-    if (
-      typeof autoCompactBody.summarizerModel === "string" ||
-      typeof autoCompactBody.autoCompactSummarizerModel === "string"
-    ) {
-      const value = String(
-        autoCompactBody.summarizerModel ?? autoCompactBody.autoCompactSummarizerModel ?? ""
-      ).trim();
-      if (!value) {
-        throw new Error("autoCompact.summarizerModel must not be empty.");
-      }
-      config.autoCompact.summarizerModel = value;
-    }
-    config.autoCompact.summarizerTimeoutMs = parseIntSetting(
-      autoCompactBody.summarizerTimeoutMs ?? autoCompactBody.autoCompactSummarizerTimeoutMs,
-      "autoCompact.summarizerTimeoutMs",
-      1000,
-      60000,
-      config.autoCompact.summarizerTimeoutMs
-    );
-    if (!(config.autoCompact.l1Ratio <= config.autoCompact.l2Ratio && config.autoCompact.l2Ratio <= config.autoCompact.l3Ratio)) {
-      throw new Error("autoCompact ratios must satisfy: l1Ratio <= l2Ratio <= l3Ratio.");
-    }
-
     res.json({
       ok: true,
       config: {
@@ -2566,23 +2327,6 @@ app.post("/admin/config", async (req, res) => {
           useHttp2: cloudflaredRuntime.useHttp2 !== false,
           autoInstall: config.publicAccess.autoInstall !== false,
           localPort: Number(cloudflaredRuntime.localPort || config.port)
-        },
-        autoCompact: {
-          enabled: config.autoCompact.enabled !== false,
-          mode: config.autoCompact.mode,
-          triggerRatio: config.autoCompact.triggerRatio,
-          l1Ratio: config.autoCompact.l1Ratio,
-          l2Ratio: config.autoCompact.l2Ratio,
-          l3Ratio: config.autoCompact.l3Ratio,
-          keepLastTurns: config.autoCompact.keepLastTurns,
-          keepLastToolRounds: config.autoCompact.keepLastToolRounds,
-          toolOutputMaxChars: config.autoCompact.toolOutputMaxChars,
-          summaryMaxChars: config.autoCompact.summaryMaxChars,
-          retryOnContextError: config.autoCompact.retryOnContextError !== false,
-          maxRetries: config.autoCompact.maxRetries,
-          summarizerEnabled: config.autoCompact.summarizerEnabled === true,
-          summarizerModel: config.autoCompact.summarizerModel,
-          summarizerTimeoutMs: config.autoCompact.summarizerTimeoutMs
         }
       }
     });
@@ -2663,6 +2407,7 @@ app.use((req, res, next) => {
   };
 
   res.on("finish", () => {
+    const tokenUsage = normalizeTokenUsage(res.locals?.tokenUsage);
     const modelRoute = res.locals?.modelRoute || null;
     const authAccountId = res.locals?.authAccountId || null;
     const authAccountLabel = resolveAuditAccountLabel(authAccountId);
@@ -2671,14 +2416,6 @@ app.use((req, res, next) => {
     const rawPath = req.originalUrl || req.url || "";
     const safePath = sanitizeAuditPath(rawPath);
     const protocolType = inferProtocolType(safePath, res.locals?.protocolType);
-    const autoCompact = res.locals?.autoCompact || null;
-    const tokenUsage =
-      normalizeTokenUsage(res.locals?.tokenUsage) ||
-      extractTokenUsageFromAuditResponse({
-        protocolType,
-        responseContentType,
-        responsePacket
-      });
 
     runtimeStats.totalRequests += 1;
     if (res.statusCode >= 200 && res.statusCode < 400) runtimeStats.okRequests += 1;
@@ -2700,11 +2437,6 @@ app.use((req, res, next) => {
       routeRule: modelRoute?.routeRule ?? null,
       protocolType,
       upstreamMode: config.upstreamMode,
-      autoCompactApplied: autoCompact?.applied === true,
-      autoCompactLevel: Number.isFinite(Number(autoCompact?.level)) ? Number(autoCompact.level) : 0,
-      autoCompactRetry: autoCompact?.retryTriggered === true,
-      autoCompactReason: String(autoCompact?.reason || ""),
-      autoCompactMeta: autoCompact || null,
       authAccountId,
       authAccountLabel: authAccountLabel || null,
       requestContentType: reqContentType || null,
@@ -2729,6 +2461,17 @@ app.use("/v1/messages", async (req, res) => {
 
 app.use("/v1", async (req, res) => {
   res.locals.protocolType = "openai-v1";
+  const normalizedAnthropicUrl = normalizeCherryAnthropicAgentOriginalUrl(req.originalUrl);
+  if (normalizedAnthropicUrl) {
+    const previousOriginalUrl = req.originalUrl;
+    req.originalUrl = normalizedAnthropicUrl;
+    try {
+      await handleAnthropicNativeProxy(req, res);
+    } finally {
+      req.originalUrl = previousOriginalUrl;
+    }
+    return;
+  }
   const incoming = new URL(req.originalUrl, "http://localhost");
 
   if (isGeminiNativeAliasPath(incoming.pathname)) {
@@ -2821,9 +2564,6 @@ app.use("/v1", async (req, res) => {
   let streamChatCompletionsAsSse = false;
   let responseShape = "responses";
   let responseModel = config.codex.defaultModel;
-  let autoCompactMeta = buildAutoCompactMetaBase("not_applicable");
-  let autoCompactSourceBody = null;
-  let autoCompactRetryCount = 0;
   if (req.method !== "GET" && req.method !== "HEAD") {
     let body = req.rawBody || Buffer.alloc(0);
 
@@ -2836,8 +2576,6 @@ app.use("/v1", async (req, res) => {
           responseShape = "responses";
           responseModel = normalized.model || responseModel;
           if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
-          if (normalized.autoCompactMeta) autoCompactMeta = normalized.autoCompactMeta;
-          autoCompactSourceBody = normalized.autoCompactSource || normalized.parsedBody || null;
           headers.set("content-type", "application/json");
         } else if (target.endpointKind === "chat-completions") {
           const normalized = normalizeChatCompletionsRequestBody(body);
@@ -2847,8 +2585,6 @@ app.use("/v1", async (req, res) => {
           responseShape = "chat-completions";
           responseModel = normalized.model || responseModel;
           if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
-          if (normalized.autoCompactMeta) autoCompactMeta = normalized.autoCompactMeta;
-          autoCompactSourceBody = normalized.autoCompactSource || normalized.parsedBody || null;
           headers.set("content-type", "application/json");
         }
       }
@@ -2862,7 +2598,6 @@ app.use("/v1", async (req, res) => {
 
     init.body = body;
   }
-  res.locals.autoCompact = autoCompactMeta;
 
   const canRetryWithPool = isCodexPoolRetryEnabled();
   const maxAttempts = canRetryWithPool ? 2 : 1;
@@ -2917,54 +2652,6 @@ app.use("/v1", async (req, res) => {
     return;
   }
 
-  let upstreamErrorText = null;
-  if (
-    !upstream.ok &&
-    config.upstreamMode === "codex-chatgpt" &&
-    config.autoCompact.enabled !== false &&
-    config.autoCompact.retryOnContextError !== false &&
-    autoCompactSourceBody &&
-    Number(config.autoCompact.maxRetries || 0) > 0
-  ) {
-    upstreamErrorText = await upstream.text();
-    const maxCompactRetries = Math.max(0, Math.floor(Number(config.autoCompact.maxRetries || 0)));
-    let canContinueRetry = isContextLengthExceededError(upstream.status, upstreamErrorText);
-
-    while (canContinueRetry && autoCompactRetryCount < maxCompactRetries) {
-      const currentLevel = Number(autoCompactMeta?.level || 0);
-      const nextLevel = normalizeCompactLevelForRetry(currentLevel);
-      if (nextLevel <= currentLevel || nextLevel > 3) break;
-
-      autoCompactRetryCount += 1;
-      const retryCompact = applyAutoCompactToResponsesPayload(autoCompactSourceBody, config.autoCompact, {
-        forceLevel: nextLevel,
-        reason: "context_retry",
-        retryCount: autoCompactRetryCount
-      });
-      autoCompactMeta = retryCompact.meta;
-      res.locals.autoCompact = autoCompactMeta;
-      init.body = Buffer.from(JSON.stringify(retryCompact.body), "utf8");
-
-      try {
-        upstream = await fetch(target.url, init);
-      } catch (err) {
-        res.status(502).json({
-          error: "upstream_unreachable",
-          message: err.message
-        });
-        return;
-      }
-
-      if (upstream.ok) {
-        upstreamErrorText = null;
-        break;
-      }
-
-      upstreamErrorText = await upstream.text();
-      canContinueRetry = isContextLengthExceededError(upstream.status, upstreamErrorText);
-    }
-  }
-
   await maybeCaptureCodexUsageFromHeaders(auth, upstream.headers, "response").catch(() => {});
 
   if (upstream.ok) {
@@ -2972,7 +2659,7 @@ app.use("/v1", async (req, res) => {
   }
 
   if (collectCompletedResponseAsJson) {
-    const raw = upstreamErrorText !== null ? upstreamErrorText : await upstream.text();
+    const raw = await upstream.text();
     if (!upstream.ok) {
       await maybeMarkCodexPoolFailure(
         auth,
@@ -3012,7 +2699,7 @@ app.use("/v1", async (req, res) => {
 
   if (streamChatCompletionsAsSse) {
     if (!upstream.ok) {
-      const raw = upstreamErrorText !== null ? upstreamErrorText : await upstream.text();
+      const raw = await upstream.text();
       await maybeMarkCodexPoolFailure(
         auth,
         `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}: ${truncate(raw, 200)}`,
@@ -3048,19 +2735,11 @@ app.use("/v1", async (req, res) => {
 
   res.status(upstream.status);
   if (!upstream.ok) {
-    const raw = upstreamErrorText !== null ? upstreamErrorText : await upstream.text();
     await maybeMarkCodexPoolFailure(
       auth,
-      `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}: ${truncate(raw, 200)}`,
+      `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}`,
       upstream.status
     ).catch(() => {});
-    upstream.headers.forEach((value, key) => {
-      if (!hopByHop.has(key.toLowerCase())) {
-        res.setHeader(key, value);
-      }
-    });
-    res.send(raw);
-    return;
   }
   upstream.headers.forEach((value, key) => {
     if (!hopByHop.has(key.toLowerCase())) {
@@ -3461,492 +3140,20 @@ function getCodexEndpointKind(pathname) {
   ) {
     return "responses";
   }
+  if (/^\/v1\/chat\/completions\/v1\/messages(\/count_tokens)?\/?$/.test(pathname)) {
+    return null;
+  }
   if (pathname === "/v1/chat/completions" || pathname.startsWith("/v1/chat/completions/")) {
     return "chat-completions";
   }
   return null;
 }
 
-function cloneJsonSafe(value) {
-  if (value === undefined) return undefined;
-  return JSON.parse(JSON.stringify(value));
-}
-
-function estimateTextTokensRough(text, multiplier = 1) {
-  const source = typeof text === "string" ? text : String(text ?? "");
-  if (!source) return 0;
-  let asciiCount = 0;
-  let cjkCount = 0;
-  for (const ch of source) {
-    const code = ch.codePointAt(0) || 0;
-    if (
-      (code >= 0x4e00 && code <= 0x9fff) ||
-      (code >= 0x3400 && code <= 0x4dbf) ||
-      (code >= 0x3040 && code <= 0x30ff) ||
-      (code >= 0xac00 && code <= 0xd7af)
-    ) {
-      cjkCount += 1;
-    } else {
-      asciiCount += 1;
-    }
-  }
-  const estimate = asciiCount / 4 + cjkCount * 0.65;
-  return Math.max(0, Math.ceil(estimate * multiplier));
-}
-
-function getModelContextLimitForCompact(modelName) {
-  const raw = String(modelName || "").trim().toLowerCase();
-  if (!raw) return DEFAULT_COMPACT_MODEL_CONTEXT_LIMIT;
-  if (Object.prototype.hasOwnProperty.call(MODEL_CONTEXT_LIMITS, raw)) {
-    return Number(MODEL_CONTEXT_LIMITS[raw]) || DEFAULT_COMPACT_MODEL_CONTEXT_LIMIT;
-  }
-  if (raw.startsWith("gpt-5")) return 400000;
-  if (raw.startsWith("gpt-4.1")) return 128000;
-  if (raw.startsWith("gpt-4o")) return 128000;
-  if (raw.startsWith("o3")) return 200000;
-  if (raw.startsWith("o4-mini")) return 200000;
-  return DEFAULT_COMPACT_MODEL_CONTEXT_LIMIT;
-}
-
-function collectCompactTextFromItemContent(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const parts = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    if (typeof part.text === "string" && part.text.trim().length > 0) {
-      parts.push(part.text);
-      continue;
-    }
-    if (typeof part.input_text === "string" && part.input_text.trim().length > 0) {
-      parts.push(part.input_text);
-      continue;
-    }
-    if (typeof part.output_text === "string" && part.output_text.trim().length > 0) {
-      parts.push(part.output_text);
-      continue;
-    }
-  }
-  return parts.join("\n");
-}
-
-function summarizeCompactItem(item) {
-  if (!item || typeof item !== "object") return "";
-  if (item.type === "function_call") {
-    const name = String(item.name || "").trim() || "unknown_tool";
-    const argsText = typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? "");
-    return `[tool call] ${name}(${truncate(argsText, 240)})`;
-  }
-  if (item.type === "function_call_output") {
-    const output = typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? "");
-    return `[tool output] ${truncate(output, 240)}`;
-  }
-  const role = String(item.role || "user").trim().toLowerCase() || "user";
-  const text = collectCompactTextFromItemContent(item.content);
-  if (!text) return "";
-  return `[${role}] ${truncate(text, 300)}`;
-}
-
-function buildDeterministicCompactSummary(items, maxChars = 6000) {
-  if (!Array.isArray(items) || items.length === 0) return "";
-  const userIntents = [];
-  const decisions = [];
-  const constraints = [];
-  const referenced = new Set();
-  const todo = [];
-
-  const constraintPattern = /\b(must|should|required|only|do not|don't|禁止|不要|必須|僅能|限制)\b/i;
-  const decisionPattern = /\b(implemented|updated|changed|fixed|configured|set|added|removed|switched|migrated)\b/i;
-  const todoPattern = /\b(todo|next step|follow up|need to|待辦|下一步|後續|需處理)\b/i;
-  const refPattern = /\b[\w./-]+\.(js|ts|json|md|html|css)\b|\b[a-zA-Z_]\w*\([^)]*\)|\b(gpt-[\w.-]+|claude-[\w.-]+|gemini-[\w.-]+)\b/g;
-
-  for (const item of items) {
-    const line = summarizeCompactItem(item);
-    if (!line) continue;
-    const role = String(item?.role || "").toLowerCase();
-    if (role === "user") {
-      userIntents.push(line);
-    } else if (role === "assistant") {
-      if (decisionPattern.test(line)) decisions.push(line);
-      if (todoPattern.test(line)) todo.push(line);
-      if (constraintPattern.test(line)) constraints.push(line);
-    } else if (item?.type === "function_call_output") {
-      decisions.push(line);
-    }
-    for (const match of line.matchAll(refPattern)) {
-      const token = String(match[0] || "").trim();
-      if (!token) continue;
-      referenced.add(token);
-      if (referenced.size >= 40) break;
-    }
-  }
-
-  const sections = [];
-  if (userIntents.length > 0) sections.push(`User intents:\n- ${userIntents.slice(0, 8).join("\n- ")}`);
-  if (decisions.length > 0) sections.push(`Decisions made:\n- ${decisions.slice(0, 8).join("\n- ")}`);
-  if (constraints.length > 0) sections.push(`Constraints:\n- ${constraints.slice(0, 8).join("\n- ")}`);
-  if (referenced.size > 0) sections.push(`Referenced files/functions/models:\n- ${[...referenced].slice(0, 20).join("\n- ")}`);
-  if (todo.length > 0) sections.push(`Outstanding tasks:\n- ${todo.slice(0, 8).join("\n- ")}`);
-  if (sections.length === 0) {
-    sections.push(`History notes:\n- ${items.map((item) => summarizeCompactItem(item)).filter(Boolean).slice(0, 12).join("\n- ")}`);
-  }
-
-  const summary = `[auto compact summary]\n${sections.join("\n\n")}`.trim();
-  return truncate(summary, Math.max(500, Number(maxChars) || 6000));
-}
-
-function appendCompactSummaryToInstructions(instructions, summaryText, levelLabel) {
-  const summary = String(summaryText || "").trim();
-  if (!summary) return String(instructions || "");
-  const base = String(instructions || "").trim();
-  const marker = levelLabel ? `\n\n[auto compact ${levelLabel}]\n` : "\n\n";
-  return `${base}${marker}${summary}`.trim();
-}
-
-function getLastNToolCallIds(items, keepCount) {
-  if (!Array.isArray(items) || !Number.isFinite(keepCount) || keepCount <= 0) return new Set();
-  const callIds = [];
-  for (const item of items) {
-    if (!item || typeof item !== "object") continue;
-    if (item.type !== "function_call") continue;
-    const callId = String(item.call_id || "").trim();
-    if (!callId) continue;
-    callIds.push(callId);
-  }
-  const kept = callIds.slice(-Math.max(0, Math.floor(keepCount)));
-  return new Set(kept);
-}
-
-function truncateToolOutputText(text, maxChars) {
-  const source = typeof text === "string" ? text : JSON.stringify(text ?? "");
-  const limit = Math.max(1000, Number(maxChars) || 12000);
-  if (source.length <= limit) return { text: source, trimmed: false, removedChars: 0 };
-  const head = Math.max(500, Math.floor(limit * 0.66));
-  const tail = Math.max(320, limit - head);
-  const omitted = Math.max(0, source.length - head - tail);
-  return {
-    text: `${source.slice(0, head)}\n...[auto compact omitted ${omitted} chars]...\n${source.slice(-tail)}`,
-    trimmed: true,
-    removedChars: omitted
-  };
-}
-
-function estimateConversationPressure(payload, options = config.autoCompact) {
-  const body = payload && typeof payload === "object" ? payload : {};
-  const inputItems = Array.isArray(body.input) ? body.input : [];
-  const tools = Array.isArray(body.tools) ? body.tools : [];
-  const model = String(body.model || config.codex.defaultModel || "").trim();
-  const modelContextLimit = getModelContextLimitForCompact(model);
-
-  let estimatedTokens = 0;
-  let estimatedChars = 0;
-  let toolCallCount = 0;
-  let toolOutputChars = 0;
-  let imageCount = 0;
-
-  const instructions = String(body.instructions || "").trim();
-  if (instructions) {
-    estimatedChars += instructions.length;
-    estimatedTokens += estimateTextTokensRough(instructions, 1.05);
-  }
-
-  if (tools.length > 0) {
-    const toolsJson = JSON.stringify(tools);
-    estimatedChars += toolsJson.length;
-    estimatedTokens += estimateTextTokensRough(toolsJson, 1.15);
-  }
-
-  for (const item of inputItems) {
-    if (!item || typeof item !== "object") continue;
-    const jsonText = JSON.stringify(item);
-    estimatedChars += jsonText.length;
-    let multiplier = 1.0;
-    if (item.type === "function_call") {
-      toolCallCount += 1;
-      multiplier = 1.1;
-    } else if (item.type === "function_call_output") {
-      const output = typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? "");
-      toolOutputChars += output.length;
-      multiplier = 1.15;
-    }
-    estimatedTokens += estimateTextTokensRough(jsonText, multiplier);
-
-    const content = item.content;
-    if (Array.isArray(content)) {
-      for (const part of content) {
-        if (!part || typeof part !== "object") continue;
-        const partType = String(part.type || "").toLowerCase();
-        const hasImage =
-          partType.includes("image") ||
-          typeof part.image_url === "string" ||
-          typeof part.image_url?.url === "string";
-        if (hasImage) {
-          imageCount += 1;
-          estimatedTokens += 900;
-        }
-      }
-    }
-  }
-
-  estimatedTokens += Math.ceil(inputItems.length * 6);
-  estimatedTokens += Math.ceil(tools.length * 12);
-
-  const ratio = modelContextLimit > 0 ? estimatedTokens / modelContextLimit : 0;
-  return {
-    estimatedTokens,
-    estimatedChars,
-    messageCount: inputItems.length,
-    toolCallCount,
-    toolOutputChars,
-    imageCount,
-    ratio,
-    modelContextLimit
-  };
-}
-
-function applyCompactLevel1(body, options, meta) {
-  if (!Array.isArray(body.input)) return body;
-  const keepRounds = Math.max(0, Number(options.keepLastToolRounds) || 0);
-  if (keepRounds <= 0) return body;
-  const keepIds = getLastNToolCallIds(body.input, keepRounds);
-  if (keepIds.size === 0) return body;
-  const allCallIds = new Set();
-  for (const item of body.input) {
-    if (!item || typeof item !== "object") continue;
-    if (item.type !== "function_call") continue;
-    const callId = String(item.call_id || "").trim();
-    if (callId) allCallIds.add(callId);
-  }
-  const removedIds = new Set([...allCallIds].filter((id) => !keepIds.has(id)));
-  if (removedIds.size === 0) return body;
-
-  body.input = body.input.filter((item) => {
-    if (!item || typeof item !== "object") return true;
-    if (item.type !== "function_call" && item.type !== "function_call_output") return true;
-    const callId = String(item.call_id || "").trim();
-    if (!callId) return true;
-    return keepIds.has(callId);
-  });
-  meta.removedToolRounds += removedIds.size;
-  meta.keptToolRounds = keepIds.size;
-  return body;
-}
-
-function applyCompactLevel2(body, options, meta) {
-  if (!Array.isArray(body.input)) return body;
-  const input = body.input;
-  const messageIndexes = [];
-  const oldItemsForSummary = [];
-
-  for (let i = 0; i < input.length; i += 1) {
-    const item = input[i];
-    if (!item || typeof item !== "object") continue;
-    if (item.type === "function_call_output") {
-      const output = typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? "");
-      const truncated = truncateToolOutputText(output, options.toolOutputMaxChars);
-      if (truncated.trimmed) {
-        meta.trimmedToolOutputs += 1;
-        item.output = truncated.text;
-      }
-      continue;
-    }
-    if (item.role === "user" || item.role === "assistant") {
-      messageIndexes.push(i);
-    }
-  }
-
-  const keepTurns = Math.max(1, Number(options.keepLastTurns) || 6);
-  const keepMessageIndexes = new Set(messageIndexes.slice(-keepTurns));
-  const compactedInput = [];
-  for (let i = 0; i < input.length; i += 1) {
-    const item = input[i];
-    if (!item || typeof item !== "object") {
-      compactedInput.push(item);
-      continue;
-    }
-    const isMessage = item.role === "user" || item.role === "assistant";
-    if (isMessage && !keepMessageIndexes.has(i)) {
-      oldItemsForSummary.push(item);
-      continue;
-    }
-    compactedInput.push(item);
-  }
-  body.input = compactedInput;
-  if (oldItemsForSummary.length > 0) {
-    meta.summarizedTurns += oldItemsForSummary.length;
-    const summary = buildDeterministicCompactSummary(oldItemsForSummary, options.summaryMaxChars);
-    if (summary) {
-      body.instructions = appendCompactSummaryToInstructions(body.instructions, summary, "level-2");
-    }
-  }
-  return body;
-}
-
-function applyCompactLevel3(body, options, meta) {
-  if (!Array.isArray(body.input)) return body;
-  const input = body.input;
-  const keepTurns = Math.max(1, Number(options.keepLastTurns) || 6);
-  const keepToolRounds = Math.max(0, Number(options.keepLastToolRounds) || 0);
-  const keepToolIds = getLastNToolCallIds(input, keepToolRounds);
-  const messageIndexes = [];
-  for (let i = 0; i < input.length; i += 1) {
-    const item = input[i];
-    if (item && typeof item === "object" && (item.role === "user" || item.role === "assistant")) {
-      messageIndexes.push(i);
-    }
-  }
-  const keepMessageIndexes = new Set(messageIndexes.slice(-keepTurns));
-  const kept = [];
-  const removed = [];
-  let lastUserItem = null;
-
-  for (let i = 0; i < input.length; i += 1) {
-    const item = input[i];
-    if (!item || typeof item !== "object") {
-      kept.push(item);
-      continue;
-    }
-    if (item.role === "user") lastUserItem = item;
-
-    const isTool = item.type === "function_call" || item.type === "function_call_output";
-    if (isTool) {
-      const callId = String(item.call_id || "").trim();
-      if (!callId || keepToolIds.has(callId)) {
-        kept.push(item);
-      } else {
-        removed.push(item);
-      }
-      continue;
-    }
-
-    const isMessage = item.role === "user" || item.role === "assistant";
-    if (isMessage && !keepMessageIndexes.has(i)) {
-      removed.push(item);
-      continue;
-    }
-    kept.push(item);
-  }
-
-  if (lastUserItem) {
-    const hasUser = kept.some((item) => item && typeof item === "object" && item.role === "user");
-    if (!hasUser) kept.push(lastUserItem);
-  }
-
-  body.input = kept;
-  if (removed.length > 0) {
-    meta.summarizedTurns += removed.length;
-    const summary = buildDeterministicCompactSummary(removed, options.summaryMaxChars);
-    if (summary) {
-      body.instructions = appendCompactSummaryToInstructions(body.instructions, summary, "level-3");
-    }
-  }
-  return body;
-}
-
-function buildAutoCompactMetaBase(reason = "disabled") {
-  return {
-    enabled: false,
-    applied: false,
-    level: 0,
-    mode: String(config.autoCompact.mode || "deterministic"),
-    reason,
-    estimatedBefore: null,
-    estimatedAfter: null,
-    ratioBefore: null,
-    ratioAfter: null,
-    modelContextLimit: null,
-    removedToolRounds: 0,
-    keptToolRounds: 0,
-    trimmedToolOutputs: 0,
-    summarizedTurns: 0,
-    retryTriggered: false,
-    retryCount: 0
-  };
-}
-
-function normalizeCompactLevelForRetry(level) {
-  const current = Math.max(0, Math.min(3, Math.floor(Number(level) || 0)));
-  if (current <= 1) return 2;
-  if (current === 2) return 3;
-  return 3;
-}
-
-function applyAutoCompactToResponsesPayload(body, options = config.autoCompact, extra = {}) {
-  const sourceBody = body && typeof body === "object" ? cloneJsonSafe(body) : {};
-  const meta = buildAutoCompactMetaBase(extra.reason || "disabled");
-  meta.enabled = options.enabled !== false;
-  meta.mode = String(options.mode || "deterministic");
-
-  if (options.enabled === false) {
-    return { body: sourceBody, meta };
-  }
-  if (!sourceBody || typeof sourceBody !== "object") {
-    meta.reason = "invalid_payload";
-    return { body: body, meta };
-  }
-  if (!Array.isArray(sourceBody.input)) {
-    meta.reason = "no_input_array";
-    return { body: sourceBody, meta };
-  }
-
-  const before = estimateConversationPressure(sourceBody, options);
-  meta.estimatedBefore = before.estimatedTokens;
-  meta.ratioBefore = Number(before.ratio.toFixed(4));
-  meta.modelContextLimit = before.modelContextLimit;
-
-  let targetLevel = 0;
-  if (Number.isFinite(Number(extra.forceLevel))) {
-    targetLevel = Math.max(0, Math.min(3, Math.floor(Number(extra.forceLevel))));
-    meta.reason = extra.reason || "context_retry";
-  } else if (before.ratio >= options.l3Ratio) {
-    targetLevel = 3;
-    meta.reason = "ratio_exceeded_l3";
-  } else if (before.ratio >= options.l2Ratio) {
-    targetLevel = 2;
-    meta.reason = "ratio_exceeded_l2";
-  } else if (before.ratio >= options.l1Ratio || before.ratio >= options.triggerRatio) {
-    targetLevel = 1;
-    meta.reason = "ratio_exceeded_l1";
-  }
-
-  if (targetLevel <= 0) {
-    const afterNoop = estimateConversationPressure(sourceBody, options);
-    meta.estimatedAfter = afterNoop.estimatedTokens;
-    meta.ratioAfter = Number(afterNoop.ratio.toFixed(4));
-    return { body: sourceBody, meta };
-  }
-
-  let working = cloneJsonSafe(sourceBody);
-  if (targetLevel >= 1) {
-    working = applyCompactLevel1(working, options, meta);
-    meta.level = 1;
-  }
-  if (targetLevel >= 2) {
-    working = applyCompactLevel2(working, options, meta);
-    meta.level = 2;
-  }
-  if (targetLevel >= 3) {
-    working = applyCompactLevel3(working, options, meta);
-    meta.level = 3;
-  }
-
-  const after = estimateConversationPressure(working, options);
-  meta.estimatedAfter = after.estimatedTokens;
-  meta.ratioAfter = Number(after.ratio.toFixed(4));
-  meta.applied = meta.level > 0;
-  if (extra.retryCount && Number(extra.retryCount) > 0) {
-    meta.retryTriggered = true;
-    meta.retryCount = Math.max(1, Math.floor(Number(extra.retryCount)));
-  }
-
-  return { body: working, meta };
-}
-
 function normalizeCodexResponsesRequestBody(rawBody) {
   if (!rawBody || rawBody.length === 0) {
     const modelRoute = resolveCodexCompatibleRoute(config.codex.defaultModel);
     const fallbackInstructions = config.codex.defaultInstructions;
-    const fallbackRaw = {
+    const fallback = {
       model: modelRoute.mappedModel,
       stream: true,
       store: false,
@@ -3959,18 +3166,11 @@ function normalizeCodexResponsesRequestBody(rawBody) {
       },
       input: [{ role: "user", content: [{ type: "input_text", text: "" }] }]
     };
-    const compactResult = applyAutoCompactToResponsesPayload(fallbackRaw, config.autoCompact, {
-      reason: "empty_body_default"
-    });
-    const fallback = compactResult.body;
     return {
       body: Buffer.from(JSON.stringify(fallback), "utf8"),
       collectCompletedResponseAsJson: true,
       model: modelRoute.requestedModel,
-      modelRoute,
-      parsedBody: fallback,
-      autoCompactSource: fallbackRaw,
-      autoCompactMeta: compactResult.meta
+      modelRoute
     };
   }
 
@@ -3980,8 +3180,7 @@ function normalizeCodexResponsesRequestBody(rawBody) {
   } catch {
     return {
       body: rawBody,
-      collectCompletedResponseAsJson: false,
-      autoCompactMeta: buildAutoCompactMetaBase("invalid_json")
+      collectCompletedResponseAsJson: false
     };
   }
 
@@ -3990,8 +3189,7 @@ function normalizeCodexResponsesRequestBody(rawBody) {
       body: rawBody,
       collectCompletedResponseAsJson: false,
       model: config.codex.defaultModel,
-      modelRoute: null,
-      autoCompactMeta: buildAutoCompactMetaBase("invalid_json_object")
+      modelRoute: null
     };
   }
 
@@ -4018,20 +3216,11 @@ function normalizeCodexResponsesRequestBody(rawBody) {
   delete normalized.messages;
   delete normalized.reasoning_effort;
 
-  const compactSource = cloneJsonSafe(normalized);
-  const compactResult = applyAutoCompactToResponsesPayload(normalized, config.autoCompact, {
-    reason: "ratio_check"
-  });
-  const compacted = compactResult.body;
-
   return {
-    body: Buffer.from(JSON.stringify(compacted), "utf8"),
+    body: Buffer.from(JSON.stringify(normalized), "utf8"),
     collectCompletedResponseAsJson: !wantsStream,
     model: modelRoute.requestedModel,
-    modelRoute,
-    parsedBody: compacted,
-    autoCompactSource: compactSource,
-    autoCompactMeta: compactResult.meta
+    modelRoute
   };
 }
 
@@ -4059,7 +3248,7 @@ function normalizeChatCompletionsRequestBody(rawBody) {
     .filter((text) => text.length > 0);
 
   const modelRoute = resolveCodexCompatibleRoute(parsed.model || config.codex.defaultModel);
-  const upstreamBodyRaw = {
+  const upstreamBody = {
     model: modelRoute.mappedModel,
     stream: true,
     store: false,
@@ -4075,25 +3264,17 @@ function normalizeChatCompletionsRequestBody(rawBody) {
     input: toResponsesInputFromChatMessages(messages)
   };
 
-  if (parsed.temperature !== undefined) upstreamBodyRaw.temperature = parsed.temperature;
-  if (parsed.top_p !== undefined) upstreamBodyRaw.top_p = parsed.top_p;
+  if (parsed.temperature !== undefined) upstreamBody.temperature = parsed.temperature;
+  if (parsed.top_p !== undefined) upstreamBody.top_p = parsed.top_p;
   // Some upstream Codex deployments reject max_output_tokens; keep compatibility by omitting it.
-  if (parsed.tool_choice !== undefined) upstreamBodyRaw.tool_choice = normalizeChatToolChoice(parsed.tool_choice);
-  if (parsed.tools !== undefined) upstreamBodyRaw.tools = normalizeChatTools(parsed.tools);
-
-  const compactResult = applyAutoCompactToResponsesPayload(upstreamBodyRaw, config.autoCompact, {
-    reason: "ratio_check"
-  });
-  const upstreamBody = compactResult.body;
+  if (parsed.tool_choice !== undefined) upstreamBody.tool_choice = normalizeChatToolChoice(parsed.tool_choice);
+  if (parsed.tools !== undefined) upstreamBody.tools = normalizeChatTools(parsed.tools);
 
   return {
     body: Buffer.from(JSON.stringify(upstreamBody), "utf8"),
     wantsStream,
     model: modelRoute.requestedModel,
-    modelRoute,
-    parsedBody: upstreamBody,
-    autoCompactSource: upstreamBodyRaw,
-    autoCompactMeta: compactResult.meta
+    modelRoute
   };
 }
 
@@ -4574,119 +3755,8 @@ function normalizeTokenUsage(usage) {
   return {
     inputTokens: hasInput ? inputTokens : null,
     outputTokens: hasOutput ? outputTokens : null,
-    totalTokens:
-      hasTotal
-        ? totalTokens
-        : (hasInput ? inputTokens : 0) + (hasOutput ? outputTokens : 0)
+    totalTokens: hasTotal ? totalTokens : null
   };
-}
-
-function parseSseUsageFromAuditPayload(packetText, options = {}) {
-  if (typeof packetText !== "string" || !packetText.includes("data:")) return null;
-  const usageRootPath = String(options.usageRootPath || "").trim();
-  let inputTokens = null;
-  let outputTokens = null;
-  let totalTokens = null;
-
-  const readUsageObject = (event) => {
-    if (!event || typeof event !== "object") return null;
-    if (!usageRootPath) {
-      return (
-        event?.usage ||
-        event?.usageMetadata ||
-        event?.message?.usage ||
-        event?.response?.usage ||
-        null
-      );
-    }
-    const paths = usageRootPath.split(".").filter(Boolean);
-    let cursor = event;
-    for (const key of paths) {
-      if (!cursor || typeof cursor !== "object") return null;
-      cursor = cursor[key];
-    }
-    return cursor || null;
-  };
-
-  for (const line of packetText.split(/\r?\n/)) {
-    if (!line.startsWith("data:")) continue;
-    const payload = line.slice(5).trim();
-    if (!payload || payload === "[DONE]") continue;
-    let parsed;
-    try {
-      parsed = JSON.parse(payload);
-    } catch {
-      continue;
-    }
-    const usage = readUsageObject(parsed);
-    if (!usage || typeof usage !== "object") continue;
-
-    const nextInput = Number(usage.input_tokens ?? usage.prompt_tokens ?? usage.promptTokenCount);
-    const nextOutput = Number(usage.output_tokens ?? usage.completion_tokens ?? usage.candidatesTokenCount);
-    const nextTotal = Number(usage.total_tokens ?? usage.totalTokenCount);
-
-    if (Number.isFinite(nextInput)) inputTokens = nextInput;
-    if (Number.isFinite(nextOutput)) outputTokens = nextOutput;
-    if (Number.isFinite(nextTotal)) totalTokens = nextTotal;
-  }
-
-  if (!Number.isFinite(inputTokens) && !Number.isFinite(outputTokens) && !Number.isFinite(totalTokens)) {
-    return null;
-  }
-
-  const normalized = normalizeTokenUsage({
-    input_tokens: Number.isFinite(inputTokens) ? inputTokens : undefined,
-    output_tokens: Number.isFinite(outputTokens) ? outputTokens : undefined,
-    total_tokens:
-      Number.isFinite(totalTokens)
-        ? totalTokens
-        : (Number.isFinite(inputTokens) ? inputTokens : 0) + (Number.isFinite(outputTokens) ? outputTokens : 0)
-  });
-  return normalized;
-}
-
-function extractTokenUsageFromAuditResponse({ protocolType, responseContentType, responsePacket }) {
-  if (!responsePacket || typeof responsePacket !== "string") return null;
-  const contentType = String(responseContentType || "").toLowerCase();
-  const protocol = String(protocolType || "").toLowerCase();
-
-  if (contentType.includes("json") || responsePacket.trim().startsWith("{") || responsePacket.trim().startsWith("[")) {
-    const parsed = parseJsonLoose(responsePacket);
-    if (!parsed || typeof parsed !== "object") return null;
-
-    const jsonUsage =
-      parsed?.usage ||
-      parsed?.response?.usage ||
-      parsed?.usageMetadata ||
-      parsed?.message?.usage ||
-      parsed?.error?.usage ||
-      null;
-    const normalizedJsonUsage = normalizeTokenUsage(jsonUsage);
-    if (normalizedJsonUsage) return normalizedJsonUsage;
-  }
-
-  if (!contentType.includes("event-stream")) return null;
-
-  // OpenAI/Codex responses SSE (`response.completed` / `response.done`)
-  const completed = extractCompletedResponseFromSse(responsePacket);
-  const completedUsage = normalizeTokenUsage(completed?.usage);
-  if (completedUsage) return completedUsage;
-
-  // Anthropic native SSE embeds usage under `message.usage` (message_start) and `usage` (message_delta).
-  if (protocol.includes("anthropic")) {
-    const anthropicUsage =
-      parseSseUsageFromAuditPayload(responsePacket) ||
-      parseSseUsageFromAuditPayload(responsePacket, { usageRootPath: "message.usage" });
-    if (anthropicUsage) return anthropicUsage;
-  }
-
-  // Gemini-style streamed payloads may emit `usageMetadata`.
-  if (protocol.includes("gemini")) {
-    const geminiUsage = parseSseUsageFromAuditPayload(responsePacket);
-    if (geminiUsage) return geminiUsage;
-  }
-
-  return null;
 }
 
 function convertResponsesToChatCompletion(response) {
@@ -4781,30 +3851,13 @@ async function loadTokenStore(tokenStorePath) {
     const raw = await fs.readFile(tokenStorePath, "utf8");
     return JSON.parse(raw);
   } catch {
-    try {
-      const rawBak = await fs.readFile(`${tokenStorePath}.bak`, "utf8");
-      return JSON.parse(rawBak);
-    } catch {
-      return { token: null };
-    }
+    return { token: null };
   }
 }
 
 async function saveTokenStore(tokenStorePath, nextStore) {
   await fs.mkdir(path.dirname(tokenStorePath), { recursive: true });
-  const backupPath = `${tokenStorePath}.bak`;
-  try {
-    const previous = await fs.readFile(tokenStorePath, "utf8");
-    if (typeof previous === "string" && previous.trim().length > 0) {
-      await fs.writeFile(backupPath, previous, "utf8");
-    }
-  } catch {
-    // ignore when no existing file
-  }
-
-  const tmpPath = `${tokenStorePath}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tmpPath, JSON.stringify(nextStore, null, 2), "utf8");
-  await fs.rename(tmpPath, tokenStorePath);
+  await fs.writeFile(tokenStorePath, JSON.stringify(nextStore, null, 2), "utf8");
 }
 
 async function loadJsonStore(filePath, fallbackValue = {}) {
@@ -4823,12 +3876,8 @@ async function saveJsonStore(filePath, payload) {
 
 function normalizeToken(tokenResponse, currentToken = null) {
   const nowSec = Math.floor(Date.now() / 1000);
-  const expiresInRaw = Number(tokenResponse.expires_in || tokenResponse.expiresIn || 0);
-  const expiresIn = Number.isFinite(expiresInRaw) && expiresInRaw > 0 ? expiresInRaw : 3600;
-  const expiresAt = parseTokenExpirySec(
-    tokenResponse.expires_at ?? tokenResponse.expiresAt,
-    nowSec + expiresIn
-  );
+  const expiresIn = Number(tokenResponse.expires_in || 3600);
+  const expiresAt = Number(tokenResponse.expires_at || nowSec + expiresIn);
   return {
     access_token: tokenResponse.access_token,
     refresh_token: tokenResponse.refresh_token || currentToken?.refresh_token || null,
@@ -4836,26 +3885,6 @@ function normalizeToken(tokenResponse, currentToken = null) {
     scope: tokenResponse.scope || null,
     expires_at: expiresAt
   };
-}
-
-function parseTokenExpirySec(value, fallbackSec = 0) {
-  const fallback = Number.isFinite(Number(fallbackSec)) ? Math.max(0, Math.floor(Number(fallbackSec))) : 0;
-  if (value === null || value === undefined) return fallback;
-
-  const direct = Number(value);
-  if (Number.isFinite(direct) && direct > 0) {
-    return Math.max(0, Math.floor(direct));
-  }
-
-  const text = String(value).trim();
-  if (!text) return fallback;
-
-  const parsedMs = Date.parse(text);
-  if (Number.isFinite(parsedMs) && parsedMs > 0) {
-    return Math.max(0, Math.floor(parsedMs / 1000));
-  }
-
-  return fallback;
 }
 
 function deriveCodexAccountIdFromToken(tokenLike) {
@@ -6952,9 +5981,7 @@ function resolveAnthropicApiKey(req) {
   const configuredKey = sanitizeUpstreamApiKeyCandidate(config.anthropic.apiKey || "");
   if (configuredKey && isLikelyAnthropicApiKey(configuredKey)) return configuredKey;
   if (!config.providerUpstream.allowRequestApiKeys) return "";
-  const headerKey = sanitizeUpstreamApiKeyCandidate(
-    readHeaderValue(req, "x-api-key") || readHeaderValue(req, "api-key")
-  );
+  const headerKey = sanitizeUpstreamApiKeyCandidate(readHeaderValue(req, "x-api-key"));
   if (headerKey && isLikelyAnthropicApiKey(headerKey)) return headerKey;
   return "";
 }
@@ -6964,8 +5991,7 @@ function isAnthropicNativeRequest(req) {
     config.upstreamMode === "anthropic-v1" ||
     Boolean(readHeaderValue(req, "anthropic-version")) ||
     Boolean(readHeaderValue(req, "anthropic-beta")) ||
-    (config.providerUpstream.allowRequestApiKeys &&
-      Boolean(readHeaderValue(req, "x-api-key") || readHeaderValue(req, "api-key")))
+    (config.providerUpstream.allowRequestApiKeys && Boolean(readHeaderValue(req, "x-api-key")))
   );
 }
 
@@ -7174,7 +6200,7 @@ async function handleAnthropicNativeProxy(req, res) {
     let requestBody = req.rawBody || Buffer.alloc(0);
     const incoming = new URL(req.originalUrl, "http://localhost");
     if (
-      incoming.pathname === "/v1/messages" &&
+      isAnthropicNativeMessagesPath(incoming.pathname) &&
       requestBody.length > 0 &&
       readHeaderValue(req, "content-type").toLowerCase().includes("application/json")
     ) {
@@ -7546,10 +6572,7 @@ function parseOpenAIChatCompletionsLikeRequest(rawBody, defaultModel) {
     max_tokens: parsed.max_tokens,
     temperature: parsed.temperature,
     top_p: parsed.top_p,
-    stop: parsed.stop,
-    tools: parsed.tools,
-    tool_choice: parsed.tool_choice,
-    reasoning_effort: parsed.reasoning_effort
+    stop: parsed.stop
   };
 }
 
@@ -7727,7 +6750,6 @@ function mapOpenAIFinishReasonToGemini(reason) {
 
 function mapOpenAIFinishReasonToAnthropic(reason) {
   const value = String(reason || "").toLowerCase();
-  if (value === "tool_calls") return "tool_use";
   if (value === "length") return "max_tokens";
   return "end_turn";
 }
@@ -7737,37 +6759,6 @@ function isUnsupportedMaxOutputTokensError(statusCode, rawText) {
   const text = String(rawText || "").toLowerCase();
   if (!text) return false;
   return text.includes("unsupported parameter") && text.includes("max_output_tokens");
-}
-
-function isContextLengthExceededError(statusCode, rawText) {
-  const status = Number(statusCode || 0);
-  if (![400, 413].includes(status)) return false;
-  const text = String(rawText || "").toLowerCase();
-  if (!text) return false;
-  return CONTEXT_OVERFLOW_ERROR_PATTERNS.some((pattern) => text.includes(pattern));
-}
-
-function compactResponsesInputForRetry(inputItems) {
-  if (!Array.isArray(inputItems) || inputItems.length === 0) return [];
-  const maxItems = 18;
-  const maxChars = 120_000;
-  const kept = [];
-  let chars = 0;
-
-  for (let i = inputItems.length - 1; i >= 0; i -= 1) {
-    const item = inputItems[i];
-    const itemLen = JSON.stringify(item ?? "").length;
-    const wouldExceedItems = kept.length >= maxItems;
-    const wouldExceedChars = chars + itemLen > maxChars;
-    if (wouldExceedItems || wouldExceedChars) continue;
-    kept.unshift(item);
-    chars += itemLen;
-  }
-
-  if (kept.length === 0) {
-    kept.push(inputItems[inputItems.length - 1]);
-  }
-  return kept;
 }
 
 function collectGeminiTextParts(parts) {
@@ -7902,7 +6893,7 @@ function parseAnthropicMessageText(content) {
   return parts.join("\n");
 }
 
-function parseAnthropicNativeBody(rawBody) {
+function parseAnthropicJsonBody(rawBody) {
   if (!rawBody || rawBody.length === 0) {
     throw new Error("Anthropic request body is required.");
   }
@@ -7915,6 +6906,11 @@ function parseAnthropicNativeBody(rawBody) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Anthropic request body must be a JSON object.");
   }
+  return parsed;
+}
+
+function parseAnthropicNativeBody(rawBody) {
+  const parsed = parseAnthropicJsonBody(rawBody);
 
   const conversation = [];
   const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
@@ -7930,8 +6926,6 @@ function parseAnthropicNativeBody(rawBody) {
   }
 
   const systemText = parseAnthropicMessageText(parsed.system);
-  const normalizedTools = normalizeAnthropicToolsForCodex(parsed.tools);
-  const normalizedToolChoice = normalizeAnthropicToolChoiceForCodex(parsed.tool_choice);
   return {
     model:
       typeof parsed.model === "string" && parsed.model.trim().length > 0
@@ -7943,8 +6937,6 @@ function parseAnthropicNativeBody(rawBody) {
     max_tokens: parsed.max_tokens,
     temperature: parsed.temperature,
     top_p: parsed.top_p,
-    tools: normalizedTools,
-    tool_choice: normalizedToolChoice,
     stop: Array.isArray(parsed.stop_sequences)
       ? parsed.stop_sequences
       : typeof parsed.stop_sequence === "string"
@@ -7953,104 +6945,61 @@ function parseAnthropicNativeBody(rawBody) {
   };
 }
 
-function normalizeAnthropicToolsForCodex(tools) {
-  if (!Array.isArray(tools)) return undefined;
-  const normalized = [];
-  for (const tool of tools) {
-    if (!tool || typeof tool !== "object") continue;
-    const rawType = typeof tool.type === "string" ? tool.type.trim().toLowerCase() : "";
-    if (rawType.startsWith("web_search")) {
-      normalized.push({
-        type: "web_search",
-        search_context_size:
-          typeof tool.search_context_size === "string" && tool.search_context_size.trim().length > 0
-            ? tool.search_context_size.trim()
-            : "medium"
-      });
-      continue;
-    }
-    const name = typeof tool.name === "string" ? tool.name.trim() : "";
-    if (!name) continue;
-    const parameters =
-      tool.input_schema && typeof tool.input_schema === "object" && !Array.isArray(tool.input_schema)
-        ? tool.input_schema
-        : { type: "object", properties: {} };
-    normalized.push({
-      type: "function",
-      function: {
-        name,
-        ...(typeof tool.description === "string" ? { description: tool.description } : {}),
-        parameters
-      }
-    });
-  }
-  return normalized.length > 0 ? normalized : undefined;
+function estimateTokenCountFromText(text) {
+  const source = typeof text === "string" ? text : String(text || "");
+  if (!source) return 0;
+  return Math.max(1, Math.ceil(Buffer.byteLength(source, "utf8") / 4));
 }
 
-function normalizeAnthropicToolChoiceForCodex(toolChoice) {
-  if (!toolChoice || typeof toolChoice !== "object") return undefined;
-  const choiceType = typeof toolChoice.type === "string" ? toolChoice.type.trim().toLowerCase() : "";
-  if (choiceType === "auto") return "auto";
-  if (choiceType === "none") return "none";
-  if (choiceType === "any") return "required";
-  if (choiceType === "tool") {
-    const name = typeof toolChoice.name === "string" ? toolChoice.name.trim() : "";
-    if (!name) return "auto";
-    return {
-      type: "function",
-      function: {
-        name
-      }
-    };
+function estimateAnthropicCountTokens(rawBody) {
+  const parsed = parseAnthropicJsonBody(rawBody);
+  const segments = [];
+  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+
+  const systemText = parseAnthropicMessageText(parsed.system);
+  if (systemText.trim().length > 0) {
+    segments.push(systemText);
   }
-  return undefined;
+
+  for (const item of messages) {
+    if (!item || typeof item !== "object") continue;
+    const role = item.role === "assistant" ? "assistant" : "user";
+    const text = parseAnthropicMessageText(item.content);
+    segments.push(`${role}\n${text}`);
+  }
+
+  if (Array.isArray(parsed.tools) && parsed.tools.length > 0) {
+    segments.push(JSON.stringify(parsed.tools));
+  }
+  if (parsed.tool_choice && typeof parsed.tool_choice === "object") {
+    segments.push(JSON.stringify(parsed.tool_choice));
+  }
+  if (parsed.metadata && typeof parsed.metadata === "object") {
+    segments.push(JSON.stringify(parsed.metadata));
+  }
+  if (Array.isArray(parsed.documents) && parsed.documents.length > 0) {
+    segments.push(JSON.stringify(parsed.documents));
+  }
+
+  const fallbackSerialized = JSON.stringify(parsed);
+  const combined = segments.filter((part) => typeof part === "string" && part.length > 0).join("\n\n");
+  let inputTokens = estimateTokenCountFromText(combined || fallbackSerialized);
+
+  if (messages.length > 0) inputTokens += messages.length * 6;
+  if (systemText.trim().length > 0) inputTokens += 4;
+  if (Array.isArray(parsed.tools) && parsed.tools.length > 0) inputTokens += parsed.tools.length * 20;
+
+  return Math.max(1, Number(inputTokens || 0));
 }
 
-function buildAnthropicMessageResponse({ model, text, finishReason, usage, toolCalls }) {
-  const content = [];
-  if (typeof text === "string" && text.length > 0) {
-    content.push({ type: "text", text });
-  }
-  if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-    for (const call of toolCalls) {
-      if (!call || typeof call !== "object") continue;
-      const callId = typeof call.id === "string" && call.id.length > 0
-        ? call.id
-        : `toolu_${crypto.randomUUID().replace(/-/g, "")}`;
-      const name = typeof call.function?.name === "string" ? call.function.name : "";
-      if (!name) continue;
-      let input = {};
-      const rawArgs = typeof call.function?.arguments === "string" ? call.function.arguments : "";
-      if (rawArgs) {
-        try {
-          const parsed = JSON.parse(rawArgs);
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) input = parsed;
-          else input = { value: parsed };
-        } catch {
-          input = { raw: rawArgs };
-        }
-      }
-      content.push({
-        type: "tool_use",
-        id: callId,
-        name,
-        input
-      });
-    }
-  }
-  if (content.length === 0) {
-    content.push({ type: "text", text: "" });
-  }
-  const hasToolUse = content.some((block) => block && block.type === "tool_use");
-  const stopReason = hasToolUse ? "tool_use" : mapOpenAIFinishReasonToAnthropic(finishReason);
-
+function buildAnthropicMessageResponse({ model, text, finishReason, usage }) {
   return {
     id: `msg_${crypto.randomUUID().replace(/-/g, "")}`,
     type: "message",
     role: "assistant",
     model,
-    content,
-    stop_reason: stopReason,
+    content: [{ type: "text", text: text || "" }],
+    stop_reason: mapOpenAIFinishReasonToAnthropic(finishReason),
     stop_sequence: null,
     usage: {
       input_tokens: Number(usage?.prompt_tokens || 0),
@@ -8087,44 +7036,22 @@ function sendAnthropicMessageAsSse(res, message) {
       }
     }
   });
-  const contentBlocks = Array.isArray(message?.content) && message.content.length > 0
-    ? message.content
-    : [{ type: "text", text: "" }];
-
-  for (let index = 0; index < contentBlocks.length; index += 1) {
-    const block = contentBlocks[index] || { type: "text", text: "" };
-    if (block.type === "tool_use") {
-      writeEvent("content_block_start", {
-        type: "content_block_start",
-        index,
-        content_block: {
-          type: "tool_use",
-          id: block.id,
-          name: block.name,
-          input: block.input && typeof block.input === "object" ? block.input : {}
-        }
-      });
-      writeEvent("content_block_stop", { type: "content_block_stop", index });
-      continue;
-    }
-
-    writeEvent("content_block_start", {
-      type: "content_block_start",
-      index,
-      content_block: { type: "text", text: "" }
+  writeEvent("content_block_start", {
+    type: "content_block_start",
+    index: 0,
+    content_block: { type: "text", text: "" }
+  });
+  if (typeof message?.content?.[0]?.text === "string" && message.content[0].text.length > 0) {
+    writeEvent("content_block_delta", {
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "text_delta",
+        text: message.content[0].text
+      }
     });
-    if (typeof block.text === "string" && block.text.length > 0) {
-      writeEvent("content_block_delta", {
-        type: "content_block_delta",
-        index,
-        delta: {
-          type: "text_delta",
-          text: block.text
-        }
-      });
-    }
-    writeEvent("content_block_stop", { type: "content_block_stop", index });
   }
+  writeEvent("content_block_stop", { type: "content_block_stop", index: 0 });
   writeEvent("message_delta", {
     type: "message_delta",
     delta: {
@@ -8145,10 +7072,6 @@ async function runCodexConversationViaOAuth({
   upstreamModel,
   systemText,
   conversation,
-  messages,
-  tools,
-  tool_choice,
-  reasoning_effort,
   max_tokens,
   temperature,
   top_p,
@@ -8159,35 +7082,19 @@ async function runCodexConversationViaOAuth({
     throw new Error("Could not extract chatgpt_account_id from OAuth token.");
   }
 
-  const contextMessages = Array.isArray(messages) ? messages : [];
-  const fallbackMessages = [];
+  const messages = [];
   if (typeof systemText === "string" && systemText.trim().length > 0) {
-    fallbackMessages.push({ role: "system", content: systemText });
+    messages.push({ role: "system", content: systemText });
   }
   for (const msg of Array.isArray(conversation) ? conversation : []) {
     if (!msg || typeof msg !== "object") continue;
     const role = msg.role === "assistant" ? "assistant" : "user";
     const text = typeof msg.text === "string" && msg.text.length > 0 ? msg.text : " ";
-    fallbackMessages.push({ role, content: text });
+    messages.push({ role, content: text });
   }
-  if (fallbackMessages.length === 0) {
-    fallbackMessages.push({ role: "user", content: " " });
+  if (messages.length === 0) {
+    messages.push({ role: "user", content: " " });
   }
-  const sourceMessages = contextMessages.length > 0 ? contextMessages : fallbackMessages;
-  const systemMessages = sourceMessages
-    .filter((msg) => msg && (msg.role === "system" || msg.role === "developer"))
-    .map((msg) => (typeof msg.content === "string" ? msg.content : extractOpenAIMessageText(msg.content)))
-    .filter((text) => typeof text === "string" && text.trim().length > 0);
-  const instructions =
-    systemMessages.join("\n\n") ||
-    (typeof systemText === "string" && systemText.trim().length > 0 ? systemText : config.codex.defaultInstructions);
-  const inputMessages = sourceMessages.filter(
-    (msg) => msg && msg.role !== "system" && msg.role !== "developer"
-  );
-  if (inputMessages.length === 0) {
-    inputMessages.push({ role: "user", content: " " });
-  }
-  const normalizedInput = toResponsesInputFromChatMessages(inputMessages);
 
   const route =
     typeof upstreamModel === "string" && upstreamModel.trim().length > 0
@@ -8201,23 +7108,17 @@ async function runCodexConversationViaOAuth({
       : resolveCodexCompatibleRoute(model || config.codex.defaultModel);
   const resolvedRequestedModel = route.requestedModel;
   const resolvedUpstreamModel = route.mappedModel;
+  const instructions = typeof systemText === "string" && systemText.trim().length > 0 ? systemText : config.codex.defaultInstructions;
   const baseBody = {
     model: resolvedUpstreamModel,
     stream: false,
     store: false,
     instructions,
     reasoning: {
-      effort: resolveReasoningEffort(reasoning_effort, {
-        messages: sourceMessages,
-        tools,
-        tool_choice,
-        instructions
-      }, resolvedUpstreamModel)
+      effort: resolveReasoningEffort(undefined, { messages, instructions }, resolvedUpstreamModel)
     },
-    input: normalizedInput
+    input: toResponsesInputFromChatMessages(messages)
   };
-  if (tools !== undefined) baseBody.tools = normalizeChatTools(tools);
-  if (tool_choice !== undefined) baseBody.tool_choice = normalizeChatToolChoice(tool_choice);
 
   // Intentionally omit max_output_tokens for broad upstream compatibility.
   if (typeof temperature === "number" && Number.isFinite(temperature)) baseBody.temperature = temperature;
@@ -8268,28 +7169,6 @@ async function runCodexConversationViaOAuth({
       if (maybeStreamOnly) {
         activeBody = { ...baseBody, stream: true };
         requestResult = await sendCodexRequest(activeBody, "text/event-stream");
-      }
-    }
-    if (!requestResult.response.ok) {
-      const contextExceeded = isContextLengthExceededError(
-        requestResult.response.status,
-        requestResult.raw
-      );
-      if (contextExceeded && Array.isArray(activeBody.input) && activeBody.input.length > 1) {
-        const compactedInput = compactResponsesInputForRetry(activeBody.input);
-        if (compactedInput.length > 0 && compactedInput.length < activeBody.input.length) {
-          activeBody = { ...baseBody, input: compactedInput };
-          requestResult = await sendCodexRequest(activeBody, "application/json");
-          if (!requestResult.response.ok) {
-            const maybeStreamOnlyCompacted =
-              requestResult.response.status === 400 &&
-              /(stream|event-stream|sse)/i.test(requestResult.raw || "");
-            if (maybeStreamOnlyCompacted) {
-              activeBody = { ...activeBody, stream: true };
-              requestResult = await sendCodexRequest(activeBody, "text/event-stream");
-            }
-          }
-        }
       }
     }
     if (!requestResult.response.ok) {
@@ -8384,7 +7263,6 @@ async function runCodexConversationViaOAuth({
   return {
     model: resolvedRequestedModel,
     text: extractAssistantTextFromResponse(completed),
-    toolCalls: extractAssistantToolCallsFromResponse(completed),
     finishReason: mapResponsesStatusToChatFinishReason(completed.status),
     usage,
     authAccountId: auth.poolAccountId || auth.accountId || null
@@ -8485,12 +7363,13 @@ async function handleGeminiNativeCompat(req, res) {
 async function handleAnthropicNativeCompat(req, res) {
   res.locals.protocolType = "anthropic-v1-native";
   const incoming = new URL(req.originalUrl, "http://localhost");
-  if (incoming.pathname !== "/v1/messages") {
+  if (!isAnthropicNativeMessagesPath(incoming.pathname)) {
     res.status(400).json({
       type: "error",
       error: {
         type: "invalid_request_error",
-        message: "In local Anthropic compatibility mode, only POST /v1/messages is supported."
+        message:
+          "In local Anthropic compatibility mode, only POST /v1/messages and POST /v1/messages/count_tokens are supported."
       }
     });
     return;
@@ -8500,8 +7379,35 @@ async function handleAnthropicNativeCompat(req, res) {
       type: "error",
       error: {
         type: "invalid_request_error",
-        message: "Use POST /v1/messages."
+        message: `Use POST ${incoming.pathname}.`
       }
+    });
+    return;
+  }
+
+  if (incoming.pathname === "/v1/messages/count_tokens") {
+    let inputTokens;
+    try {
+      inputTokens = estimateAnthropicCountTokens(req.rawBody);
+    } catch (err) {
+      res.status(400).json({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: err.message
+        }
+      });
+      return;
+    }
+
+    const usage = {
+      prompt_tokens: Number(inputTokens || 0),
+      completion_tokens: 0,
+      total_tokens: Number(inputTokens || 0)
+    };
+    res.locals.tokenUsage = usage;
+    res.status(200).json({
+      input_tokens: Number(inputTokens || 0)
     });
     return;
   }
@@ -8545,7 +7451,6 @@ async function handleAnthropicNativeCompat(req, res) {
   const message = buildAnthropicMessageResponse({
     model: result.model,
     text: result.text,
-    toolCalls: result.toolCalls,
     finishReason: result.finishReason,
     usage: result.usage
   });
@@ -8577,10 +7482,6 @@ async function handleGeminiOpenAICompatWithCodex(req, res) {
       upstreamModel: modelRoute.mappedModel,
       systemText,
       conversation,
-      messages: chatReq.messages,
-      tools: chatReq.tools,
-      tool_choice: chatReq.tool_choice,
-      reasoning_effort: chatReq.reasoning_effort,
       max_tokens: chatReq.max_tokens,
       temperature: chatReq.temperature,
       top_p: chatReq.top_p,
@@ -8635,10 +7536,6 @@ async function handleAnthropicOpenAICompatWithCodex(req, res) {
       upstreamModel: modelRoute.mappedModel,
       systemText,
       conversation,
-      messages: chatReq.messages,
-      tools: chatReq.tools,
-      tool_choice: chatReq.tool_choice,
-      reasoning_effort: chatReq.reasoning_effort,
       max_tokens: chatReq.max_tokens,
       temperature: chatReq.temperature,
       top_p: chatReq.top_p,
