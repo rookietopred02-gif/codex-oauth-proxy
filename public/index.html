@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Codex OAuth Proxy Dashboard</title>
+    <title>codex-pro-max dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -11,6 +11,10 @@
       rel="stylesheet"
     />
     <style>
+      html {
+        scroll-behavior: smooth;
+      }
+
       :root {
         --bg0: #081127;
         --bg1: #111b37;
@@ -23,6 +27,8 @@
         --warn: #ffca6c;
         --bad: #ff6f7f;
         --accent: #66a1ff;
+        --cta: #f59e0b;
+        --shadow-strong: 0 24px 50px rgba(2, 8, 22, 0.36);
         --fx-alpha: 1;
         --fx-glow-opacity: 0.26;
         --fx-shimmer-duration: 1.35s;
@@ -85,6 +91,19 @@
         min-height: 100vh;
       }
 
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        background-image:
+          linear-gradient(rgba(154, 176, 223, 0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(154, 176, 223, 0.045) 1px, transparent 1px);
+        background-size: 32px 32px;
+        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.34), transparent 82%);
+      }
+
       body::before {
         content: "";
         position: fixed;
@@ -103,24 +122,42 @@
       }
 
       .wrap {
-        max-width: 1360px;
+        max-width: 1480px;
         margin: 0 auto;
-        padding: 20px 18px 30px;
+        padding: 16px 18px 34px;
         position: relative;
         z-index: 2;
       }
 
       .head {
         display: grid;
-        gap: 6px;
+        gap: 14px;
         margin-bottom: 18px;
+        padding: 16px 18px;
+        border-radius: 20px;
+        border: 1px solid rgba(143, 173, 233, 0.24);
+        background:
+          radial-gradient(640px 220px at 0% 0%, rgba(109, 181, 255, 0.16), transparent 72%),
+          linear-gradient(180deg, rgba(13, 22, 46, 0.9), rgba(8, 15, 33, 0.82));
+        box-shadow:
+          inset 0 0 0 1px rgba(116, 148, 214, 0.1),
+          var(--shadow-strong);
+        backdrop-filter: blur(18px);
+        position: sticky;
+        top: 10px;
+        z-index: 40;
       }
 
       .head-top {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
-        gap: 12px;
+        gap: 16px;
+      }
+
+      .head-copy {
+        display: grid;
+        gap: 8px;
       }
 
       .title {
@@ -128,46 +165,152 @@
         font-family: "Syncopate", "Space Grotesk", sans-serif;
         font-weight: 700;
         letter-spacing: 0.04em;
+        line-height: 1.04;
       }
 
       .fx-toggle {
         min-width: 96px;
         text-transform: uppercase;
         letter-spacing: 0.08em;
+        flex: 0 0 auto;
       }
 
       .sub {
         color: var(--muted);
         font-family: "JetBrains Mono", monospace;
         font-size: 12px;
+        max-width: 92ch;
+        line-height: 1.5;
+      }
+
+      .head-status-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .head-chip {
+        min-width: 0;
+        display: grid;
+        gap: 7px;
+        padding: 12px 13px;
+        border-radius: 14px;
+        border: 1px solid rgba(140, 169, 228, 0.18);
+        background: rgba(6, 14, 31, 0.58);
+        box-shadow: inset 0 0 0 1px rgba(121, 146, 205, 0.06);
+      }
+
+      .head-chip[data-tone="ok"] {
+        border-color: rgba(47, 215, 165, 0.34);
+        background: linear-gradient(180deg, rgba(13, 43, 44, 0.9), rgba(8, 24, 26, 0.84));
+      }
+
+      .head-chip[data-tone="bad"] {
+        border-color: rgba(255, 111, 127, 0.34);
+        background: linear-gradient(180deg, rgba(48, 19, 29, 0.9), rgba(28, 12, 20, 0.84));
+      }
+
+      .head-chip[data-tone="warn"] {
+        border-color: rgba(245, 158, 11, 0.34);
+        background: linear-gradient(180deg, rgba(53, 31, 9, 0.9), rgba(34, 20, 8, 0.84));
+      }
+
+      .head-chip[data-tone="accent"] {
+        border-color: rgba(102, 161, 255, 0.32);
+        background: linear-gradient(180deg, rgba(18, 39, 80, 0.9), rgba(10, 23, 47, 0.84));
+      }
+
+      .head-chip-label {
+        color: rgba(201, 217, 255, 0.72);
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-family: "JetBrains Mono", monospace;
+      }
+
+      .head-chip-value {
+        min-width: 0;
+        font-size: 13px;
+        line-height: 1.35;
+        color: #f2f6ff;
+        overflow-wrap: anywhere;
+      }
+
+      .head-nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .head-nav-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 34px;
+        padding: 0 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(141, 169, 230, 0.22);
+        background: rgba(8, 17, 35, 0.62);
+        color: #d9e6ff;
+        text-decoration: none;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-family: "JetBrains Mono", monospace;
+        transition:
+          transform 0.18s ease,
+          border-color 0.18s ease,
+          background-color 0.18s ease,
+          color 0.18s ease;
+      }
+
+      .head-nav-link:hover,
+      .head-nav-link:focus-visible {
+        outline: none;
+        transform: translateY(-1px);
+        border-color: rgba(245, 158, 11, 0.52);
+        background: rgba(40, 28, 8, 0.74);
+        color: #fff3d8;
       }
 
       .grid {
         display: grid;
-        gap: 12px;
+        gap: 14px;
         grid-template-columns: repeat(12, minmax(0, 1fr));
         align-items: stretch;
       }
 
       .card {
         grid-column: span 4;
-        border: 1px solid rgba(160, 188, 240, 0.32);
+        border: 1px solid rgba(160, 188, 240, 0.28);
         background:
-          linear-gradient(180deg, rgba(24, 39, 77, 0.9), rgba(16, 28, 58, 0.88));
-        border-radius: 10px;
-        padding: 12px;
+          linear-gradient(180deg, rgba(23, 38, 74, 0.92), rgba(12, 22, 48, 0.92));
+        border-radius: 18px;
+        padding: 14px;
         backdrop-filter: blur(8px);
         animation: cardIn 420ms ease both;
         position: relative;
         transform-style: preserve-3d;
         box-shadow:
           inset 0 0 0 1px rgba(123, 159, 226, 0.14),
-          0 10px 22px rgba(0, 0, 0, 0.24);
+          0 16px 34px rgba(0, 0, 0, 0.24);
         transition:
           transform 0.18s ease,
           box-shadow 0.22s ease,
           border-color 0.2s ease;
         will-change: transform;
+        overflow: clip;
+        scroll-margin-top: 110px;
+      }
+
+      .card::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto 0;
+        height: 3px;
+        background: linear-gradient(90deg, var(--card-accent-a, #6daeff), var(--card-accent-b, #7be8c7));
+        opacity: 0.95;
+        pointer-events: none;
       }
 
       .card::after {
@@ -201,6 +344,36 @@
         overflow: visible;
       }
 
+      .card--runtime {
+        --card-accent-a: #6aa7ff;
+        --card-accent-b: #52dfca;
+      }
+
+      .card--config {
+        --card-accent-a: #5f8cff;
+        --card-accent-b: #f59e0b;
+      }
+
+      .card--ops {
+        --card-accent-a: #77b9ff;
+        --card-accent-b: #ffbf5a;
+      }
+
+      .card--pool {
+        --card-accent-a: #79f0c3;
+        --card-accent-b: #6ea6ff;
+      }
+
+      .card--router {
+        --card-accent-a: #8fb5ff;
+        --card-accent-b: #f59e0b;
+      }
+
+      .card--requests {
+        --card-accent-a: #7bd4ff;
+        --card-accent-b: #7aa4ff;
+      }
+
       @keyframes cardIn {
         from {
           opacity: 0;
@@ -213,9 +386,9 @@
       }
 
       .card h3 {
-        margin: 0 0 10px;
+        margin: 0 0 12px;
         font-size: 13px;
-        letter-spacing: 0.06em;
+        letter-spacing: 0.08em;
         text-transform: uppercase;
         color: #d9e4ff;
         min-height: 16px;
@@ -299,15 +472,15 @@
         display: flex;
         flex-wrap: wrap;
         gap: 6px;
-        margin-top: 8px;
+        margin-top: 10px;
       }
 
       button {
         border: 1px solid var(--card-border);
         color: var(--text);
-        background: #1a2e5f;
-        border-radius: 8px;
-        padding: 0 10px;
+        background: linear-gradient(180deg, #24437e, #1b315e);
+        border-radius: 11px;
+        padding: 0 12px;
         min-height: 34px;
         height: 34px;
         display: inline-flex;
@@ -340,7 +513,7 @@
       }
 
       button:hover {
-        background: #234184;
+        background: linear-gradient(180deg, #2d5399, #223d73);
         transform: translateY(-1px);
         box-shadow: 0 8px 18px rgba(16, 31, 64, 0.4);
       }
@@ -350,7 +523,23 @@
       }
 
       button.secondary {
-        background: #2b244f;
+        background: linear-gradient(180deg, #30275a, #241d45);
+      }
+
+      button.button-strong {
+        border-color: rgba(245, 158, 11, 0.48);
+        background: linear-gradient(180deg, rgba(245, 158, 11, 0.95), rgba(205, 117, 0, 0.94));
+        color: #1c1407;
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 234, 187, 0.22),
+          0 8px 22px rgba(164, 96, 0, 0.28);
+      }
+
+      button.button-strong:hover {
+        background: linear-gradient(180deg, rgba(251, 178, 43, 0.98), rgba(219, 126, 0, 0.98));
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 239, 196, 0.26),
+          0 10px 24px rgba(164, 96, 0, 0.34);
       }
 
       label {
@@ -606,23 +795,30 @@
       }
 
       .log {
-        max-height: 260px;
+        max-height: 320px;
         overflow: auto;
         font-family: "JetBrains Mono", monospace;
         font-size: 12px;
         position: relative;
         z-index: 1;
+        border: 1px solid rgba(135, 165, 226, 0.18);
+        border-radius: 14px;
+        background: rgba(3, 10, 24, 0.78);
+        box-shadow:
+          inset 0 0 0 1px rgba(126, 156, 219, 0.06),
+          inset 0 16px 30px rgba(11, 20, 42, 0.24);
       }
 
       table {
         width: 100%;
         border-collapse: collapse;
+        min-width: 100%;
       }
 
       th,
       td {
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        padding: 6px 4px;
+        padding: 10px 8px;
         text-align: left;
         white-space: nowrap;
       }
@@ -630,6 +826,15 @@
       th {
         color: var(--muted);
         font-weight: 500;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: rgba(10, 18, 39, 0.96);
+        backdrop-filter: blur(10px);
+      }
+
+      tbody tr:nth-child(even) td {
+        background: rgba(255, 255, 255, 0.015);
       }
 
       .req-route {
@@ -878,7 +1083,11 @@
 
       .hint {
         font-size: 12px;
-        color: var(--warn);
+        color: #ffdfa0;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(245, 158, 11, 0.2);
+        background: linear-gradient(180deg, rgba(43, 30, 7, 0.66), rgba(28, 19, 6, 0.46));
       }
 
       .fx-panel {
@@ -920,19 +1129,20 @@
       }
 
       .section-hint {
-        margin: 0 0 8px;
+        margin: 0 0 10px;
       }
 
       .section-actions {
-        margin: 0 0 8px;
+        margin: 0 0 10px;
       }
 
       .preheat-panel {
         border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 9px;
-        background: rgba(8, 15, 33, 0.45);
-        padding: 9px;
-        margin-bottom: 10px;
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(8, 15, 33, 0.56), rgba(6, 13, 28, 0.48));
+        padding: 12px;
+        margin-bottom: 12px;
+        box-shadow: inset 0 0 0 1px rgba(129, 160, 222, 0.06);
       }
 
       .preheat-panel h4 {
@@ -995,10 +1205,10 @@
 
       .result {
         margin-top: 6px;
-        border-radius: 8px;
+        border-radius: 12px;
         border: 1px solid var(--card-border);
         background: rgba(0, 0, 0, 0.28);
-        padding: 8px;
+        padding: 10px;
         font-family: "JetBrains Mono", monospace;
         font-size: 11px;
         white-space: pre-wrap;
@@ -1008,7 +1218,7 @@
       .inline-row {
         display: grid;
         grid-template-columns: 1.3fr 1.3fr auto;
-        gap: 6px;
+        gap: 8px;
         align-items: center;
         position: relative;
         z-index: 6;
@@ -1075,6 +1285,103 @@
         align-items: center;
       }
 
+      .self-test-card {
+        min-height: 100%;
+      }
+
+      .self-test-shell {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        flex: 1;
+        min-height: 0;
+      }
+
+      .temp-mail-panel {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(8, 15, 33, 0.58), rgba(6, 12, 28, 0.52));
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        flex: 1;
+        min-height: 0;
+        box-shadow: inset 0 0 0 1px rgba(126, 157, 219, 0.06);
+      }
+
+      .temp-mail-panel h4 {
+        margin: 0;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #d9e4ff;
+      }
+
+      .temp-mail-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .temp-mail-grid .field {
+        min-width: 0;
+      }
+
+      .temp-mail-summary {
+        min-height: 34px;
+        display: flex;
+        align-items: center;
+      }
+
+      .temp-mail-summary.ok {
+        color: var(--ok);
+      }
+
+      .temp-mail-summary.bad {
+        color: var(--bad);
+      }
+
+      .temp-mail-console {
+        flex: 1;
+        min-height: 300px;
+        margin-top: 4px;
+        border-radius: 14px;
+        border: 1px solid rgba(136, 167, 228, 0.16);
+        background:
+          radial-gradient(700px 220px at 0% 0%, rgba(75, 126, 220, 0.16), transparent 68%),
+          rgba(2, 8, 20, 0.94);
+        padding: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        box-shadow:
+          inset 0 0 0 1px rgba(127, 158, 221, 0.05),
+          inset 0 14px 24px rgba(12, 19, 36, 0.2);
+      }
+
+      .temp-mail-console-line {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        line-height: 1.45;
+        color: #dce8ff;
+      }
+
+      .temp-mail-console-line + .temp-mail-console-line {
+        margin-top: 4px;
+      }
+
+      .temp-mail-console-line.is-success {
+        color: var(--ok);
+      }
+
+      .temp-mail-console-line.is-warning {
+        color: var(--warn);
+      }
+
+      .temp-mail-console-line.is-error {
+        color: var(--bad);
+      }
+
       .map-del {
         border: 1px solid rgba(255, 111, 127, 0.45);
         background: rgba(255, 111, 127, 0.14);
@@ -1100,10 +1407,11 @@
 
       .metric-card {
         border: 1px solid rgba(160, 188, 240, 0.24);
-        background: rgba(17, 29, 60, 0.88);
-        border-radius: 9px;
-        padding: 9px;
+        background: linear-gradient(180deg, rgba(18, 32, 66, 0.92), rgba(12, 24, 51, 0.88));
+        border-radius: 14px;
+        padding: 12px;
         transition: transform 0.18s ease, border-color 0.2s ease;
+        box-shadow: inset 0 0 0 1px rgba(124, 154, 216, 0.06);
       }
 
       .metric-card:hover {
@@ -1150,13 +1458,14 @@
 
       .pool-pane {
         border: 1px solid rgba(155, 187, 241, 0.22);
-        border-radius: 9px;
-        background: rgba(8, 15, 33, 0.45);
-        padding: 9px;
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(8, 15, 33, 0.54), rgba(6, 12, 27, 0.44));
+        padding: 12px;
         align-self: stretch;
         display: flex;
         flex-direction: column;
         min-height: 0;
+        box-shadow: inset 0 0 0 1px rgba(124, 157, 223, 0.05);
       }
 
       .pool-layout > .pool-pane {
@@ -1212,9 +1521,10 @@
       .runtime-subcard {
         margin-top: 10px;
         border: 1px solid rgba(155, 187, 241, 0.2);
-        border-radius: 9px;
-        background: rgba(8, 15, 33, 0.46);
-        padding: 8px;
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(8, 15, 33, 0.54), rgba(6, 12, 28, 0.46));
+        padding: 10px;
+        box-shadow: inset 0 0 0 1px rgba(126, 156, 218, 0.05);
       }
 
       .runtime-subcard.runtime-subcard--api {
@@ -1815,6 +2125,10 @@
       }
 
       @media (max-width: 1280px) {
+        .head-status-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
         .card {
           grid-column: span 6;
         }
@@ -1837,6 +2151,20 @@
       }
 
       @media (max-width: 980px) {
+        .head {
+          top: 0;
+          padding: 14px;
+        }
+
+        .head-top {
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        .head-status-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+
         .account-meta {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
@@ -1853,6 +2181,10 @@
           grid-template-columns: 1fr;
         }
 
+        .temp-mail-grid {
+          grid-template-columns: 1fr;
+        }
+
         .account-grid.compact {
           max-height: none;
           overflow: visible;
@@ -1865,6 +2197,19 @@
       }
 
       @media (max-width: 760px) {
+        .head-status-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .head-nav {
+          gap: 6px;
+        }
+
+        .head-nav-link {
+          flex: 1 1 calc(50% - 6px);
+          min-width: 0;
+        }
+
         .card,
         .card.span-12 {
           grid-column: 1 / -1;
@@ -1885,6 +2230,10 @@
         .req-detail-code-grid {
           grid-template-columns: 1fr;
         }
+
+        .temp-mail-console {
+          min-height: 220px;
+        }
       }
 
       .account-empty {
@@ -1901,6 +2250,10 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto !important;
+        }
+
         * {
           animation: none !important;
           transition: none !important;
@@ -1955,14 +2308,42 @@
     <div class="wrap">
       <div class="head">
         <div class="head-top">
-          <div class="title" data-i18n="dashboard_title">Codex OAuth Proxy Dashboard</div>
+          <div class="head-copy">
+            <div class="title" data-i18n="dashboard_title">codex-pro-max dashboard</div>
+            <div class="sub" data-i18n="dashboard_subtitle">Local control surface for auth, upstream settings, and runtime diagnostics.</div>
+          </div>
           <button id="fxToggleBtn" class="secondary fx-toggle">FX: ON</button>
         </div>
-        <div class="sub" data-i18n="dashboard_subtitle">Local control surface for auth, upstream settings, and runtime diagnostics.</div>
+        <div class="head-status-grid">
+          <div id="heroAuthChip" class="head-chip" data-tone="neutral">
+            <div class="head-chip-label" data-i18n="hero_auth">Auth</div>
+            <div id="heroAuthValue" class="head-chip-value mono">-</div>
+          </div>
+          <div id="heroModeChip" class="head-chip" data-tone="accent">
+            <div class="head-chip-label" data-i18n="hero_mode">Upstream</div>
+            <div id="heroModeValue" class="head-chip-value mono">-</div>
+          </div>
+          <div id="heroPoolChip" class="head-chip" data-tone="neutral">
+            <div class="head-chip-label" data-i18n="hero_pool">Pool</div>
+            <div id="heroPoolValue" class="head-chip-value mono">-</div>
+          </div>
+          <div id="heroTempChip" class="head-chip" data-tone="neutral">
+            <div class="head-chip-label" data-i18n="hero_temp">Temp Mail</div>
+            <div id="heroTempValue" class="head-chip-value mono">-</div>
+          </div>
+        </div>
+        <div class="head-nav">
+          <a class="head-nav-link" href="#runtimeSection" data-i18n="nav_runtime">Runtime</a>
+          <a class="head-nav-link" href="#proxyConfigSection" data-i18n="nav_proxy">Proxy</a>
+          <a class="head-nav-link" href="#automationSection" data-i18n="nav_automation">Automation</a>
+          <a class="head-nav-link" href="#poolSection" data-i18n="nav_pool">Pool</a>
+          <a class="head-nav-link" href="#routerSection" data-i18n="nav_router">Router</a>
+          <a class="head-nav-link" href="#requestsSection" data-i18n="nav_requests">Requests</a>
+        </div>
       </div>
 
       <div class="grid">
-        <section class="card core-card runtime-card">
+        <section id="runtimeSection" class="card core-card runtime-card card--runtime">
           <h3 data-i18n="runtime_title">Runtime</h3>
           <div class="kv-grid">
             <div class="kv"><div class="k" data-i18n="runtime_mode">Mode</div><div id="mode" class="mono">-</div></div>
@@ -2037,7 +2418,7 @@
           </div>
         </section>
 
-        <section class="card core-card">
+        <section id="proxyConfigSection" class="card core-card card--config">
           <h3 data-i18n="proxy_config_title">Proxy Config</h3>
           <div class="config-grid">
             <div class="field">
@@ -2116,21 +2497,57 @@
           </div>
         </section>
 
-        <section class="card core-card">
+        <section id="automationSection" class="card core-card self-test-card card--ops">
           <h3 data-i18n="self_test_title">Self Test</h3>
-          <div class="self-test-grid">
-            <div class="field field--full">
-              <label for="testPrompt" data-i18n="self_test_prompt">Prompt</label>
-              <textarea id="testPrompt">Reply with one short sentence: dashboard self-test passed.</textarea>
+          <div class="self-test-shell">
+            <div class="self-test-grid">
+              <div class="field field--full">
+                <label for="testPrompt" data-i18n="self_test_prompt">Prompt</label>
+                <textarea id="testPrompt">Reply with one short sentence: dashboard self-test passed.</textarea>
+              </div>
+              <div class="btns">
+                <button id="runTestBtn" class="button-strong" data-i18n="self_test_run">Run Upstream Test</button>
+              </div>
+              <div class="result" id="testResult" data-i18n="self_test_none">No test executed.</div>
             </div>
-            <div class="btns">
-              <button id="runTestBtn" data-i18n="self_test_run">Run Upstream Test</button>
+
+            <div class="temp-mail-panel">
+              <h4 data-i18n="temp_mail_title">Temp Mail</h4>
+              <div class="temp-mail-grid">
+                <div class="field">
+                  <label for="tempMailCount" data-i18n="temp_mail_count">Count</label>
+                  <input id="tempMailCount" type="number" min="1" max="100" step="1" value="1" />
+                </div>
+                <div class="field">
+                  <label for="tempMailPassword" data-i18n="temp_mail_password">Password</label>
+                  <input id="tempMailPassword" type="password" autocomplete="off" />
+                </div>
+                <div class="field">
+                  <label for="tempMailDelay" data-i18n="temp_mail_delay">Next Delay (s)</label>
+                  <input id="tempMailDelay" type="number" min="0" max="300" step="1" value="15" />
+                </div>
+                <div class="field">
+                  <label for="tempMailWorkers" data-i18n="temp_mail_workers">Threads</label>
+                  <input id="tempMailWorkers" type="number" min="1" max="50" step="1" value="1" />
+                </div>
+              </div>
+              <label class="checkline"
+                ><input id="tempMailAllowParallel" type="checkbox" /><span data-i18n="temp_mail_allow_parallel"
+                  >Enable Parallel</span
+                ></label
+              >
+              <div class="btns">
+                <button id="tempMailToggleBtn" class="button-strong" type="button">Run Temp Mail</button>
+              </div>
+              <div id="tempMailSummary" class="result temp-mail-summary" data-i18n="temp_mail_idle">Idle.</div>
+              <div id="tempMailConsole" class="temp-mail-console log">
+                <div class="temp-mail-console-line" data-i18n="temp_mail_console_empty">No Temp Mail logs yet.</div>
+              </div>
             </div>
-            <div class="result" id="testResult" data-i18n="self_test_none">No test executed.</div>
           </div>
         </section>
 
-        <section class="card span-12">
+        <section id="poolSection" class="card span-12 card--pool">
           <h3 data-i18n="pool_title">Account Pool</h3>
           <div class="hint section-hint" data-i18n="pool_hint">Dual-window accounts show 5h/W; single-window plans (for example free) auto-switch to one limit badge.</div>
           <div class="btns section-actions">
@@ -2143,7 +2560,7 @@
               <label for="preheatBatchSize"><span data-i18n="preheat_batch">Batch</span><input id="preheatBatchSize" type="number" min="1" max="32" step="1" /></label>
               <label for="preheatMinPrimaryRemaining"><span data-i18n="preheat_min_5h">Min 5h%</span><input id="preheatMinPrimaryRemaining" type="number" min="0" max="100" step="1" /></label>
               <label for="preheatMinSecondaryRemaining"><span data-i18n="preheat_min_w">Min W%</span><input id="preheatMinSecondaryRemaining" type="number" min="0" max="100" step="1" /></label>
-              <button id="runPreheatBtn" data-i18n="preheat_run">Run Preheat Now</button>
+              <button id="runPreheatBtn" class="button-strong" data-i18n="preheat_run">Run Preheat Now</button>
             </div>
             <div id="preheatStatus" class="preheat-status" data-i18n="preheat_none">No preheat run yet.</div>
           </div>
@@ -2204,7 +2621,7 @@
           </div>
         </section>
 
-        <section class="card span-12">
+        <section id="routerSection" class="card span-12 card--router">
           <h3 data-i18n="router_title">Model Router</h3>
           <div class="hint" data-i18n="router_hint">Priority: exact mapping &gt; wildcard (`*`) &gt; system fallback mapping.</div>
           <label class="checkline"
@@ -2213,7 +2630,7 @@
           <div class="inline-row">
             <select id="mapFrom"></select>
             <select id="mapTo"></select>
-            <button id="addMappingBtn" data-i18n="router_add_mapping">Add Mapping</button>
+            <button id="addMappingBtn" class="button-strong" data-i18n="router_add_mapping">Add Mapping</button>
           </div>
           <div class="btns">
             <button id="resetMappingsBtn" class="secondary" data-i18n="router_reset_mappings">Reset Mappings</button>
@@ -2234,7 +2651,7 @@
           </div>
         </section>
 
-        <section class="card span-12">
+        <section id="requestsSection" class="card span-12 card--requests">
           <h3 data-i18n="recent_requests_title">Recent Proxy Requests</h3>
           <div class="btns">
             <button id="refreshReqBtn" data-i18n="recent_requests_refresh">Refresh Requests</button>
@@ -2331,18 +2748,27 @@
       let lastApiKeySummary = { keys: [] };
       let transientApiKeyValues = new Map();
       let lastPublicAccessStatus = null;
+      let lastTempMailState = null;
+      let tempMailActionInFlight = false;
       const customSelectRegistry = new Map();
       let customSelectSeq = 0;
       let activeCustomSelectKey = "";
       const UI_LANG_STORAGE_KEY = "codex_proxy_dashboard_ui_lang";
       const HEARTBEAT_SECONDS_STORAGE_KEY = "codex_proxy_dashboard_heartbeat_seconds";
+      const TEMP_MAIL_COUNT_STORAGE_KEY = "codex_proxy_dashboard_temp_mail_count";
+      const TEMP_MAIL_PASSWORD_STORAGE_KEY = "codex_proxy_dashboard_temp_mail_password";
+      const TEMP_MAIL_DELAY_STORAGE_KEY = "codex_proxy_dashboard_temp_mail_delay";
+      const TEMP_MAIL_ALLOW_PARALLEL_STORAGE_KEY = "codex_proxy_dashboard_temp_mail_allow_parallel";
+      const TEMP_MAIL_WORKERS_STORAGE_KEY = "codex_proxy_dashboard_temp_mail_workers";
       const HEARTBEAT_MIN_SECONDS = 2;
       const HEARTBEAT_MAX_SECONDS = 3600;
       const DEFAULT_STATE_REFRESH_VISIBLE_MS = 7000;
       const DEFAULT_STATE_REFRESH_HIDDEN_MS = 30000;
+      const TEMP_MAIL_ACTIVE_REFRESH_MS = 2000;
       let stateRefreshVisibleMs = DEFAULT_STATE_REFRESH_VISIBLE_MS;
       let stateRefreshHiddenMs = DEFAULT_STATE_REFRESH_HIDDEN_MS;
       let stateRefreshTimerId = 0;
+      let tempMailRefreshTimerId = 0;
       const USAGE_AUTO_REFRESH_MIN_MS = 5 * 60 * 1000;
       const AUTO_SAVE_DEBOUNCE_MS = 500;
       const CONFIG_FIELD_IDS = [
@@ -2365,8 +2791,26 @@
       const FX_CARD_SELECTOR = ".card, .metric-card, .account-card, .recommend-item";
       const I18N_TEXT = {
         en: {
-          dashboard_title: "Codex OAuth Proxy Dashboard",
+          dashboard_title: "codex-pro-max dashboard",
           dashboard_subtitle: "Local control surface for auth, upstream settings, and runtime diagnostics.",
+          hero_auth: "Auth",
+          hero_mode: "Upstream",
+          hero_pool: "Pool",
+          hero_temp: "Temp Mail",
+          hero_auth_ok: "Authenticated",
+          hero_auth_missing: "Needs login",
+          hero_pool_value: "{enabled}/{total} enabled",
+          hero_temp_idle: "Idle",
+          hero_temp_running: "{success}/{total} active",
+          hero_temp_stopping: "Stopping",
+          hero_temp_done: "{success}/{total} complete",
+          hero_temp_error: "Check logs",
+          nav_runtime: "Runtime",
+          nav_proxy: "Proxy",
+          nav_automation: "Automation",
+          nav_pool: "Pool",
+          nav_router: "Router",
+          nav_requests: "Requests",
           fx_toggle_on: "FX: ON",
           fx_toggle_off: "FX: OFF",
           fx_title_disabled_reduced_motion: "Disabled by system reduced-motion preference",
@@ -2454,6 +2898,22 @@
           self_test_none: "No test executed.",
           self_test_running: "Running test...",
           self_test_failed: "TEST FAILED: {message}",
+          temp_mail_title: "Temp Mail",
+          temp_mail_count: "Count",
+          temp_mail_password: "Password",
+          temp_mail_delay: "Next Delay (s)",
+          temp_mail_workers: "Threads",
+          temp_mail_allow_parallel: "Enable Parallel",
+          temp_mail_idle: "Idle.",
+          temp_mail_console_empty: "No Temp Mail logs yet.",
+          temp_mail_runner_missing: "Temp Mail runner unavailable: {message}",
+          temp_mail_running: "Running: {success}/{total} success · {fail} fail · threads={threads}",
+          temp_mail_stopping: "Stopping Temp Mail...",
+          temp_mail_done: "Finished: {success}/{total} success · {fail} fail",
+          temp_mail_toggle_run: "Run Temp Mail",
+          temp_mail_toggle_stop: "Stop Temp Mail",
+          temp_mail_start_failed: "Temp Mail start failed: {message}",
+          temp_mail_stop_failed: "Temp Mail stop failed: {message}",
           init_failed: "Init failed: {message}",
           pool_title: "Account Pool",
           pool_hint:
@@ -2625,8 +3085,26 @@
           alert_public_access_copy_failed: "Copy public URL failed: {message}"
         },
         "zh-hant": {
-          dashboard_title: "Codex OAuth Proxy 控制台",
+          dashboard_title: "codex-pro-max 控制台",
           dashboard_subtitle: "本地控制介面：認證、上游設定與執行診斷。",
+          hero_auth: "認證",
+          hero_mode: "上游",
+          hero_pool: "帳號池",
+          hero_temp: "Temp Mail",
+          hero_auth_ok: "已登入",
+          hero_auth_missing: "需要登入",
+          hero_pool_value: "{enabled}/{total} 已啟用",
+          hero_temp_idle: "閒置",
+          hero_temp_running: "{success}/{total} 執行中",
+          hero_temp_stopping: "停止中",
+          hero_temp_done: "{success}/{total} 已完成",
+          hero_temp_error: "請查看日誌",
+          nav_runtime: "執行狀態",
+          nav_proxy: "代理設定",
+          nav_automation: "自動化",
+          nav_pool: "帳號池",
+          nav_router: "模型路由",
+          nav_requests: "請求紀錄",
           fx_toggle_on: "特效：開",
           fx_toggle_off: "特效：關",
           fx_title_disabled_reduced_motion: "系統偏好降低動效，已停用",
@@ -2714,6 +3192,22 @@
           self_test_none: "尚未執行測試。",
           self_test_running: "測試執行中...",
           self_test_failed: "測試失敗：{message}",
+          temp_mail_title: "Temp Mail",
+          temp_mail_count: "數量",
+          temp_mail_password: "密碼",
+          temp_mail_delay: "切換延遲（秒）",
+          temp_mail_workers: "Threads",
+          temp_mail_allow_parallel: "啟用平行",
+          temp_mail_idle: "目前閒置。",
+          temp_mail_console_empty: "尚無 Temp Mail 日誌。",
+          temp_mail_runner_missing: "Temp Mail runner 不可用：{message}",
+          temp_mail_running: "執行中：成功 {success}/{total} · 失敗 {fail} · threads={threads}",
+          temp_mail_stopping: "正在停止 Temp Mail...",
+          temp_mail_done: "已完成：成功 {success}/{total} · 失敗 {fail}",
+          temp_mail_toggle_run: "執行 Temp Mail",
+          temp_mail_toggle_stop: "停止 Temp Mail",
+          temp_mail_start_failed: "Temp Mail 啟動失敗：{message}",
+          temp_mail_stop_failed: "Temp Mail 停止失敗：{message}",
           init_failed: "初始化失敗：{message}",
           pool_title: "帳號池",
           pool_hint: "雙視窗帳號會顯示 5h/W；單視窗方案（如 free）會自動切成單一額度標籤。",
@@ -3172,6 +3666,230 @@
         }
       }
 
+      function readStoredNumber(key, fallback, min, max) {
+        const raw = readStoredString(key);
+        const n = Number(raw);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.min(max, Math.max(min, Math.floor(n)));
+      }
+
+      function readNumberInputValue(id, fallback, min, max) {
+        const node = $(id);
+        const raw = String(node?.value ?? "").trim();
+        if (!raw) return fallback;
+        const n = Number(raw);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.min(max, Math.max(min, Math.floor(n)));
+      }
+
+      function syncTempMailWorkersDisabled() {
+        const input = $("tempMailWorkers");
+        const allowParallel = $("tempMailAllowParallel").checked;
+        input.disabled = !allowParallel;
+      }
+
+      function loadTempMailFormFromStorage() {
+        $("tempMailCount").value = String(readStoredNumber(TEMP_MAIL_COUNT_STORAGE_KEY, 1, 1, 100));
+        $("tempMailPassword").value = readStoredString(TEMP_MAIL_PASSWORD_STORAGE_KEY) || "";
+        $("tempMailDelay").value = String(readStoredNumber(TEMP_MAIL_DELAY_STORAGE_KEY, 15, 0, 300));
+        $("tempMailWorkers").value = String(readStoredNumber(TEMP_MAIL_WORKERS_STORAGE_KEY, 1, 1, 50));
+        $("tempMailAllowParallel").checked = readStoredBool(TEMP_MAIL_ALLOW_PARALLEL_STORAGE_KEY) === true;
+        syncTempMailWorkersDisabled();
+      }
+
+      function saveTempMailFormToStorage() {
+        writeStoredString(TEMP_MAIL_COUNT_STORAGE_KEY, String(readNumberInputValue("tempMailCount", 1, 1, 100)));
+        writeStoredString(TEMP_MAIL_PASSWORD_STORAGE_KEY, String($("tempMailPassword").value || ""));
+        writeStoredString(TEMP_MAIL_DELAY_STORAGE_KEY, String(readNumberInputValue("tempMailDelay", 15, 0, 300)));
+        writeStoredString(TEMP_MAIL_WORKERS_STORAGE_KEY, String(readNumberInputValue("tempMailWorkers", 1, 1, 50)));
+        writeStoredString(TEMP_MAIL_ALLOW_PARALLEL_STORAGE_KEY, $("tempMailAllowParallel").checked ? "1" : "0");
+      }
+
+      function buildTempMailPayload() {
+        const count = readNumberInputValue("tempMailCount", 1, 1, 100);
+        const workers = readNumberInputValue("tempMailWorkers", 1, 1, 50);
+        const nextDelaySeconds = readNumberInputValue("tempMailDelay", 15, 0, 300);
+        return {
+          count,
+          password: String($("tempMailPassword").value || "").trim(),
+          workers,
+          nextDelaySeconds,
+          allowParallel: $("tempMailAllowParallel").checked
+        };
+      }
+
+      function renderTempMailConsole(logs) {
+        const el = $("tempMailConsole");
+        const entries = Array.isArray(logs) ? logs : [];
+        const stickToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        if (entries.length === 0) {
+          el.innerHTML = `<div class="temp-mail-console-line">${escapeHtml(t("temp_mail_console_empty"))}</div>`;
+          return;
+        }
+        el.innerHTML = entries
+          .map((entry) => {
+            const level = String(entry?.level || "info").toLowerCase();
+            const cls =
+              level === "success"
+                ? " is-success"
+                : level === "warning"
+                  ? " is-warning"
+                  : level === "error"
+                    ? " is-error"
+                    : "";
+            return `<div class="temp-mail-console-line${cls}">${escapeHtml(String(entry?.text || ""))}</div>`;
+          })
+          .join("");
+        if (stickToBottom) {
+          el.scrollTop = el.scrollHeight;
+        }
+      }
+
+      function syncTempMailRefreshLoop() {
+        const isActive = Boolean(lastTempMailState && (lastTempMailState.running || lastTempMailState.stopping));
+        if (!isActive) {
+          if (tempMailRefreshTimerId) {
+            clearInterval(tempMailRefreshTimerId);
+            tempMailRefreshTimerId = 0;
+          }
+          return;
+        }
+        if (tempMailRefreshTimerId) return;
+        tempMailRefreshTimerId = setInterval(() => {
+          if (!(lastTempMailState && (lastTempMailState.running || lastTempMailState.stopping))) {
+            clearInterval(tempMailRefreshTimerId);
+            tempMailRefreshTimerId = 0;
+            return;
+          }
+          refreshState(false).catch(() => {});
+        }, TEMP_MAIL_ACTIVE_REFRESH_MS);
+      }
+
+      function renderTempMailState(tempMail) {
+        lastTempMailState = tempMail || null;
+        const summaryEl = $("tempMailSummary");
+        const toggleBtn = $("tempMailToggleBtn");
+        if (!tempMail) {
+          summaryEl.className = "result temp-mail-summary";
+          summaryEl.textContent = t("temp_mail_idle");
+          toggleBtn.textContent = t("temp_mail_toggle_run");
+          toggleBtn.disabled = tempMailActionInFlight;
+          syncTempMailWorkersDisabled();
+          renderTempMailConsole([]);
+          syncTempMailRefreshLoop();
+          return;
+        }
+
+        const state = tempMail || {};
+        const logs = Array.isArray(state.logs) ? state.logs : [];
+        const progress = state.progress || {};
+        const running = state.running === true;
+        const stopping = state.stopping === true;
+        const runnerReady = state.runnerReady === true;
+        const supported = state.supported !== false;
+        const config = state.config || {};
+        const effectiveThreads = Number(config.effectiveWorkers || 1) || 1;
+
+        if (!supported) {
+          summaryEl.className = "result temp-mail-summary bad";
+          summaryEl.textContent = tt("temp_mail_runner_missing", {
+            message: state.runnerError || "unsupported mode"
+          });
+        } else if (!runnerReady) {
+          summaryEl.className = "result temp-mail-summary bad";
+          summaryEl.textContent = tt("temp_mail_runner_missing", {
+            message: state.runnerError || "go toolchain not found"
+          });
+        } else if (stopping) {
+          summaryEl.className = "result temp-mail-summary";
+          summaryEl.textContent = t("temp_mail_stopping");
+        } else if (running) {
+          summaryEl.className = "result temp-mail-summary";
+          summaryEl.textContent = tt("temp_mail_running", {
+            success: progress.success ?? 0,
+            total: progress.total ?? 0,
+            fail: progress.fail ?? 0,
+            threads: effectiveThreads
+          });
+        } else if (state.lastResult?.summary) {
+          summaryEl.className = "result temp-mail-summary ok";
+          summaryEl.textContent = tt("temp_mail_done", {
+            success: state.lastResult.summary.success ?? 0,
+            total: state.lastResult.summary.total ?? 0,
+            fail: state.lastResult.summary.fail ?? 0
+          });
+        } else if (state.lastError) {
+          summaryEl.className = "result temp-mail-summary bad";
+          summaryEl.textContent = state.lastError;
+        } else {
+          summaryEl.className = "result temp-mail-summary";
+          summaryEl.textContent = t("temp_mail_idle");
+        }
+
+        toggleBtn.textContent = running || stopping ? t("temp_mail_toggle_stop") : t("temp_mail_toggle_run");
+        toggleBtn.disabled = tempMailActionInFlight || (!supported || !runnerReady) || stopping;
+        for (const id of [
+          "tempMailCount",
+          "tempMailPassword",
+          "tempMailDelay",
+          "tempMailAllowParallel",
+          "tempMailWorkers"
+        ]) {
+          const node = $(id);
+          node.disabled = running || stopping;
+        }
+        if (!running && !stopping) {
+          syncTempMailWorkersDisabled();
+        }
+        renderTempMailConsole(logs);
+        syncTempMailRefreshLoop();
+      }
+
+      function setHeadChip(prefix, value, tone = "neutral") {
+        const chip = $(`${prefix}Chip`);
+        if (chip) {
+          chip.dataset.tone = tone;
+        }
+        setTextAndPulse(`${prefix}Value`, value, false);
+      }
+
+      function summarizeHeadTempMail(tempMail) {
+        if (!tempMail) return { text: t("hero_temp_idle"), tone: "neutral" };
+        if (tempMail.stopping) return { text: t("hero_temp_stopping"), tone: "warn" };
+        if (tempMail.running) {
+          return {
+            text: tt("hero_temp_running", {
+              success: tempMail.progress?.success ?? 0,
+              total: tempMail.progress?.total ?? 0
+            }),
+            tone: "accent"
+          };
+        }
+        if (tempMail.lastError) return { text: t("hero_temp_error"), tone: "bad" };
+        if (tempMail.lastResult?.summary) {
+          return {
+            text: tt("hero_temp_done", {
+              success: tempMail.lastResult.summary.success ?? 0,
+              total: tempMail.lastResult.summary.total ?? 0
+            }),
+            tone: "ok"
+          };
+        }
+        return { text: t("hero_temp_idle"), tone: "neutral" };
+      }
+
+      function renderHeadOverview(state) {
+        const authOk = Boolean(state.auth?.authenticated);
+        const accounts = Array.isArray(state.auth?.accounts) ? state.auth.accounts : [];
+        const enabledCount = Number(state.auth?.enabledAccountCount || 0);
+        const tempSummary = summarizeHeadTempMail(state.tempMail || null);
+
+        setHeadChip("heroAuth", authOk ? t("hero_auth_ok") : t("hero_auth_missing"), authOk ? "ok" : "bad");
+        setHeadChip("heroMode", displayUpstreamMode(state.config?.upstreamMode || "-"), "accent");
+        setHeadChip("heroPool", tt("hero_pool_value", { enabled: enabledCount, total: accounts.length }), enabledCount > 0 ? "ok" : "neutral");
+        setHeadChip("heroTemp", tempSummary.text, tempSummary.tone);
+      }
+
       function normalizeUiLang(value) {
         const v = String(value || "").trim().toLowerCase();
         if (["zh-hans", "zh_cn", "zh-cn", "hans", "cn", "sc"].includes(v)) return "zh-hans";
@@ -3209,6 +3927,7 @@
         renderModelOptions();
         renderMappingsTable();
         syncAllCustomSelects();
+        renderTempMailState(lastTempMailState);
         if (activeRequestDetailId) {
           openRequestDetailModal(activeRequestDetailId);
         }
@@ -4920,6 +5639,8 @@
           autoSaveSnapshot = JSON.stringify(buildConfigPayload());
         }
         renderPreheatStatus(state.preheat || null);
+        renderTempMailState(state.tempMail || null);
+        renderHeadOverview(state);
         if (!autoSaveReady) {
           autoSaveReady = true;
           setAutoSaveStatus("");
@@ -5151,6 +5872,35 @@
           await refreshState();
         } catch (err) {
           $("testResult").textContent = tt("self_test_failed", { message: err.message });
+        }
+      }
+
+      async function toggleTempMailRun() {
+        if (tempMailActionInFlight) return;
+        tempMailActionInFlight = true;
+        renderTempMailState(lastTempMailState);
+        try {
+          if (lastTempMailState?.running || lastTempMailState?.stopping) {
+            await api("/admin/temp-mail/stop", { method: "POST" });
+          } else {
+            const payload = buildTempMailPayload();
+            saveTempMailFormToStorage();
+            await api("/admin/temp-mail/start", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload)
+            });
+          }
+          await refreshState(true);
+        } catch (err) {
+          const summaryEl = $("tempMailSummary");
+          summaryEl.className = "result temp-mail-summary bad";
+          summaryEl.textContent = lastTempMailState?.running || lastTempMailState?.stopping
+            ? tt("temp_mail_stop_failed", { message: err.message })
+            : tt("temp_mail_start_failed", { message: err.message });
+        } finally {
+          tempMailActionInFlight = false;
+          renderTempMailState(lastTempMailState);
         }
       }
 
@@ -5739,6 +6489,15 @@
           closeRequestDetailModal();
         }
       });
+      for (const id of ["tempMailCount", "tempMailPassword", "tempMailDelay", "tempMailWorkers"]) {
+        $(id).addEventListener("change", saveTempMailFormToStorage);
+        $(id).addEventListener("blur", saveTempMailFormToStorage);
+      }
+      $("tempMailAllowParallel").addEventListener("change", () => {
+        syncTempMailWorkersDisabled();
+        saveTempMailFormToStorage();
+      });
+      $("tempMailToggleBtn").addEventListener("click", toggleTempMailRun);
       $("runTestBtn").addEventListener("click", runTest);
       $("runPreheatBtn").addEventListener("click", () => runPreheatNow(true));
 
@@ -5746,6 +6505,8 @@
       initLanguageControl();
       initInteractiveFx();
       initRuntimeHeartbeatControl();
+      loadTempMailFormFromStorage();
+      renderTempMailState(null);
 
       Promise.all([loadModelCandidates(), refreshState()]).catch((err) => {
         $("testResult").textContent = tt("init_failed", { message: err.message });

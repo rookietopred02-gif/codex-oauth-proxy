@@ -1,4 +1,4 @@
-# codex-oauth-proxy
+# codex-pro-max
 
 Localhost OpenAI-compatible proxy for Codex/ChatGPT OAuth, with a built-in control dashboard.
 
@@ -9,7 +9,7 @@ The dashboard style and control surface are inspired by the operational flow in 
 ## 1. Install
 
 ```bash
-cd codex-oauth-proxy
+cd codex-pro-max
 npm install
 ```
 

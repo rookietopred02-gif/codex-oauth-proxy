@@ -1,5 +1,5 @@
 {
-  "name": "codex-oauth-proxy",
+  "name": "codex-pro-max",
   "version": "0.1.0",
   "private": true,
   "description": "Local OAuth reverse proxy for Codex/OpenAI-compatible APIs",

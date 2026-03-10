@@ -12,6 +12,9 @@ import { fileURLToPath } from "node:url";
 
 import express from "express";
 
+import { importCodexOAuthTokens } from "./codex-auth-pool-import.js";
+import { createTempMailController } from "./temp-mail-controller.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
@@ -27,6 +30,12 @@ const DEFAULT_GEMINI_UPSTREAM_BASE_URL = "https://generativelanguage.googleapis.
 const DEFAULT_ANTHROPIC_UPSTREAM_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_CLOUDFLARED_BIN = process.platform === "win32" ? "cloudflared.exe" : "cloudflared";
 const DEFAULT_CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || "2026.2.26";
+const DEFAULT_PROFILE_STORE_PATH = path.join(os.homedir(), ".codex-pro-max", "auth-profiles.json");
+const LEGACY_PROFILE_STORE_PATH = path.join(os.homedir(), ".codex-oauth-proxy", "auth-profiles.json");
+const RESOLVED_PROFILE_STORE_PATH =
+  fsSync.existsSync(DEFAULT_PROFILE_STORE_PATH) || !fsSync.existsSync(LEGACY_PROFILE_STORE_PATH)
+    ? DEFAULT_PROFILE_STORE_PATH
+    : LEGACY_PROFILE_STORE_PATH;
 const VALID_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh"]);
 const VALID_REASONING_EFFORT_MODES = new Set(["none", "low", "medium", "high", "xhigh", "adaptive"]);
 const VALID_MULTI_ACCOUNT_STRATEGIES = new Set(["smart", "manual", "round-robin", "random", "sticky"]);
@@ -160,10 +169,7 @@ const config = {
     allowRequestApiKeys: parseBooleanEnv(process.env.PROVIDER_UPSTREAM_ALLOW_REQUEST_KEYS, false)
   },
   profileStore: {
-    authStorePath: path.resolve(
-      process.env.PROFILE_AUTH_STORE_PATH ||
-        path.join(os.homedir(), ".codex-oauth-proxy", "auth-profiles.json")
-    ),
+    authStorePath: path.resolve(process.env.PROFILE_AUTH_STORE_PATH || RESOLVED_PROFILE_STORE_PATH),
     profileId: process.env.PROFILE_AUTH_ID || "openai-codex:default"
   },
   customOAuth: {
@@ -346,6 +352,39 @@ const cloudflaredRuntime = {
   startedAt: 0,
   outputTail: []
 };
+
+async function importIntoCodexAuthPool(items, options = {}) {
+  const result = await importCodexOAuthTokens({
+    store: codexOAuthStore,
+    items,
+    replace: options.replace === true,
+    probeUsage: options.probeUsage !== false,
+    ensureStoreShape: ensureCodexOAuthStoreShape,
+    normalizeToken,
+    upsertAccount: upsertCodexOAuthAccount,
+    findAccountByRef: findCodexPoolAccountByRef,
+    refreshUsageSnapshot: async (store, ref) =>
+      await withTimeout(
+        refreshCodexUsageSnapshotInStore(store, ref, config.codexOAuth, {
+          includeDisabled: false
+        }),
+        12000,
+        "Usage probe timed out."
+      ),
+    normalizePlanType: normalizeOpenAICodexPlanType,
+    parseSlotValue
+  });
+  codexOAuthStore = result.store;
+  await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
+  clearAuthContextCache();
+  return result;
+}
+
+const tempMailController = createTempMailController({
+  rootDir,
+  importTokens: async (items, options = {}) => await importIntoCodexAuthPool(items, options),
+  isSupported: () => config.authMode === "codex-oauth"
+});
 
 const runtimeStats = {
   startedAt: Date.now(),
@@ -731,7 +770,7 @@ async function installCloudflaredBinary() {
         response = await fetch(assetMeta.downloadUrl, {
           method: "GET",
           redirect: "follow",
-          headers: { "user-agent": "codex-oauth-proxy/0.1.0", accept: "application/octet-stream" },
+          headers: { "user-agent": "codex-pro-max/0.1.0", accept: "application/octet-stream" },
           signal: downloadAbort.signal
         });
       } catch (err) {
@@ -1263,7 +1302,7 @@ app.get("/dashboard", (_req, res) => {
 app.get("/", async (_req, res) => {
   const status = await getAuthStatus();
   res.json({
-    name: "codex-oauth-proxy",
+    name: "codex-pro-max",
     mode: config.authMode,
     upstreamMode: config.upstreamMode,
     upstreamBaseUrl: getActiveUpstreamBaseUrl(),
@@ -1464,6 +1503,7 @@ app.get("/admin/state", async (_req, res) => {
   try {
     const authStatus = await getAuthStatus();
     await checkCloudflaredInstalled(false).catch(() => {});
+    await tempMailController.refreshRunner(false).catch(() => {});
     const apiKeySummary = buildApiKeySummary();
     res.json({
       ok: true,
@@ -1497,6 +1537,7 @@ app.get("/admin/state", async (_req, res) => {
       apiKeys: apiKeySummary,
       publicAccess: getCloudflaredStatus(),
       preheat: getCodexPreheatState(),
+      tempMail: tempMailController.getState(),
       stats: {
         totalRequests: runtimeStats.totalRequests,
         okRequests: runtimeStats.okRequests,
@@ -1853,145 +1894,23 @@ app.post("/admin/auth-pool/import", async (req, res) => {
   }
 
   const body = parseJsonBody(req);
-  const replace = body.replace === true;
-  const probeUsage = body.probeUsage !== false;
-  const items = Array.isArray(body.tokens) ? body.tokens : [];
-  if (items.length === 0) {
-    res.status(400).json({ error: "invalid_request", message: "tokens[] is required." });
-    return;
+  try {
+    const result = await importIntoCodexAuthPool(Array.isArray(body.tokens) ? body.tokens : [], {
+      replace: body.replace === true,
+      probeUsage: body.probeUsage !== false
+    });
+    res.json({
+      ok: true,
+      imported: result.imported,
+      accountPoolSize: result.accountPoolSize,
+      usageProbe: result.usageProbe
+    });
+  } catch (err) {
+    res.status(400).json({
+      error: "invalid_request",
+      message: String(err?.message || err || "Token import failed.")
+    });
   }
-
-  const flattenCandidates = [];
-  for (const rawItem of items) {
-    if (rawItem && typeof rawItem === "object" && Array.isArray(rawItem.tokens)) {
-      for (const nested of rawItem.tokens) {
-        flattenCandidates.push(nested);
-      }
-      continue;
-    }
-    if (rawItem && typeof rawItem === "object" && rawItem.payload && typeof rawItem.payload === "object") {
-      flattenCandidates.push(rawItem.payload);
-      continue;
-    }
-    flattenCandidates.push(rawItem);
-  }
-
-  const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
-  codexOAuthStore = normalized.store;
-  if (replace) {
-    codexOAuthStore.accounts = [];
-    codexOAuthStore.active_account_id = null;
-    codexOAuthStore.rotation = { next_index: 0 };
-    codexOAuthStore.token = null;
-  }
-
-  let imported = 0;
-  const importedRefs = [];
-  for (const raw of flattenCandidates) {
-    if (!raw || typeof raw !== "object") continue;
-
-    const accessToken = String(raw.access_token || raw.accessToken || "").trim();
-    if (!accessToken) continue;
-
-    const rawUsageSnapshot =
-      raw.usage_snapshot && typeof raw.usage_snapshot === "object"
-        ? raw.usage_snapshot
-        : raw.usageSnapshot && typeof raw.usageSnapshot === "object"
-          ? raw.usageSnapshot
-          : null;
-    const upsert = upsertCodexOAuthAccount(
-      codexOAuthStore,
-      normalizeToken(
-        {
-          access_token: accessToken,
-          refresh_token: raw.refresh_token || raw.refreshToken || null,
-          token_type: raw.token_type || raw.tokenType || "Bearer",
-          scope: raw.scope || null,
-          expires_at: raw.expires_at || raw.expiresAt || null,
-          expires_in: raw.expires_in || raw.expiresIn || null
-        },
-        raw
-      ),
-      {
-        label:
-          (typeof raw.label === "string" && raw.label.trim()) ||
-          (typeof raw.email === "string" && raw.email.trim()) ||
-          (typeof raw.name === "string" && raw.name.trim()) ||
-          "",
-        slot: parseSlotValue(raw.slot),
-        force: raw.force === true,
-        planType:
-          normalizeOpenAICodexPlanType(raw.plan_type) ||
-          normalizeOpenAICodexPlanType(raw.planType) ||
-          normalizeOpenAICodexPlanType(rawUsageSnapshot?.plan_type),
-        usageSnapshot: rawUsageSnapshot
-      }
-    );
-
-    if (raw.enabled === false) {
-      const importedAccount = findCodexPoolAccountByRef(codexOAuthStore.accounts, upsert.entryId);
-      if (importedAccount) importedAccount.enabled = false;
-    }
-
-    if (upsert.entryId) importedRefs.push(String(upsert.entryId));
-    imported += 1;
-  }
-  if (imported === 0) {
-    res.status(400).json({ error: "invalid_request", message: "No valid token entries in tokens[]." });
-    return;
-  }
-
-  let usageProbed = 0;
-  let usageProbeFailed = 0;
-  const usageProbeErrors = [];
-  if (probeUsage) {
-    const uniqueRefs = [...new Set(importedRefs.filter(Boolean))];
-    for (const ref of uniqueRefs) {
-      const target = findCodexPoolAccountByRef(codexOAuthStore.accounts, ref);
-      if (!target || target.enabled === false) continue;
-      try {
-        const probe = await withTimeout(
-          refreshCodexUsageSnapshotInStore(codexOAuthStore, ref, config.codexOAuth, {
-            includeDisabled: false
-          }),
-          12000,
-          "Usage probe timed out."
-        );
-        if (probe?.ok) {
-          usageProbed += 1;
-        } else {
-          usageProbeFailed += 1;
-          usageProbeErrors.push({
-            entryId: probe?.entryId || ref,
-            error: String(probe?.error || probe?.skipped || "usage_probe_failed")
-          });
-        }
-      } catch (err) {
-        usageProbeFailed += 1;
-        usageProbeErrors.push({
-          entryId: ref,
-          error: String(err?.message || err || "usage_probe_failed")
-        });
-      }
-    }
-  }
-
-  const renormalized = ensureCodexOAuthStoreShape(codexOAuthStore);
-  codexOAuthStore = renormalized.store;
-
-  await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
-  clearAuthContextCache();
-  res.json({
-    ok: true,
-    imported,
-    accountPoolSize: (codexOAuthStore.accounts || []).length,
-    usageProbe: {
-      enabled: probeUsage,
-      probed: usageProbed,
-      failed: usageProbeFailed,
-      errors: usageProbeErrors
-    }
-  });
 });
 
 app.get("/admin/auth-pool/export", async (_req, res) => {
@@ -2349,6 +2268,31 @@ app.post("/admin/test", async (req, res) => {
   }
 });
 
+app.post("/admin/temp-mail/start", async (req, res) => {
+  try {
+    const body = parseJsonBody(req);
+    const result = await tempMailController.start(body || {});
+    res.json({ ok: true, tempMail: result });
+  } catch (err) {
+    res.status(400).json({
+      error: "temp_mail_start_failed",
+      message: String(err?.message || err || "Failed to start Temp Mail.")
+    });
+  }
+});
+
+app.post("/admin/temp-mail/stop", async (_req, res) => {
+  try {
+    const result = await tempMailController.stop();
+    res.json({ ok: true, tempMail: result });
+  } catch (err) {
+    res.status(400).json({
+      error: "temp_mail_stop_failed",
+      message: String(err?.message || err || "Failed to stop Temp Mail.")
+    });
+  }
+});
+
 
 app.get("/v1/models", async (req, res) => {
   if (isAnthropicNativeRequest(req)) {
@@ -2361,7 +2305,7 @@ app.get("/v1/models", async (req, res) => {
     id,
     object: "model",
     created: now,
-    owned_by: "codex-oauth-proxy"
+    owned_by: "codex-pro-max"
   }));
   res.json({
     object: "list",
@@ -2548,7 +2492,7 @@ app.use("/v1", async (req, res) => {
     headers.set("chatgpt-account-id", ctx.accountId);
     if (!headers.has("openai-beta")) headers.set("openai-beta", "responses=experimental");
     if (!headers.has("originator")) headers.set("originator", getCodexOriginator());
-    if (!headers.has("user-agent")) headers.set("user-agent", "codex-oauth-proxy");
+    if (!headers.has("user-agent")) headers.set("user-agent", "codex-pro-max");
     if (!headers.has("accept")) headers.set("accept", "text/event-stream");
     return true;
   };
@@ -2782,7 +2726,7 @@ app.use("/v1", async (req, res) => {
 });
 
 const mainServer = app.listen(config.port, config.host, () => {
-  console.log(`codex-oauth-proxy listening on http://${config.host}:${config.port}`);
+  console.log(`codex-pro-max listening on http://${config.host}:${config.port}`);
   console.log(`mode:   ${config.authMode}`);
   console.log(`upstream-mode: ${config.upstreamMode}`);
   console.log(`upstream-url:  ${getActiveUpstreamBaseUrl()}`);
@@ -2827,6 +2771,7 @@ async function gracefulShutdown(signal = "SIGTERM") {
       clearTimeout(proxyApiKeyStoreFlushTimer);
       proxyApiKeyStoreFlushTimer = null;
     }
+    await tempMailController.shutdown().catch(() => {});
     await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore).catch(() => {});
     await stopCloudflaredTunnel().catch(() => {});
   } finally {
@@ -5262,7 +5207,7 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig) {
       originator: getCodexOriginator(),
       accept: "text/event-stream",
       "content-type": "application/json",
-      "user-agent": "codex-oauth-proxy-usage-probe"
+      "user-agent": "codex-pro-max-usage-probe"
     },
     body: JSON.stringify(body)
   });
@@ -6009,7 +5954,7 @@ async function fetchCodexOfficialModels() {
         "openai-beta": "responses=experimental",
         originator: getCodexOriginator(),
         accept: "application/json",
-        "user-agent": "codex-oauth-proxy-model-catalog"
+        "user-agent": "codex-pro-max-model-catalog"
       }
     }),
     5000,
@@ -7335,7 +7280,7 @@ async function runCodexConversationViaOAuth({
           originator: getCodexOriginator(),
           accept: acceptHeader,
           "content-type": "application/json",
-          "user-agent": "codex-oauth-proxy-local-compat"
+          "user-agent": "codex-pro-max-local-compat"
         },
         body: JSON.stringify(body)
       });
@@ -7807,7 +7752,7 @@ async function runCodexDirectSelfTest(prompt, reasoningEffort) {
       originator: getCodexOriginator(),
       accept: "text/event-stream",
       "content-type": "application/json",
-      "user-agent": "codex-oauth-proxy-admin-test"
+      "user-agent": "codex-pro-max-admin-test"
     },
     body: JSON.stringify(body)
   });
