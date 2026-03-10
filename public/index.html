@@ -2564,6 +2564,17 @@
             </div>
             <div id="preheatStatus" class="preheat-status" data-i18n="preheat_none">No preheat run yet.</div>
           </div>
+          <div class="preheat-panel">
+            <h4 data-i18n="expired_cleanup_title">Account Hygiene</h4>
+            <label class="checkline"
+              ><input id="autoLogoutExpiredAccounts" type="checkbox" /><span data-i18n="expired_cleanup_enable"
+                >Automatically logout expired accounts</span
+              ></label
+            >
+            <div id="expiredAccountCleanupStatus" class="preheat-status" data-i18n="expired_cleanup_idle">
+              Automatic cleanup idle.
+            </div>
+          </div>
           <div class="pool-kpis">
             <div class="metric-card">
               <div class="metric-label" data-i18n="kpi_total_accounts">Total Accounts</div>
@@ -2781,6 +2792,7 @@
         "publicAccessToken",
         "publicAccessLocalPort",
         "publicAccessHttp2",
+        "autoLogoutExpiredAccounts",
         "preheatCooldownSeconds",
         "preheatBatchSize",
         "preheatMinPrimaryRemaining",
@@ -2936,6 +2948,12 @@
           preheat_running_state_idle: "idle",
           preheat_summary_none: "last=none",
           preheat_summary_fmt: "last={status} success={success} failed={failed} selected={selected}",
+          expired_cleanup_title: "Account Hygiene",
+          expired_cleanup_enable: "Automatically logout expired accounts",
+          expired_cleanup_idle: "Automatic cleanup idle.",
+          expired_cleanup_status_line: "status={status} ({running}) | removed={removed}",
+          expired_cleanup_status_line_2: "run={run} complete={complete} reason={reason}{error}",
+          expired_cleanup_error_segment: " error={error}",
           kpi_total_accounts: "Total Accounts",
           kpi_total_accounts_sub: "all pooled identities",
           kpi_healthy_ratio: "Healthy Ratio",
@@ -3229,6 +3247,12 @@
           preheat_running_state_idle: "閒置",
           preheat_summary_none: "上次=無",
           preheat_summary_fmt: "上次={status} 成功={success} 失敗={failed} 選取={selected}",
+          expired_cleanup_title: "帳號清理",
+          expired_cleanup_enable: "自動登出已過期帳號",
+          expired_cleanup_idle: "自動清理目前閒置。",
+          expired_cleanup_status_line: "狀態={status}（{running}）| 已移除={removed}",
+          expired_cleanup_status_line_2: "執行={run} 完成={complete} 原因={reason}{error}",
+          expired_cleanup_error_segment: " 錯誤={error}",
           kpi_total_accounts: "帳號總數",
           kpi_total_accounts_sub: "所有池內身份",
           kpi_healthy_ratio: "健康比例",
@@ -5512,6 +5536,7 @@
           publicAccessToken: $("publicAccessToken").value,
           publicAccessLocalPort: Number($("publicAccessLocalPort").value || 0),
           publicAccessUseHttp2: $("publicAccessHttp2").checked,
+          autoLogoutExpiredAccounts: $("autoLogoutExpiredAccounts").checked,
           preheatCooldownSeconds: Number($("preheatCooldownSeconds").value || 0),
           preheatBatchSize: Number($("preheatBatchSize").value || 0),
           preheatMinPrimaryRemaining: Number($("preheatMinPrimaryRemaining").value || 0),
@@ -5612,12 +5637,46 @@
         })}`;
       }
 
+      function renderExpiredAccountCleanupState(cleanup) {
+        const el = $("expiredAccountCleanupStatus");
+        if (!el) return;
+        if (!cleanup) {
+          el.className = "preheat-status";
+          el.textContent = t("expired_cleanup_idle");
+          return;
+        }
+        const lastRun = fmtUnixSec(Number(cleanup.lastRunAt || 0));
+        const completed = fmtUnixSec(Number(cleanup.lastCompletedAt || 0));
+        const errorText =
+          typeof cleanup.lastError === "string" && cleanup.lastError.trim().length > 0
+            ? tt("expired_cleanup_error_segment", { error: cleanup.lastError.trim() })
+            : "";
+        const statusClass =
+          cleanup.lastStatus === "failed"
+            ? "bad"
+            : cleanup.lastStatus === "ok" || cleanup.lastStatus === "idle"
+              ? "ok"
+              : "";
+        el.className = statusClass ? `preheat-status ${statusClass}` : "preheat-status";
+        el.textContent = `${tt("expired_cleanup_status_line", {
+          status: cleanup.lastStatus || "idle",
+          running: cleanup.running ? t("preheat_running_state_running") : t("preheat_running_state_idle"),
+          removed: Number(cleanup.lastRemovedCount || 0)
+        })}\n${tt("expired_cleanup_status_line_2", {
+          run: lastRun,
+          complete: completed,
+          reason: cleanup.lastReason || "-",
+          error: errorText
+        })}`;
+      }
+
       function applyServerConfigToForm(state) {
         $("upstreamMode").value = state.config.upstreamMode;
         $("defaultModel").value = state.config.defaultModel;
         $("defaultInstructions").value = state.config.defaultInstructions;
         $("defaultReasoningEffort").value = state.config.defaultReasoningEffort || "medium";
         $("multiAccountStrategy").value = state.config.multiAccountStrategy || "smart";
+        $("autoLogoutExpiredAccounts").checked = state.config.autoLogoutExpiredAccounts === true;
         $("preheatCooldownSeconds").value = Number(state.config.preheatCooldownSeconds || 1200);
         $("preheatBatchSize").value = Number(state.config.preheatBatchSize || 2);
         $("preheatMinPrimaryRemaining").value = Number(state.config.preheatMinPrimaryRemaining ?? 5);
@@ -5639,6 +5698,7 @@
           autoSaveSnapshot = JSON.stringify(buildConfigPayload());
         }
         renderPreheatStatus(state.preheat || null);
+        renderExpiredAccountCleanupState(state.expiredAccountCleanup || null);
         renderTempMailState(state.tempMail || null);
         renderHeadOverview(state);
         if (!autoSaveReady) {
@@ -6379,6 +6439,7 @@
         "multiAccountStrategy",
         "publicAccessMode",
         "publicAccessHttp2",
+        "autoLogoutExpiredAccounts",
       ];
       for (const id of instantSaveFields) {
         $(id).addEventListener("change", () => triggerAutoSaveNow());

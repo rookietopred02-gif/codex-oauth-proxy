@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 
 import { importCodexOAuthTokens } from "./codex-auth-pool-import.js";
+import { createExpiredAccountCleanupController } from "./expired-account-cleanup.js";
 import { createTempMailController } from "./temp-mail-controller.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -230,6 +231,14 @@ const config = {
       process.env.CODEX_PREHEAT_HISTORY_PATH || path.join(rootDir, "data", "codex-preheat-history.json")
     )
   },
+  expiredAccountCleanup: {
+    enabled: parseBooleanEnv(process.env.CODEX_AUTO_LOGOUT_EXPIRED_ACCOUNTS, false),
+    intervalSeconds: parseNumberEnv(process.env.CODEX_AUTO_LOGOUT_EXPIRED_INTERVAL_SECONDS, 30, {
+      min: 10,
+      max: 3600,
+      integer: true
+    })
+  },
   codex: {
     defaultModel: process.env.CODEX_DEFAULT_MODEL || "gpt-5.4",
     defaultInstructions: process.env.CODEX_DEFAULT_INSTRUCTIONS || "You are a helpful assistant.",
@@ -386,6 +395,23 @@ const tempMailController = createTempMailController({
   isSupported: () => config.authMode === "codex-oauth"
 });
 
+const expiredAccountCleanupController = createExpiredAccountCleanupController({
+  initialConfig: config.expiredAccountCleanup,
+  isSupported: () => config.authMode === "codex-oauth",
+  getStore: () => codexOAuthStore,
+  getAccounts: (store) => store?.accounts || [],
+  removeAccount: (store, ref) => removeCodexPoolAccountFromStore(store, ref),
+  saveStore: async (store) => {
+    codexOAuthStore = store;
+    await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
+    clearAuthContextCache();
+  },
+  onRemoved: async ({ reason, removedRefs }) => {
+    if (!Array.isArray(removedRefs) || removedRefs.length === 0) return;
+    console.log(`[auth-pool] ${reason}: removed ${removedRefs.length} expired account(s): ${removedRefs.join(", ")}`);
+  }
+});
+
 const runtimeStats = {
   startedAt: Date.now(),
   totalRequests: 0,
@@ -427,6 +453,13 @@ const authContextCache = {
   accountId: null,
   expiresAt: 0
 };
+
+let expiredAccountCleanupTimer = setInterval(() => {
+  expiredAccountCleanupController.run("interval").catch((err) => {
+    console.warn(`[auth-pool] expired account cleanup failed: ${err?.message || err}`);
+  });
+}, Math.max(10, Number(config.expiredAccountCleanup.intervalSeconds || 30)) * 1000);
+expiredAccountCleanupTimer.unref?.();
 
 function clearAuthContextCache() {
   authContextCache.mode = "";
@@ -1520,6 +1553,7 @@ app.get("/admin/state", async (_req, res) => {
         apiKeyEnforced: apiKeySummary.enforced,
         multiAccountEnabled: isCodexMultiAccountEnabled(),
         multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
+        autoLogoutExpiredAccounts: config.expiredAccountCleanup.enabled === true,
         preheatCooldownSeconds: config.codexPreheat.cooldownSeconds,
         preheatBatchSize: config.codexPreheat.batchSize,
         preheatMinPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
@@ -1537,6 +1571,7 @@ app.get("/admin/state", async (_req, res) => {
       apiKeys: apiKeySummary,
       publicAccess: getCloudflaredStatus(),
       preheat: getCodexPreheatState(),
+      expiredAccountCleanup: expiredAccountCleanupController.getState(),
       tempMail: tempMailController.getState(),
       stats: {
         totalRequests: runtimeStats.totalRequests,
@@ -2141,6 +2176,18 @@ app.post("/admin/config", async (req, res) => {
       }
       config.codexOAuth.multiAccountStrategy = strategy;
     }
+    if (typeof body.autoLogoutExpiredAccounts === "boolean") {
+      config.expiredAccountCleanup.enabled = body.autoLogoutExpiredAccounts;
+      expiredAccountCleanupController.configure({
+        enabled: config.expiredAccountCleanup.enabled,
+        intervalSeconds: config.expiredAccountCleanup.intervalSeconds
+      });
+      if (config.expiredAccountCleanup.enabled) {
+        expiredAccountCleanupController.run("config_update").catch((err) => {
+          console.warn(`[auth-pool] expired account cleanup failed after config update: ${err?.message || err}`);
+        });
+      }
+    }
     if (typeof body.publicAccessMode === "string") {
       const mode = String(body.publicAccessMode || "").trim().toLowerCase();
       if (!VALID_CLOUDFLARED_MODES.has(mode)) {
@@ -2235,6 +2282,7 @@ app.post("/admin/config", async (req, res) => {
         sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
         multiAccountEnabled: isCodexMultiAccountEnabled(),
         multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
+        autoLogoutExpiredAccounts: config.expiredAccountCleanup.enabled === true,
         preheatCooldownSeconds: config.codexPreheat.cooldownSeconds,
         preheatBatchSize: config.codexPreheat.batchSize,
         preheatMinPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
@@ -2746,6 +2794,14 @@ const mainServer = app.listen(config.port, config.host, () => {
   console.log(`dashboard:       http://${config.host}:${config.port}/dashboard/`);
   console.log(`proxy:           http://${config.host}:${config.port}/v1/*`);
   console.log(`preheat:         manual trigger only (dashboard button)`);
+  console.log(
+    `expired-cleanup: ${config.expiredAccountCleanup.enabled ? "enabled" : "disabled"} (${config.expiredAccountCleanup.intervalSeconds}s)`
+  );
+  if (config.expiredAccountCleanup.enabled) {
+    expiredAccountCleanupController.run("startup").catch((err) => {
+      console.warn(`[auth-pool] expired account cleanup failed on startup: ${err?.message || err}`);
+    });
+  }
 });
 
 mainServer.on("error", (err) => {
@@ -2770,6 +2826,10 @@ async function gracefulShutdown(signal = "SIGTERM") {
     if (proxyApiKeyStoreFlushTimer) {
       clearTimeout(proxyApiKeyStoreFlushTimer);
       proxyApiKeyStoreFlushTimer = null;
+    }
+    if (expiredAccountCleanupTimer) {
+      clearInterval(expiredAccountCleanupTimer);
+      expiredAccountCleanupTimer = null;
     }
     await tempMailController.shutdown().catch(() => {});
     await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore).catch(() => {});
