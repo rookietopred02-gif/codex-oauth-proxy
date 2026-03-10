@@ -123,6 +123,7 @@ Priority:
 ## 6. Compatibility Notes
 
 - tool calling is supported (request/stream/non-stream/follow-up tool outputs)
+- multi-account Responses follow-up requests are pinned by `previous_response_id` so tool outputs stay on the same upstream account
 - vision input is supported:
   - Chat Completions `image_url` gets mapped to responses `input_image`
 - SSE stream is translated into OpenAI chat chunk format (`chat.completion.chunk`)

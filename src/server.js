@@ -14,6 +14,7 @@ import express from "express";
 
 import { importCodexOAuthTokens } from "./codex-auth-pool-import.js";
 import { createExpiredAccountCleanupController } from "./expired-account-cleanup.js";
+import { createResponseAffinityStore, extractPreviousResponseId } from "./response-affinity.js";
 import { createTempMailController } from "./temp-mail-controller.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -453,6 +454,7 @@ const authContextCache = {
   accountId: null,
   expiresAt: 0
 };
+const codexResponseAffinity = createResponseAffinityStore();
 
 let expiredAccountCleanupTimer = setInterval(() => {
   expiredAccountCleanupController.run("interval").catch((err) => {
@@ -2404,13 +2406,28 @@ app.use((req, res, next) => {
     const rawPath = req.originalUrl || req.url || "";
     const safePath = sanitizeAuditPath(rawPath);
     const protocolType = inferProtocolType(safePath, res.locals?.protocolType);
-    const tokenUsage =
+    const observedTokenUsage =
       normalizeTokenUsage(res.locals?.tokenUsage) ||
       extractTokenUsageFromAuditResponse({
         protocolType,
         responseContentType,
         responsePacket
       });
+    const estimatedChatInputTokens =
+      req.method === "POST" &&
+      res.statusCode >= 400 &&
+      (safePath === "/v1/chat/completions" || safePath.startsWith("/v1/chat/completions/"))
+        ? estimateOpenAIChatCompletionTokens(req.rawBody)
+        : 0;
+    const estimatedRequestUsage =
+      estimatedChatInputTokens > 0
+        ? {
+            inputTokens: estimatedChatInputTokens,
+            outputTokens: 0,
+            totalTokens: estimatedChatInputTokens
+          }
+        : null;
+    const tokenUsage = mergeNormalizedTokenUsage(estimatedRequestUsage, observedTokenUsage);
     const modelRoute = res.locals?.modelRoute || null;
     const authAccountId = res.locals?.authAccountId || null;
     const authAccountLabel = resolveAuditAccountLabel(authAccountId);
@@ -2500,9 +2517,22 @@ app.use("/v1", async (req, res) => {
     return;
   }
 
+  let target;
+  try {
+    target = buildUpstreamTarget(req.originalUrl);
+  } catch (err) {
+    res.status(400).json({
+      error: "unsupported_endpoint",
+      message: err.message
+    });
+    return;
+  }
+
+  const preferredPoolEntryId = resolvePinnedCodexPoolEntryId(req, target);
+
   let auth;
   try {
-    auth = await getValidAuthContext();
+    auth = await getValidAuthContext({ preferredPoolEntryId });
     res.locals.authAccountId = auth.poolAccountId || auth.accountId || null;
   } catch (err) {
     res.status(401).json({
@@ -2515,17 +2545,9 @@ app.use("/v1", async (req, res) => {
     });
     return;
   }
-
-  let target;
-  try {
-    target = buildUpstreamTarget(req.originalUrl);
-  } catch (err) {
-    res.status(400).json({
-      error: "unsupported_endpoint",
-      message: err.message
-    });
-    return;
-  }
+  const pinnedCodexRequest =
+    preferredPoolEntryId.length > 0 &&
+    (auth.poolEntryId === preferredPoolEntryId || auth.poolAccountId === preferredPoolEntryId);
 
   const headers = new Headers();
   for (const [k, v] of Object.entries(req.headers)) {
@@ -2597,7 +2619,7 @@ app.use("/v1", async (req, res) => {
     init.body = body;
   }
 
-  const canRetryWithPool = isCodexPoolRetryEnabled();
+  const canRetryWithPool = isCodexPoolRetryEnabled() && !pinnedCodexRequest;
   const maxAttempts = canRetryWithPool ? 2 : 1;
   let upstream;
   let attempt = 0;
@@ -2682,6 +2704,7 @@ app.use("/v1", async (req, res) => {
       });
       return;
     }
+    rememberCodexResponseAffinity(completed, auth);
     if (responseShape === "chat-completions") {
       const converted = convertResponsesToChatCompletion(completed);
       converted.model = responseModel;
@@ -2930,8 +2953,13 @@ async function getAuthStatus() {
   };
 }
 
-async function getValidAuthContext() {
-  const allowCache = !(config.authMode === "codex-oauth" && isCodexMultiAccountEnabled());
+async function getValidAuthContext(options = {}) {
+  const preferredPoolEntryId =
+    typeof options.preferredPoolEntryId === "string" ? options.preferredPoolEntryId.trim() : "";
+  const allowCache = !(
+    config.authMode === "codex-oauth" &&
+    (isCodexMultiAccountEnabled() || preferredPoolEntryId.length > 0)
+  );
   if (allowCache) {
     const cached = getCachedAuthContext();
     if (cached) return cached;
@@ -2941,7 +2969,9 @@ async function getValidAuthContext() {
   if (config.authMode === "profile-store") {
     context = await getValidAuthContextFromProfileStore();
   } else if (config.authMode === "codex-oauth") {
-    context = await getValidAuthContextFromCodexOAuthStore(codexOAuthStore, config.codexOAuth);
+    context = await getValidAuthContextFromCodexOAuthStore(codexOAuthStore, config.codexOAuth, {
+      preferredPoolEntryId
+    });
   } else {
     context = await getValidAuthContextFromOAuthStore(customOAuthStore, config.customOAuth);
   }
@@ -3160,6 +3190,35 @@ function buildUpstreamTarget(originalUrl) {
     url: `${base}${mappedPath}${incoming.search}`,
     endpointKind
   };
+}
+
+function resolvePinnedCodexPoolEntryId(req, target) {
+  if (config.authMode !== "codex-oauth" || !isCodexMultiAccountEnabled()) return "";
+  if (!target || target.endpointKind !== "responses") return "";
+  if (req.method === "GET" || req.method === "HEAD") return "";
+
+  const previousResponseId = extractPreviousResponseId(req.rawBody);
+  if (!previousResponseId) return "";
+
+  const affinity = codexResponseAffinity.lookup(previousResponseId);
+  return typeof affinity?.poolEntryId === "string" ? affinity.poolEntryId : "";
+}
+
+function rememberCodexResponseAffinity(response, authContext) {
+  if (config.authMode !== "codex-oauth" || !isCodexMultiAccountEnabled()) return;
+  const responseId = typeof response?.id === "string" ? response.id.trim() : "";
+  const poolEntryId =
+    typeof authContext?.poolEntryId === "string" && authContext.poolEntryId.trim().length > 0
+      ? authContext.poolEntryId.trim()
+      : typeof authContext?.poolAccountId === "string"
+        ? authContext.poolAccountId.trim()
+        : "";
+  if (!responseId || !poolEntryId) return;
+
+  codexResponseAffinity.remember(responseId, {
+    poolEntryId,
+    accountId: typeof authContext?.accountId === "string" ? authContext.accountId : ""
+  });
 }
 
 function getCodexEndpointKind(pathname) {
@@ -4604,50 +4663,66 @@ function rotateListFromIndex(list, startIndex) {
   return list.slice(safeStart).concat(list.slice(0, safeStart));
 }
 
-function pickCodexAccountCandidates(store) {
+function pickCodexAccountCandidates(store, options = {}) {
   const enabled = getCodexEnabledAccounts(store);
   if (enabled.length === 0) return [];
+  const preferredPoolEntryId =
+    typeof options.preferredPoolEntryId === "string" ? options.preferredPoolEntryId.trim() : "";
 
   const strategy = config.codexOAuth.multiAccountStrategy;
+  let candidates;
   if (strategy === "smart") {
     const decorated = enabled.map((x) => decorateCodexPoolAccount(x, store.active_account_id || ""));
     const preferred = decorated.filter((x) => x.healthStatus !== "limited" && !x.hardLimited);
     const ranked = (preferred.length > 0 ? preferred : decorated).sort(compareCodexSmartDecorated);
-    return ranked.map((x) => x.account);
-  }
-  if (strategy === "manual") {
+    candidates = ranked.map((x) => x.account);
+  } else if (strategy === "manual") {
     const nowSec = Math.floor(Date.now() / 1000);
     const activeRef = String(store.active_account_id || "").trim();
     const pool = Array.isArray(store.accounts) ? store.accounts : [];
     const activeReady = pool.find(
       (x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec && getCodexPoolEntryId(x) === activeRef
     );
-    if (activeReady) return [activeReady];
-    const activeEnabled = pool.find((x) => x && x.enabled !== false && getCodexPoolEntryId(x) === activeRef);
-    if (activeEnabled) return [activeEnabled];
-    const fallbackReady = pool.find((x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec);
-    if (fallbackReady) return [fallbackReady];
-    const fallbackEnabled = pool.find((x) => x && x.enabled !== false);
-    return fallbackEnabled ? [fallbackEnabled] : [];
-  }
-  if (strategy === "sticky" && store.active_account_id) {
+    if (activeReady) candidates = [activeReady];
+    else {
+      const activeEnabled = pool.find((x) => x && x.enabled !== false && getCodexPoolEntryId(x) === activeRef);
+      if (activeEnabled) candidates = [activeEnabled];
+      else {
+        const fallbackReady = pool.find((x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec);
+        if (fallbackReady) candidates = [fallbackReady];
+        else {
+          const fallbackEnabled = pool.find((x) => x && x.enabled !== false);
+          candidates = fallbackEnabled ? [fallbackEnabled] : [];
+        }
+      }
+    }
+  } else if (strategy === "sticky" && store.active_account_id) {
     const primary = enabled.find((x) => getCodexPoolEntryId(x) === String(store.active_account_id));
     if (primary) {
       const primaryId = getCodexPoolEntryId(primary);
-      return [primary, ...enabled.filter((x) => getCodexPoolEntryId(x) !== primaryId)];
+      candidates = [primary, ...enabled.filter((x) => getCodexPoolEntryId(x) !== primaryId)];
     }
-  }
-  if (strategy === "random") {
+  } else if (strategy === "random") {
     const shuffled = [...enabled];
     for (let i = shuffled.length - 1; i > 0; i -= 1) {
       const j = crypto.randomInt(0, i + 1);
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
-    return shuffled;
+    candidates = shuffled;
+  }
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    const start = Number(store?.rotation?.next_index || 0) % enabled.length;
+    candidates = rotateListFromIndex(enabled, start);
   }
 
-  const start = Number(store?.rotation?.next_index || 0) % enabled.length;
-  return rotateListFromIndex(enabled, start);
+  if (!preferredPoolEntryId) return candidates;
+
+  const preferredPool = (Array.isArray(store?.accounts) ? store.accounts : []).filter((x) => x && x.enabled !== false);
+  const preferred = preferredPool.find((x) => getCodexPoolEntryId(x) === preferredPoolEntryId);
+  if (!preferred) return candidates;
+
+  const preferredId = getCodexPoolEntryId(preferred);
+  return [preferred, ...candidates.filter((x) => getCodexPoolEntryId(x) !== preferredId)];
 }
 
 function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
@@ -5550,7 +5625,7 @@ function isExpiredOrNearExpirySec(expiresAtSec) {
   return expiresAtSec - nowSec < 60;
 }
 
-async function getValidAuthContextFromCodexOAuthStore(store, oauthConfig) {
+async function getValidAuthContextFromCodexOAuthStore(store, oauthConfig, options = {}) {
   const normalized = ensureCodexOAuthStoreShape(store);
   if (normalized.changed) {
     Object.assign(store, normalized.store);
@@ -5572,7 +5647,9 @@ async function getValidAuthContextFromCodexOAuthStore(store, oauthConfig) {
     };
   }
 
-  const candidates = pickCodexAccountCandidates(store);
+  const preferredPoolEntryId =
+    typeof options.preferredPoolEntryId === "string" ? options.preferredPoolEntryId.trim() : "";
+  const candidates = pickCodexAccountCandidates(store, { preferredPoolEntryId });
   if (candidates.length === 0) {
     throw new Error("No enabled OAuth accounts available in account pool.");
   }
@@ -7145,6 +7222,49 @@ function estimateTokenCountFromText(text) {
   const source = typeof text === "string" ? text : String(text || "");
   if (!source) return 0;
   return Math.max(1, Math.ceil(Buffer.byteLength(source, "utf8") / 4));
+}
+
+function estimateOpenAIChatCompletionTokens(rawBody) {
+  if (!rawBody || rawBody.length === 0) return 0;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawBody.toString("utf8"));
+  } catch {
+    return 0;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return 0;
+
+  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
+  const { systemText, conversation } = splitSystemAndConversation(messages);
+  const segments = [];
+  if (systemText.trim().length > 0) segments.push(systemText);
+  for (const item of conversation) {
+    if (!item || typeof item !== "object") continue;
+    segments.push(`${item.role || "user"}\n${String(item.text || "")}`.trim());
+  }
+  if (Array.isArray(parsed.tools) && parsed.tools.length > 0) {
+    segments.push(JSON.stringify(parsed.tools));
+  }
+  if (parsed.tool_choice !== undefined) {
+    segments.push(JSON.stringify(parsed.tool_choice));
+  }
+  if (parsed.response_format && typeof parsed.response_format === "object") {
+    segments.push(JSON.stringify(parsed.response_format));
+  }
+  if (parsed.metadata && typeof parsed.metadata === "object") {
+    segments.push(JSON.stringify(parsed.metadata));
+  }
+
+  const fallbackSerialized = JSON.stringify(parsed);
+  const combined = segments.filter((part) => typeof part === "string" && part.length > 0).join("\n\n");
+  let inputTokens = estimateTokenCountFromText(combined || fallbackSerialized);
+
+  if (messages.length > 0) inputTokens += messages.length * 6;
+  if (systemText.trim().length > 0) inputTokens += 4;
+  if (Array.isArray(parsed.tools) && parsed.tools.length > 0) inputTokens += parsed.tools.length * 20;
+
+  return Math.max(1, Number(inputTokens || 0));
 }
 
 function estimateAnthropicCountTokens(rawBody) {
