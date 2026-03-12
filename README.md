@@ -6,6 +6,11 @@ This now defaults to `AUTH_MODE=codex-oauth`, so you can authenticate directly f
 
 The dashboard style and control surface are inspired by the operational flow in [Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager): auth control, runtime config, health checks, and request monitoring in one UI.
 
+Inspiration:
+
+- [lbjlaq/Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)
+- [Ethan-W20/openai-auto-register](https://github.com/Ethan-W20/openai-auto-register)
+
 ## 1. Install
 
 ```bash
