@@ -4,7 +4,8 @@ Localhost OpenAI-compatible proxy for Codex/ChatGPT OAuth, with a built-in contr
 
 This now defaults to `AUTH_MODE=codex-oauth`, so you can authenticate directly from this project.
 
-The dashboard style and control surface are inspired by the operational flow in [Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager): auth control, runtime config, health checks, and request monitoring in one UI.
+The dashboard style and control surface are inspired by the operational flow in [Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager): auth control, runtime config, health checks, and request monitoring in one UI combine with alt accounts auto generating which is inspired by [Ethan-W20/openai-auto-register](https://github.com/Ethan-W20/openai-auto-register)
+
 
 Inspiration:
 
