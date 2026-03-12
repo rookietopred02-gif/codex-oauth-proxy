@@ -49,10 +49,12 @@ func main() {
 	}
 
 	cfg := normalizeConfig(start.Config)
-	if cfg.Password == "" {
-		emitError("password is required")
+	password, err := normalizeRegisterPassword(cfg.Password)
+	if err != nil {
+		emitError(err.Error())
 		os.Exit(1)
 	}
+	cfg.Password = password
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runtime.ctx = ctx

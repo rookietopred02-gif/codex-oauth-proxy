@@ -630,8 +630,9 @@ func waitForTempMailCode(ctx context.Context, email string, otpSentAt time.Time,
 			return
 		}
 		if resendFn != nil {
-			resendFn()
-			emitLog("    OTP resent.", "info")
+			if resendFn() {
+				emitLog("    OTP resent.", "info")
+			}
 		}
 		ticker := time.NewTicker(resendInterval)
 		defer ticker.Stop()
@@ -643,8 +644,9 @@ func waitForTempMailCode(ctx context.Context, email string, otpSentAt time.Time,
 				return
 			case <-ticker.C:
 				if resendFn != nil {
-					resendFn()
-					emitLog("    OTP resent.", "info")
+					if resendFn() {
+						emitLog("    OTP resent.", "info")
+					}
 				}
 			}
 		}

@@ -20,15 +20,19 @@ import (
 )
 
 const (
-	oaiClientID    = "app_EMoamEEZ73f0CkXaXp7hrann"
-	oaiAuthURL     = "https://auth.openai.com/oauth/authorize"
-	oaiTokenURL    = "https://auth.openai.com/oauth/token"
-	oaiSentinelURL = "https://sentinel.openai.com/backend-api/sentinel/req"
-	oaiSignupURL   = "https://auth.openai.com/api/accounts/authorize/continue"
-	oaiSendOTPURL  = "https://auth.openai.com/api/accounts/passwordless/send-otp"
-	oaiVerifyURL   = "https://auth.openai.com/api/accounts/email-otp/validate"
-	oaiCreateURL   = "https://auth.openai.com/api/accounts/create_account"
-	oaiWorkURL     = "https://auth.openai.com/api/accounts/workspace/select"
+	defaultRegisterPassword = "Qwer1234!Aa#"
+
+	oaiClientID        = "app_EMoamEEZ73f0CkXaXp7hrann"
+	oaiAuthURL         = "https://auth.openai.com/oauth/authorize"
+	oaiTokenURL        = "https://auth.openai.com/oauth/token"
+	oaiSentinelURL     = "https://sentinel.openai.com/backend-api/sentinel/req"
+	oaiSignupURL       = "https://auth.openai.com/api/accounts/authorize/continue"
+	oaiUserRegisterURL = "https://auth.openai.com/api/accounts/user/register"
+	oaiSendOTPURL      = "https://auth.openai.com/api/accounts/passwordless/send-otp"
+	oaiEmailOTPResend  = "https://auth.openai.com/api/accounts/email-otp/resend"
+	oaiVerifyURL       = "https://auth.openai.com/api/accounts/email-otp/validate"
+	oaiCreateURL       = "https://auth.openai.com/api/accounts/create_account"
+	oaiWorkURL         = "https://auth.openai.com/api/accounts/workspace/select"
 
 	localRedirectURI = "http://localhost:1455/auth/callback"
 	maxRetry         = 2
@@ -323,6 +327,31 @@ func normalizeWorkers(requested int, allowParallel bool) int {
 	return requested
 }
 
+func extractPageType(data map[string]interface{}) string {
+	page, ok := data["page"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	pageType, _ := page["type"].(string)
+	return pageType
+}
+
+func isPasswordlessUnavailable(status int, body string) bool {
+	return status == 401 && strings.Contains(strings.ToLower(body), "passwordless signup is unavailable")
+}
+
+func normalizeRegisterPassword(raw string) (string, error) {
+	password := strings.TrimSpace(raw)
+	switch password {
+	case "", "Qwer1234!":
+		return defaultRegisterPassword, nil
+	}
+	if len([]rune(password)) < 12 {
+		return "", fmt.Errorf("OpenAI register password must be at least 12 characters")
+	}
+	return password, nil
+}
+
 func runAccounts(ctx context.Context, cfg tempMailConfig) {
 	workers := normalizeWorkers(cfg.Workers, cfg.AllowParallel)
 	accounts := make([]account, 0, cfg.Count)
@@ -476,35 +505,113 @@ func registerAccount(ctx context.Context, acc account, cfg tempMailConfig) (*reg
 
 	var step3Data map[string]interface{}
 	_ = json.Unmarshal([]byte(s3Body), &step3Data)
-	pageType := ""
-	if page, ok := step3Data["page"].(map[string]interface{}); ok {
-		pageType, _ = page["type"].(string)
-	}
+	pageType := extractPageType(step3Data)
+	step3ContinueURL, _ := step3Data["continue_url"].(string)
 	isExisting := pageType == "email_otp_verification"
 	emitLog(fmt.Sprintf("      page type: %s", pageType), "dim")
 	if err := sleepRand(ctx, 500, 1500); err != nil {
 		return nil, err
 	}
 
-	if isExisting {
+	otpResendMode := ""
+	switch pageType {
+	case "create_account_password":
+		if step3ContinueURL != "" {
+			status, _, err := httpClient.Get(step3ContinueURL)
+			if err != nil {
+				return nil, fmt.Errorf("open password page failed: %w", err)
+			}
+			if status < 200 || status >= 400 {
+				return nil, fmt.Errorf("open password page failed: %d", status)
+			}
+			if err := sleepRand(ctx, 300, 900); err != nil {
+				return nil, err
+			}
+		}
+
+		password, err := normalizeRegisterPassword(acc.Password)
+		if err != nil {
+			return nil, err
+		}
+
+		emitLog("  [4] Submit register password...", "info")
+		r4Status, r4Body, err := httpClient.PostJSON(oaiUserRegisterURL, map[string]interface{}{
+			"username": email,
+			"password": password,
+		}, map[string]string{
+			"Referer": "https://auth.openai.com/create-account/password",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("submit register password failed: %w", err)
+		}
+		if r4Status < 200 || r4Status >= 300 {
+			return nil, fmt.Errorf("submit register password failed: %d %s", r4Status, truncate(r4Body, 300))
+		}
+
+		var step4Data map[string]interface{}
+		_ = json.Unmarshal([]byte(r4Body), &step4Data)
+		pageType = extractPageType(step4Data)
+		emitLog("      OK", "dim")
+		emitLog(fmt.Sprintf("      next page type: %s", pageType), "dim")
+
+		if nextURL, _ := step4Data["continue_url"].(string); nextURL != "" {
+			status, _, err := httpClient.Get(nextURL)
+			if err != nil {
+				return nil, fmt.Errorf("open register next page failed: %w", err)
+			}
+			if status < 200 || status >= 400 {
+				return nil, fmt.Errorf("open register next page failed: %d", status)
+			}
+		}
+
+		if pageType == "email_otp_send" || pageType == "email_otp_verification" {
+			otpResendMode = "email_otp"
+			otpSentAt = time.Now()
+		}
+		if err := sleepRand(ctx, 500, 1200); err != nil {
+			return nil, err
+		}
+	case "email_otp_verification":
 		emitLog("  [4] Skip OTP send (already sent by server)", "info")
-	} else {
+		otpResendMode = "email_otp"
+	default:
 		emitLog("  [4] Sending OTP...", "info")
 		o4Status, o4Body, err := httpClient.PostJSON(oaiSendOTPURL, map[string]interface{}{}, map[string]string{
 			"Referer": "https://auth.openai.com/create-account/password",
 		})
-		if err != nil || o4Status < 200 || o4Status >= 300 {
+		if err != nil {
+			return nil, fmt.Errorf("send otp failed: %w", err)
+		}
+		if isPasswordlessUnavailable(o4Status, o4Body) {
+			return nil, fmt.Errorf("send otp failed: passwordless flow is unavailable for page type %s", pageType)
+		}
+		if o4Status < 200 || o4Status >= 300 {
 			return nil, fmt.Errorf("send otp failed: %d %s", o4Status, truncate(o4Body, 300))
 		}
 		otpSentAt = time.Now()
+		otpResendMode = "passwordless"
+	}
+
+	if !isExisting && otpResendMode == "" {
+		return nil, fmt.Errorf("registration flow did not reach an email verification page: %s", pageType)
 	}
 
 	emitLog(fmt.Sprintf("    Waiting for verification code (%s, Temp Mail)...", email), "info")
 	resendFn := func() bool {
-		s, _, _ := httpClient.PostJSON(oaiSendOTPURL, map[string]interface{}{}, map[string]string{
-			"Referer": "https://auth.openai.com/email-verification",
-		})
-		return s >= 200 && s < 300
+		switch otpResendMode {
+		case "email_otp":
+			s, _, _ := httpClient.PostJSON(oaiEmailOTPResend, map[string]interface{}{}, map[string]string{
+				"Referer": "https://auth.openai.com/email-verification",
+			})
+			return s >= 200 && s < 300
+		case "passwordless":
+			s, _, _ := httpClient.PostJSON(oaiSendOTPURL, map[string]interface{}{}, map[string]string{
+				"Referer": "https://auth.openai.com/email-verification",
+			})
+			return s >= 200 && s < 300
+		default:
+			return false
+		}
 	}
 	code, err := waitForTempMailCode(ctx, email, otpSentAt, resendFn)
 	if err != nil {
