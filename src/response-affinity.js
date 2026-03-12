@@ -72,6 +72,12 @@ export function createResponseAffinityStore(options = {}) {
     return { ...refreshed };
   }
 
+  function forget(responseId) {
+    const normalizedResponseId = normalizeId(responseId);
+    if (!normalizedResponseId) return false;
+    return entries.delete(normalizedResponseId);
+  }
+
   function clear() {
     entries.clear();
   }
@@ -82,6 +88,7 @@ export function createResponseAffinityStore(options = {}) {
 
   return {
     clear,
+    forget,
     lookup,
     prune,
     remember,

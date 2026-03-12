@@ -45,3 +45,12 @@ test("response affinity store evicts oldest entries when max size is exceeded", 
   assert.equal(store.lookup("resp_b", 1_300)?.poolEntryId, "acct:b");
   assert.equal(store.lookup("resp_c", 1_300)?.poolEntryId, "acct:c");
 });
+
+test("response affinity store forgets stale pinned chains", () => {
+  const store = createResponseAffinityStore({ ttlMs: 10_000, maxEntries: 4 });
+  store.remember("resp_a", { poolEntryId: "acct:a", accountId: "account-a" }, 1_000);
+
+  assert.equal(store.forget("resp_a"), true);
+  assert.equal(store.lookup("resp_a", 2_000), null);
+  assert.equal(store.forget("resp_missing"), false);
+});

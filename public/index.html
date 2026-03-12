@@ -12,7 +12,7 @@
     />
     <style>
       html {
-        scroll-behavior: smooth;
+        scroll-behavior: auto;
       }
 
       :root {
@@ -45,6 +45,10 @@
         box-sizing: border-box;
         scrollbar-width: thin;
         scrollbar-color: rgba(104, 166, 255, 0.9) var(--scrollbar-track);
+      }
+
+      [hidden] {
+        display: none !important;
       }
 
       *::-webkit-scrollbar {
@@ -91,30 +95,9 @@
         min-height: 100vh;
       }
 
-      body::after {
-        content: "";
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        z-index: 0;
-        background-image:
-          linear-gradient(rgba(154, 176, 223, 0.045) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(154, 176, 223, 0.045) 1px, transparent 1px);
-        background-size: 32px 32px;
-        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.34), transparent 82%);
-      }
-
+      body::after,
       body::before {
-        content: "";
-        position: fixed;
-        inset: -20vh -20vw;
-        pointer-events: none;
-        z-index: 0;
-        background:
-          radial-gradient(520px circle at 18% 24%, rgba(106, 164, 255, 0.2), transparent 68%),
-          radial-gradient(480px circle at 82% 28%, rgba(168, 93, 255, 0.12), transparent 72%);
-        opacity: var(--fx-alpha);
-        transition: opacity 0.3s ease;
+        display: none;
       }
 
       body.fx-off {
@@ -136,13 +119,8 @@
         padding: 16px 18px;
         border-radius: 20px;
         border: 1px solid rgba(143, 173, 233, 0.24);
-        background:
-          radial-gradient(640px 220px at 0% 0%, rgba(109, 181, 255, 0.16), transparent 72%),
-          linear-gradient(180deg, rgba(13, 22, 46, 0.9), rgba(8, 15, 33, 0.82));
-        box-shadow:
-          inset 0 0 0 1px rgba(116, 148, 214, 0.1),
-          var(--shadow-strong);
-        backdrop-filter: blur(18px);
+        background: linear-gradient(180deg, rgba(13, 22, 46, 0.96), rgba(8, 15, 33, 0.92));
+        box-shadow: inset 0 0 0 1px rgba(116, 148, 214, 0.1);
         position: sticky;
         top: 10px;
         z-index: 40;
@@ -169,6 +147,7 @@
       }
 
       .fx-toggle {
+        display: none;
         min-width: 96px;
         text-transform: uppercase;
         letter-spacing: 0.08em;
@@ -287,18 +266,9 @@
           linear-gradient(180deg, rgba(23, 38, 74, 0.92), rgba(12, 22, 48, 0.92));
         border-radius: 18px;
         padding: 14px;
-        backdrop-filter: blur(8px);
-        animation: cardIn 420ms ease both;
         position: relative;
-        transform-style: preserve-3d;
-        box-shadow:
-          inset 0 0 0 1px rgba(123, 159, 226, 0.14),
-          0 16px 34px rgba(0, 0, 0, 0.24);
-        transition:
-          transform 0.18s ease,
-          box-shadow 0.22s ease,
-          border-color 0.2s ease;
-        will-change: transform;
+        box-shadow: inset 0 0 0 1px rgba(123, 159, 226, 0.14);
+        transition: border-color 0.2s ease, background-color 0.2s ease;
         overflow: clip;
         scroll-margin-top: 110px;
       }
@@ -309,39 +279,27 @@
         inset: 0 0 auto 0;
         height: 3px;
         background: linear-gradient(90deg, var(--card-accent-a, #6daeff), var(--card-accent-b, #7be8c7));
+        border-radius: 999px;
         opacity: 0.95;
         pointer-events: none;
       }
 
       .card::after {
-        content: "";
-        position: absolute;
-        inset: -1px;
-        border-radius: inherit;
-        pointer-events: none;
-        background: radial-gradient(
-          500px circle at var(--card-mx, 50%) var(--card-my, 50%),
-          rgba(102, 161, 255, var(--fx-glow-opacity)),
-          transparent 45%
-        );
-        opacity: 0;
-        transition: opacity 0.2s ease;
+        display: none;
       }
 
       .card.fx-active {
-        box-shadow:
-          inset 0 0 0 1px rgba(123, 173, 255, 0.28),
-          0 12px 24px rgba(0, 0, 0, 0.3),
-          0 0 0 1px rgba(127, 170, 255, 0.3);
+        box-shadow: inset 0 0 0 1px rgba(123, 159, 226, 0.14);
       }
 
       .card.fx-active::after {
-        opacity: 1;
+        display: none;
       }
 
       .card.span-12 {
         grid-column: 1 / -1;
-        overflow: visible;
+        /* Full-width panels still need clipping so accent lines respect card radius. */
+        overflow: clip;
       }
 
       .card--runtime {
@@ -372,17 +330,6 @@
       .card--requests {
         --card-accent-a: #7bd4ff;
         --card-accent-b: #7aa4ff;
-      }
-
-      @keyframes cardIn {
-        from {
-          opacity: 0;
-          transform: translateY(8px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
       }
 
       .card h3 {
@@ -499,27 +446,11 @@
       }
 
       button::before {
-        content: "";
-        position: absolute;
-        width: 180px;
-        height: 180px;
-        left: calc(var(--btn-mx, 50%) - 90px);
-        top: calc(var(--btn-my, 50%) - 90px);
-        border-radius: 999px;
-        background: radial-gradient(circle, rgba(147, 191, 255, 0.3), transparent 65%);
-        opacity: 0;
-        transition: opacity 0.2s ease;
-        pointer-events: none;
+        display: none;
       }
 
       button:hover {
         background: linear-gradient(180deg, #2d5399, #223d73);
-        transform: translateY(-1px);
-        box-shadow: 0 8px 18px rgba(16, 31, 64, 0.4);
-      }
-
-      button:hover::before {
-        opacity: 1;
       }
 
       button.secondary {
@@ -864,27 +795,15 @@
       }
 
       .req-row.fx-trail td {
-        background:
-          linear-gradient(106deg, rgba(102, 161, 255, 0.08), rgba(138, 103, 255, 0.13), rgba(81, 216, 255, 0.09));
-        background-size: 220% 100%;
-        animation: rowTrail 780ms ease-out 1;
+        background: rgba(102, 161, 255, 0.08);
       }
 
       .fx-stage {
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        z-index: 1;
-        overflow: hidden;
+        display: none;
       }
 
       .fx-orb {
-        position: absolute;
-        border-radius: 999px;
-        filter: blur(28px);
-        opacity: calc(0.32 * var(--fx-alpha));
-        will-change: transform;
-        transform: scale(var(--fx-orb-scale));
+        display: none;
       }
 
       .fx-orb.fx-a {
@@ -912,32 +831,11 @@
       }
 
       .fx-spark-layer {
-        position: fixed;
-        inset: 0;
-        z-index: 2;
-        pointer-events: none;
-        overflow: hidden;
+        display: none;
       }
 
       .fx-spark {
-        position: absolute;
-        width: 5px;
-        height: 5px;
-        border-radius: 999px;
-        background: rgba(154, 204, 255, 0.9);
-        box-shadow: 0 0 10px rgba(154, 204, 255, 0.5);
-        animation: fxSparkFade var(--spark-life, 700ms) ease-out forwards;
-      }
-
-      @keyframes fxSparkFade {
-        from {
-          opacity: 0.92;
-          transform: translate3d(0, 0, 0) scale(1);
-        }
-        to {
-          opacity: 0;
-          transform: translate3d(var(--dx, 0), var(--dy, -16px), 0) scale(0.2);
-        }
+        display: none;
       }
 
       .req-detail-backdrop[hidden] {
@@ -1436,7 +1334,7 @@
 
       .metric-value.fx-pulse,
       .status.fx-pulse {
-        animation: dataPulse 620ms cubic-bezier(0.22, 0.61, 0.36, 1) 1;
+        animation: none;
       }
 
       .metric-value.metric-value--sm {
@@ -1481,12 +1379,58 @@
         min-height: 0;
       }
 
+      .pool-pane-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .pool-pane-header > h4 {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+
       .pool-pane h4 {
         margin: 0;
         font-size: 12px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         color: #d9e4ff;
+      }
+
+      button.icon-button {
+        width: 34px;
+        min-width: 34px;
+        padding: 0;
+        border-radius: 999px;
+        flex: 0 0 auto;
+      }
+
+      .icon-button__glyph {
+        width: 16px;
+        height: 16px;
+        display: block;
+      }
+
+      button.icon-button.is-spinning .icon-button__glyph {
+        animation: iconSpin 0.85s linear infinite;
+      }
+
+      button.icon-button:disabled {
+        cursor: progress;
+        opacity: 0.8;
+        transform: none;
+        box-shadow: none;
+      }
+
+      @keyframes iconSpin {
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
       }
 
       .recommend-list {
@@ -1856,6 +1800,14 @@
         overflow-x: hidden;
       }
 
+      .account-card.compact {
+        display: grid;
+        gap: 8px;
+        align-content: start;
+        overflow: visible;
+        min-height: max-content;
+      }
+
       .account-card--current {
         padding: 10px;
         background:
@@ -1925,6 +1877,18 @@
         margin-bottom: 8px;
       }
 
+      .account-card.compact .account-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        gap: 8px;
+        margin-bottom: 0;
+      }
+
+      .account-card.compact .account-main {
+        min-width: 0;
+      }
+
       .account-name {
         font-weight: 700;
         font-size: 13px;
@@ -1948,6 +1912,11 @@
         flex-wrap: wrap;
         gap: 4px;
         justify-content: flex-end;
+      }
+
+      .account-card.compact .pill-row {
+        justify-content: flex-start;
+        align-self: start;
       }
 
       .pill {
@@ -2053,6 +2022,18 @@
         text-align: left;
         line-height: 1.25;
         overflow-wrap: anywhere;
+      }
+
+      .account-card.compact .account-card-actions {
+        margin-top: 0;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        align-items: center;
+      }
+
+      .account-card.compact .account-card-actions > button {
+        flex: 0 1 auto;
       }
 
       .account-error {
@@ -2223,6 +2204,14 @@
           grid-template-columns: 1fr;
         }
 
+        .account-card.compact .account-head {
+          grid-template-columns: 1fr;
+        }
+
+        .account-card.compact .pill-row {
+          justify-content: flex-start;
+        }
+
         .req-detail-meta-grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
@@ -2266,36 +2255,6 @@
         }
       }
 
-      @keyframes dataPulse {
-        0% {
-          text-shadow: 0 0 0 rgba(105, 178, 255, 0.2);
-          transform: scale(1);
-        }
-        45% {
-          text-shadow:
-            0 0 14px rgba(122, 197, 255, 0.58),
-            0 0 24px rgba(130, 120, 255, 0.28);
-          transform: scale(1.04);
-        }
-        100% {
-          text-shadow: 0 0 0 rgba(105, 178, 255, 0);
-          transform: scale(1);
-        }
-      }
-
-      @keyframes rowTrail {
-        0% {
-          background-position: 0% 0%;
-          filter: brightness(1);
-        }
-        55% {
-          filter: brightness(1.16);
-        }
-        100% {
-          background-position: 120% 0%;
-          filter: brightness(1);
-        }
-      }
     </style>
   </head>
   <body>
@@ -2625,7 +2584,32 @@
             </div>
           </div>
           <div class="pool-pane pool-pane--full">
-            <h4 id="allAccountsTitle" data-i18n="all_accounts_title">All Accounts</h4>
+            <div class="pool-pane-header">
+              <h4 id="allAccountsTitle" data-i18n="all_accounts_title">All Accounts</h4>
+              <button
+                id="refreshAllAccountsBtn"
+                class="secondary icon-button"
+                type="button"
+                title="Refresh all account statuses"
+                aria-label="Refresh all account statuses"
+              >
+                <svg class="icon-button__glyph" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path
+                    d="M16.2 10a6.2 6.2 0 1 1-1.82-4.38"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                  />
+                  <path
+                    d="M12.8 3.8h3.8v3.8"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
             <div id="accountPoolCards" class="account-grid compact">
               <div class="account-empty" data-i18n="account_loading_pool">Loading account pool...</div>
             </div>
@@ -2718,19 +2702,26 @@
           <button id="reqDetailCloseBtn" class="secondary req-detail-close" data-i18n="request_detail_close">Close</button>
         </div>
         <div id="reqDetailMetaGrid" class="req-detail-meta-grid"></div>
-        <div class="req-detail-code-grid">
-          <details class="req-detail-card" open>
-            <summary data-i18n="request_detail_request_packet">Request Packet</summary>
-            <div id="reqDetailReqMeta" class="req-detail-code-meta mono">-</div>
-            <div class="req-detail-code-wrap">
-              <pre id="reqDetailReqCode" class="req-detail-code mono">(empty)</pre>
-            </div>
-          </details>
-          <details class="req-detail-card" open>
-            <summary data-i18n="request_detail_response_packet">Response Packet</summary>
-            <div id="reqDetailResMeta" class="req-detail-code-meta mono">-</div>
-            <div class="req-detail-code-wrap">
-              <pre id="reqDetailResCode" class="req-detail-code mono">(empty)</pre>
+          <div class="req-detail-code-grid">
+            <details class="req-detail-card" open>
+              <summary data-i18n="request_detail_request_packet">Request Packet</summary>
+              <div id="reqDetailReqMeta" class="req-detail-code-meta mono">-</div>
+              <div class="req-detail-code-wrap">
+                <pre id="reqDetailReqCode" class="req-detail-code mono">(empty)</pre>
+              </div>
+            </details>
+            <details class="req-detail-card" open>
+              <summary data-i18n="request_detail_upstream_request_packet">Upstream Request Packet</summary>
+              <div id="reqDetailUpstreamReqMeta" class="req-detail-code-meta mono">-</div>
+              <div class="req-detail-code-wrap">
+                <pre id="reqDetailUpstreamReqCode" class="req-detail-code mono">(empty)</pre>
+              </div>
+            </details>
+            <details class="req-detail-card" open>
+              <summary data-i18n="request_detail_response_packet">Response Packet</summary>
+              <div id="reqDetailResMeta" class="req-detail-code-meta mono">-</div>
+              <div class="req-detail-code-wrap">
+                <pre id="reqDetailResCode" class="req-detail-code mono">(empty)</pre>
             </div>
           </details>
         </div>
@@ -2980,6 +2971,8 @@
           best_account_recommendation: "Best Account Recommendation",
           all_accounts_title: "All Accounts",
           all_accounts_with_count: "All Accounts ({count})",
+          all_accounts_refresh: "Refresh all account statuses",
+          all_accounts_refreshing: "Refreshing all account statuses...",
           account_no_active: "No active account selected.",
           account_no_recommendation: "No recommendation yet.",
           account_no_recommendation_available: "No recommendation available.",
@@ -3028,6 +3021,7 @@
           request_detail_title_fmt: "Proxy Request Detail · {method} {path}",
           request_detail_close: "Close",
           request_detail_request_packet: "Request Packet",
+          request_detail_upstream_request_packet: "Upstream Request Packet",
           request_detail_response_packet: "Response Packet",
           request_detail_content_type: "content-type: {type}",
           request_detail_empty: "(empty)",
@@ -3040,6 +3034,12 @@
           req_meta_account: "Account",
           req_meta_path: "Path",
           req_meta_status: "Status",
+          req_meta_upstream_retries: "Upstream Retries",
+          req_meta_transport_error_code: "Transport Error Code",
+          req_meta_transport_error_detail: "Transport Error Detail",
+          req_meta_compatibility: "Compatibility",
+          compatibility_previous_response_id_unsupported: "previous_response_id unsupported; replay without chain id",
+          compatibility_previous_response_id_emulated_locally: "previous_response_id emulated locally; replay kept inside proxy",
           router_title: "Model Router",
           router_hint: "Priority: exact mapping > wildcard (`*`) > system fallback mapping.",
           router_enable: "Enable model router",
@@ -3279,6 +3279,8 @@
           best_account_recommendation: "最佳帳號推薦",
           all_accounts_title: "所有帳號",
           all_accounts_with_count: "所有帳號（{count}）",
+          all_accounts_refresh: "刷新全部帳號狀態",
+          all_accounts_refreshing: "正在刷新全部帳號狀態...",
           account_no_active: "尚未選擇目前帳號。",
           account_no_recommendation: "尚無推薦結果。",
           account_no_recommendation_available: "目前沒有可推薦的帳號。",
@@ -3327,6 +3329,7 @@
           request_detail_title_fmt: "代理請求詳情 · {method} {path}",
           request_detail_close: "關閉",
           request_detail_request_packet: "請求封包",
+          request_detail_upstream_request_packet: "上游請求封包",
           request_detail_response_packet: "回應封包",
           request_detail_content_type: "內容類型：{type}",
           request_detail_empty: "（空）",
@@ -3339,6 +3342,12 @@
           req_meta_account: "帳號",
           req_meta_path: "路徑",
           req_meta_status: "狀態",
+          req_meta_upstream_retries: "上游重試次數",
+          req_meta_transport_error_code: "傳輸錯誤代碼",
+          req_meta_transport_error_detail: "傳輸錯誤細節",
+          req_meta_compatibility: "相容性提示",
+          compatibility_previous_response_id_unsupported: "previous_response_id 不受支援；需改用 replay",
+          compatibility_previous_response_id_emulated_locally: "previous_response_id 已由本地 proxy 模擬；replay 保留在 proxy 內部",
           router_title: "模型路由",
           router_hint: "優先順序：精確映射 > 萬用字元（`*`）> 系統回退映射。",
           router_enable: "啟用模型路由",
@@ -3428,6 +3437,8 @@
           ["導入完成", "导入完成"],
           ["新增帳號", "新增账号"],
           ["目前帳號", "当前账号"],
+          ["刷新全部帳號狀態", "刷新全部账号状态"],
+          ["正在刷新全部帳號狀態", "正在刷新全部账号状态"],
           ["切換到此帳號", "切换到此账号"],
           ["登出並從帳號池移除此帳號", "登出并从账号池移除此账号"],
           ["語言", "语言"],
@@ -3935,6 +3946,21 @@
         });
       }
 
+      function syncAccountStatusRefreshControls() {
+        const busy = usageRefreshInFlight === true;
+        const toolbarBtn = $("refreshUsageBtn");
+        if (toolbarBtn instanceof HTMLButtonElement) {
+          toolbarBtn.disabled = busy;
+        }
+        const iconBtn = $("refreshAllAccountsBtn");
+        if (!(iconBtn instanceof HTMLButtonElement)) return;
+        const label = t(busy ? "all_accounts_refreshing" : "all_accounts_refresh");
+        iconBtn.disabled = busy;
+        iconBtn.title = label;
+        iconBtn.setAttribute("aria-label", label);
+        iconBtn.classList.toggle("is-spinning", busy);
+      }
+
       function applyUiLanguage(lang, options = {}) {
         uiLang = normalizeUiLang(lang);
         if (options.persist !== false) {
@@ -3948,6 +3974,7 @@
           if (!key) return;
           node.textContent = t(key);
         });
+        syncAccountStatusRefreshControls();
         renderModelOptions();
         renderMappingsTable();
         syncAllCustomSelects();
@@ -4262,55 +4289,14 @@
       }
 
       function initInteractiveFx() {
-        const storedEnabled = readStoredBool(FX_ENABLED_STORAGE_KEY);
         fxProfile = FX_PROFILE.high;
+        fxEnabled = false;
+        document.body.classList.add("fx-off");
+        const fxButton = $("fxToggleBtn");
+        if (fxButton) fxButton.hidden = true;
         applyFxStyleVars();
-        setFxEnabled(storedEnabled === null ? !prefersReducedMotion.matches : storedEnabled, { persist: false });
+        setFxEnabled(false, { persist: false });
         syncFxControls();
-
-        $("fxToggleBtn").addEventListener("click", () => setFxEnabled(!fxEnabled));
-
-        document.addEventListener("mousemove", handleGlobalMouseMove, { passive: true });
-        document.addEventListener("mouseout", (event) => {
-          if (event.relatedTarget) return;
-          clearCardFx(fxActiveCard);
-          clearButtonFx(fxActiveButton);
-          clearTableTrail();
-          fxActiveCard = null;
-          fxActiveButton = null;
-        });
-        document.addEventListener("visibilitychange", () => {
-          if (document.hidden) {
-            if (fxRafId) {
-              cancelAnimationFrame(fxRafId);
-              fxRafId = 0;
-            }
-            fxLastFrameAt = 0;
-            return;
-          }
-          requestFxFrame();
-        });
-        window.addEventListener(
-          "resize",
-          () => {
-            requestFxFrame();
-          },
-          { passive: true }
-        );
-
-        const motionHandler = () => {
-          if (prefersReducedMotion.matches) {
-            setFxEnabled(false, { persist: false });
-          } else if (readStoredBool(FX_ENABLED_STORAGE_KEY) === null) {
-            setFxEnabled(true, { persist: false });
-          }
-          syncFxControls();
-        };
-        if (typeof prefersReducedMotion.addEventListener === "function") {
-          prefersReducedMotion.addEventListener("change", motionHandler);
-        } else if (typeof prefersReducedMotion.addListener === "function") {
-          prefersReducedMotion.addListener(motionHandler);
-        }
       }
 
       function escapeHtml(text) {
@@ -4756,6 +4742,14 @@
         return shortId(accountId);
       }
 
+      function localizeCompatibilityHint(value) {
+        const raw = String(value || "").trim();
+        if (!raw) return "-";
+        const key = `compatibility_${raw}`;
+        const localized = t(key);
+        return localized === key ? raw : localized;
+      }
+
       function buildReqDetailMetaItems(row) {
         const timeText = row?.ts ? new Date(Number(row.ts)).toLocaleString() : "-";
         const latencyText = Number.isFinite(Number(row?.durationMs)) ? `${Number(row.durationMs)} ms` : "-";
@@ -4769,8 +4763,12 @@
         const accountText = getAccountDisplay(row);
         const pathText = `${String(row?.method || "-")} ${String(row?.path || "-")}`;
         const statusText = String(row?.status ?? "-");
+        const retryCount = Math.max(0, Number(row?.upstreamRetryCount || 0));
+        const transportErrorCode = String(row?.upstreamErrorCode || "").trim();
+        const transportErrorDetail = String(row?.upstreamErrorDetail || "").trim();
+        const compatibilityText = localizeCompatibilityHint(row?.compatibilityHint);
 
-        return [
+        const items = [
           { key: t("req_meta_request_time"), value: timeText },
           { key: t("req_meta_latency"), value: latencyText },
           { key: t("req_meta_token_usage"), value: tokenText },
@@ -4781,6 +4779,19 @@
           { key: t("req_meta_path"), value: pathText },
           { key: t("req_meta_status"), value: statusText }
         ];
+        if (retryCount > 0) {
+          items.push({ key: t("req_meta_upstream_retries"), value: String(retryCount) });
+        }
+        if (transportErrorCode) {
+          items.push({ key: t("req_meta_transport_error_code"), value: transportErrorCode });
+        }
+        if (transportErrorDetail) {
+          items.push({ key: t("req_meta_transport_error_detail"), value: transportErrorDetail });
+        }
+        if (compatibilityText !== "-") {
+          items.push({ key: t("req_meta_compatibility"), value: compatibilityText });
+        }
+        return items;
       }
 
       function openRequestDetailModal(requestId) {
@@ -4805,10 +4816,13 @@
           .join("");
 
         const reqCt = String(row?.requestContentType || "").trim();
+        const upstreamReqCt = String(row?.upstreamRequestContentType || "").trim();
         const resCt = String(row?.responseContentType || "").trim();
         $("reqDetailReqMeta").textContent = tt("request_detail_content_type", { type: reqCt || "-" });
+        $("reqDetailUpstreamReqMeta").textContent = tt("request_detail_content_type", { type: upstreamReqCt || "-" });
         $("reqDetailResMeta").textContent = tt("request_detail_content_type", { type: resCt || "-" });
         $("reqDetailReqCode").textContent = safeCodeText(row?.requestPacket);
+        $("reqDetailUpstreamReqCode").textContent = safeCodeText(row?.upstreamRequestPacket);
         $("reqDetailResCode").textContent = safeCodeText(row?.responsePacket);
 
         const backdrop = $("reqDetailBackdrop");
@@ -5904,6 +5918,7 @@
           return false;
         }
         usageRefreshInFlight = true;
+        syncAccountStatusRefreshControls();
         try {
           await api("/admin/auth-pool/refresh-usage", {
             method: "POST",
@@ -5917,7 +5932,15 @@
           return false;
         } finally {
           usageRefreshInFlight = false;
+          syncAccountStatusRefreshControls();
         }
+      }
+
+      async function refreshAllAccountStatuses() {
+        const didRefresh = await refreshUsage(true);
+        if (!didRefresh) return false;
+        await refreshState(true);
+        return true;
       }
 
       async function runTest() {
@@ -6513,9 +6536,14 @@
       });
       $("refreshUsageBtn").addEventListener("click", async () => {
         try {
-          const didRefresh = await refreshUsage(true);
-          if (!didRefresh) return;
-          await refreshState();
+          await refreshAllAccountStatuses();
+        } catch (err) {
+          alert(tt("alert_refresh_usage_failed", { message: err.message }));
+        }
+      });
+      $("refreshAllAccountsBtn").addEventListener("click", async () => {
+        try {
+          await refreshAllAccountStatuses();
         } catch (err) {
           alert(tt("alert_refresh_usage_failed", { message: err.message }));
         }
