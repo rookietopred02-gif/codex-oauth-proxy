@@ -212,6 +212,11 @@ const config = {
     originator: process.env.CODEX_OAUTH_ORIGINATOR || "pi",
     multiAccountEnabled: parseBooleanEnv(process.env.CODEX_MULTI_ACCOUNT_ENABLED, true),
     multiAccountStrategy: String(process.env.CODEX_MULTI_ACCOUNT_STRATEGY || "smart").trim().toLowerCase(),
+    maxRequestAttempts: parseNumberEnv(process.env.CODEX_MULTI_ACCOUNT_MAX_ATTEMPTS, 4, {
+      min: 1,
+      max: 16,
+      integer: true
+    }),
     sharedApiKey: String(process.env.LOCAL_API_KEY || process.env.PROXY_API_KEY || "").trim(),
     usageBaseUrl: process.env.CODEX_USAGE_BASE_URL || DEFAULT_CODEX_UPSTREAM_BASE_URL,
     tokenStorePath: path.resolve(
@@ -2589,7 +2594,7 @@ app.use("/v1", async (req, res) => {
 
   const headers = new Headers();
   for (const [k, v] of Object.entries(req.headers)) {
-    if (!hopByHop.has(k.toLowerCase()) && typeof v === "string") {
+    if (shouldForwardRequestHeaderToUpstream(k) && typeof v === "string") {
       headers.set(k, v);
     }
   }
@@ -2683,7 +2688,7 @@ app.use("/v1", async (req, res) => {
   }
 
   const canRetryWithPool = isCodexPoolRetryEnabled() && !pinnedCodexRequest;
-  const maxAttempts = canRetryWithPool ? 2 : 1;
+  const maxAttempts = canRetryWithPool ? Math.max(2, Number(config.codexOAuth.maxRequestAttempts || 2)) : 1;
   let upstream;
   let attempt = 0;
   while (attempt < maxAttempts) {
@@ -4534,7 +4539,11 @@ function ensureCodexOAuthStoreShape(store) {
       });
       tokenBackedAccountEnabled = true;
     }
-    if (tokenBackedAccountEnabled && out.active_account_id !== entryId) {
+    const preserveExplicitActiveAccount =
+      config.codexOAuth.multiAccountStrategy === "manual" || config.codexOAuth.multiAccountStrategy === "sticky";
+    const shouldAdoptTokenBackedActiveAccount =
+      tokenBackedAccountEnabled && (!preserveExplicitActiveAccount || !out.active_account_id);
+    if (shouldAdoptTokenBackedActiveAccount && out.active_account_id !== entryId) {
       out.active_account_id = entryId;
       changed = true;
     }
@@ -6439,6 +6448,18 @@ function readHeaderValue(req, name) {
   return typeof raw === "string" ? raw : "";
 }
 
+function shouldForwardRequestHeaderToUpstream(name) {
+  const normalized = String(name || "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (hopByHop.has(normalized)) return false;
+  if (normalized === "content-length" || normalized === "host" || normalized === "via") return false;
+  if (normalized === "forwarded" || normalized === "x-real-ip" || normalized === "true-client-ip") return false;
+  if (normalized === "cdn-loop") return false;
+  if (normalized.startsWith("cf-")) return false;
+  if (normalized.startsWith("x-forwarded-")) return false;
+  return true;
+}
+
 function extractBearerToken(req) {
   const auth = readHeaderValue(req, "authorization");
   const match = auth.match(/^Bearer\s+(.+)$/i);
@@ -6638,7 +6659,7 @@ async function handleGeminiNativeProxy(req, res) {
   const headers = new Headers();
   for (const [k, v] of Object.entries(req.headers)) {
     const name = k.toLowerCase();
-    if (hopByHop.has(name) || name === "content-length" || name === "host") continue;
+    if (!shouldForwardRequestHeaderToUpstream(name)) continue;
     if (typeof v === "string") headers.set(k, v);
   }
 
@@ -6726,7 +6747,7 @@ async function handleAnthropicNativeProxy(req, res) {
   const headers = new Headers();
   for (const [k, v] of Object.entries(req.headers)) {
     const name = k.toLowerCase();
-    if (hopByHop.has(name) || name === "content-length" || name === "host") continue;
+    if (!shouldForwardRequestHeaderToUpstream(name)) continue;
     if (typeof v === "string") headers.set(k, v);
   }
 
