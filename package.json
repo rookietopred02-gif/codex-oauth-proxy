@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "verify:claude-agent-sdk": "node tools/verify-claude-agent-sdk-compat.mjs"
   },
   "engines": {
     "node": ">=20.0.0"

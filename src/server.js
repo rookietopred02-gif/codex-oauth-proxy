@@ -7,12 +7,12 @@ import fsSync from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { Readable, pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import express from "express";
 
 import { importCodexOAuthTokens } from "./codex-auth-pool-import.js";
+import { startConfiguredServer } from "./bootstrap/lifecycle.js";
 import { createExpiredAccountCleanupController } from "./expired-account-cleanup.js";
 import { createResponseAffinityStore, extractPreviousResponseId } from "./response-affinity.js";
 import {
@@ -27,6 +27,25 @@ import {
   isPreviousResponseIdUnsupportedError
 } from "./upstream-transport.js";
 import { createRecentRequestsStore } from "./recent-requests-store.js";
+import { registerAdminCoreRoutes } from "./routes/admin-core.js";
+import { registerAdminPoolRoutes } from "./routes/admin-pool.js";
+import { registerAdminSettingsRoutes } from "./routes/admin-settings.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+import { createProxyRouteHandlers } from "./routes/proxy-handlers.js";
+import {
+  formatPayloadForAudit,
+  inferProtocolType,
+  isProxyApiPath,
+  parseContentType,
+  sanitizeAuditPath,
+  toChunkBuffer
+} from "./http/audit.js";
+import { createUpstreamRuntimeHelpers } from "./http/upstream-runtime.js";
+import { createAnthropicLocalCompatHelpers } from "./protocols/anthropic/local-compat.js";
+import { createOpenAIRequestNormalizationHelpers } from "./protocols/openai/request-normalization.js";
+import { createOpenAIResponsesCompatHelpers } from "./protocols/openai/responses-compat.js";
+import { registerProxyRoutes } from "./routes/proxy.js";
+import { registerCommonMiddleware, registerSystemRoutes } from "./routes/system.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -54,6 +73,7 @@ const VALID_REASONING_EFFORT_MODES = new Set(["none", "low", "medium", "high", "
 const VALID_MULTI_ACCOUNT_STRATEGIES = new Set(["smart", "manual", "round-robin", "random", "sticky"]);
 const MULTI_ACCOUNT_STRATEGY_LIST = [...VALID_MULTI_ACCOUNT_STRATEGIES].join(", ");
 const VALID_CLOUDFLARED_MODES = new Set(["quick", "auth"]);
+const VALID_CODEX_SERVICE_TIERS = new Set(["default", "priority"]);
 const LOW_QUOTA_THRESHOLD_DUAL_WINDOW = 20;
 const LOW_QUOTA_THRESHOLD_SINGLE_WINDOW = 30;
 const OFFICIAL_OPENAI_MODELS = [
@@ -106,6 +126,12 @@ function normalizeUpstreamMode(value) {
   // Keep backward compatibility with previous UI naming.
   if (normalized === "openai-v1") return "codex-chatgpt";
   return normalized;
+}
+
+function normalizeCodexServiceTier(value, fallback = "default") {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (VALID_CODEX_SERVICE_TIERS.has(normalized)) return normalized;
+  return VALID_CODEX_SERVICE_TIERS.has(fallback) ? fallback : "default";
 }
 
 function parseBooleanEnv(value, fallback = false) {
@@ -254,6 +280,7 @@ const config = {
   codex: {
     defaultModel: process.env.CODEX_DEFAULT_MODEL || "gpt-5.4",
     defaultInstructions: process.env.CODEX_DEFAULT_INSTRUCTIONS || "You are a helpful assistant.",
+    defaultServiceTier: normalizeCodexServiceTier(process.env.CODEX_DEFAULT_SERVICE_TIER, "default"),
     defaultReasoningEffort: parseReasoningEffortOrFallback(
       process.env.CODEX_DEFAULT_REASONING_EFFORT,
       "medium",
@@ -1187,92 +1214,6 @@ function getCodexUsageProbeBaseUrl() {
   return selected;
 }
 
-function isProxyApiPath(pathName) {
-  const path = String(pathName || "");
-  return path.startsWith("/v1") || path.startsWith("/v1beta");
-}
-
-function toChunkBuffer(chunk, encoding = "utf8") {
-  if (chunk === undefined || chunk === null) return Buffer.alloc(0);
-  if (Buffer.isBuffer(chunk)) return chunk;
-  if (chunk instanceof Uint8Array) return Buffer.from(chunk);
-  if (typeof chunk === "string") return Buffer.from(chunk, encoding || "utf8");
-  return Buffer.from(String(chunk), encoding || "utf8");
-}
-
-function parseContentType(value) {
-  if (Array.isArray(value)) return parseContentType(value[0] || "");
-  if (typeof value !== "string") return "";
-  return value.split(";")[0].trim().toLowerCase();
-}
-
-function sanitizeAuditPayload(text) {
-  let out = String(text || "");
-  out = out.replace(
-    /(authorization"\s*:\s*"Bearer\s+)([^"]+)(")/gi,
-    (_m, p1, _token, p3) => `${p1}[REDACTED]${p3}`
-  );
-  out = out.replace(
-    /("?(?:access_token|refresh_token|id_token|api_key|x-api-key|x-goog-api-key)"?\s*:\s*")([^"]+)(")/gi,
-    (_m, p1, _token, p3) => `${p1}[REDACTED]${p3}`
-  );
-  out = out.replace(/(Bearer\s+)[A-Za-z0-9._\-~+/=]+/gi, "$1[REDACTED]");
-  return out;
-}
-
-function formatPayloadForAudit(raw, contentType) {
-  let text = "";
-  if (Buffer.isBuffer(raw)) {
-    if (raw.length === 0) return "";
-    text = raw.toString("utf8");
-  } else {
-    text = String(raw || "");
-  }
-  if (!text) return "";
-
-  const ct = parseContentType(contentType);
-  const looksJson = ct.includes("json") || /^[\s]*[\[{]/.test(text);
-  if (looksJson) {
-    try {
-      text = JSON.stringify(JSON.parse(text), null, 2);
-    } catch {
-      // keep original when non-standard JSON
-    }
-  }
-
-  text = sanitizeAuditPayload(text);
-  if (text.length > RUNTIME_AUDIT_MAX_TEXT_CHARS) {
-    const hidden = text.length - RUNTIME_AUDIT_MAX_TEXT_CHARS;
-    text = `${text.slice(0, RUNTIME_AUDIT_MAX_TEXT_CHARS)}\n\n... [truncated ${hidden} chars]`;
-  }
-  return text;
-}
-
-function inferProtocolType(pathName, localProtocolType = "") {
-  const hinted = String(localProtocolType || "").trim();
-  if (hinted) return hinted;
-  const path = String(pathName || "");
-  if (path.startsWith("/v1beta/")) return "gemini-v1beta";
-  if (path.startsWith("/v1/messages")) return "anthropic-v1";
-  if (/^\/v1\/models\/.+:(generateContent|streamGenerateContent)/.test(path)) return "gemini-v1beta";
-  if (path.startsWith("/v1/")) return "openai-v1";
-  return config.upstreamMode;
-}
-
-function isAnthropicNativeMessagesPath(pathname) {
-  const path = String(pathname || "");
-  return path === "/v1/messages" || path === "/v1/messages/count_tokens";
-}
-
-function normalizeCherryAnthropicAgentOriginalUrl(originalUrl) {
-  const incoming = new URL(String(originalUrl || "/"), "http://localhost");
-  const match = incoming.pathname.match(
-    /^\/v1\/chat\/completions\/v1\/messages(\/count_tokens)?\/?$/
-  );
-  if (!match) return null;
-  return `/v1/messages${match[1] || ""}${incoming.search}`;
-}
-
 function resolveAuditAccountLabel(accountRef = "") {
   const needle = String(accountRef || "").trim();
   if (!needle) return "";
@@ -1284,1690 +1225,282 @@ function resolveAuditAccountLabel(accountRef = "") {
   return label || target.account_id || needle;
 }
 
-function sanitizeAuditPath(urlLike) {
-  const raw = String(urlLike || "");
-  if (!raw) return raw;
-  try {
-    const parsed = new URL(raw, "http://localhost");
-    parsed.searchParams.delete("key");
-    parsed.searchParams.delete("api_key");
-    parsed.searchParams.delete("x-api-key");
-    const search = parsed.search || "";
-    return `${parsed.pathname}${search}`;
-  } catch {
-    return raw;
+registerCommonMiddleware(app, {
+  config,
+  hasActiveManagedProxyApiKeys,
+  extractProxyApiKeyFromRequest,
+  findManagedProxyApiKeyByValue,
+  recordManagedProxyApiKeyUsage
+});
+
+registerSystemRoutes(app, {
+  publicDir,
+  config,
+  getAuthStatus,
+  getActiveUpstreamBaseUrl,
+  isCodexMultiAccountEnabled
+});
+
+function replaceActiveOAuthStore(nextStore) {
+  if (config.authMode === "codex-oauth") {
+    codexOAuthStore = nextStore;
+    return;
+  }
+  if (config.authMode === "custom-oauth") {
+    customOAuthStore = nextStore;
   }
 }
 
-app.use((req, _res, next) => {
-  if (req.method === "GET" || req.method === "HEAD") {
-    next();
-    return;
-  }
+registerAuthRoutes(app, {
+  config,
+  getAuthStatus,
+  getActiveOAuthRuntime,
+  ensureCodexOAuthCallbackServer,
+  randomBase64Url,
+  sha256base64url,
+  pendingAuth,
+  cleanupPendingStates,
+  parseSlotValue,
+  isCodexMultiAccountEnabled,
+  completeOAuthCallback,
+  buildOAuthCallbackMessage,
+  oauthCallbackSuccessHtml: OAUTH_CALLBACK_SUCCESS_HTML,
+  parseJsonBody,
+  removeCodexPoolAccountFromStore,
+  saveTokenStore,
+  clearAuthContextCache,
+  replaceActiveOAuthStore
+});
+registerAdminCoreRoutes(app, {
+  config,
+  runtimeStats,
+  cloudflaredRuntime,
+  tempMailController,
+  expiredAccountCleanupController,
+  proxyApiKeyStore,
+  getAuthStatus,
+  checkCloudflaredInstalled,
+  buildApiKeySummary,
+  getActiveUpstreamBaseUrl,
+  isCodexMultiAccountEnabled,
+  getCloudflaredStatus,
+  getCodexPreheatState,
+  createProxyApiKey,
+  hashProxyApiKey,
+  sanitizeProxyApiKeyLabel,
+  saveProxyApiKeyStore,
+  parseJsonBody,
+  startCloudflaredTunnel,
+  stopCloudflaredTunnel,
+  installCloudflaredBinary,
+  validCloudflaredModes: VALID_CLOUDFLARED_MODES,
+  parseNumberEnv,
+  getOfficialModelCandidateIds
+});
+function getCodexOAuthStore() {
+  return codexOAuthStore;
+}
 
-  const chunks = [];
-  req.on("data", (chunk) => chunks.push(chunk));
-  req.on("end", () => {
-    req.rawBody = chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0);
-    next();
-  });
-  req.on("error", next);
+function setCodexOAuthStore(nextStore) {
+  codexOAuthStore = nextStore;
+}
+
+registerAdminPoolRoutes(app, {
+  config,
+  parseJsonBody,
+  getCodexOAuthStore,
+  setCodexOAuthStore,
+  ensureCodexOAuthStoreShape,
+  saveTokenStore,
+  clearAuthContextCache,
+  buildCodexPoolMetrics,
+  isCodexMultiAccountEnabled,
+  getCodexPoolEntryId,
+  findCodexPoolAccountByRef,
+  removeCodexPoolAccountFromStore,
+  importIntoCodexAuthPool,
+  normalizeOpenAICodexPlanType,
+  refreshCodexUsageSnapshotInStore,
+  runCodexPreheat,
+  getCodexPreheatState
 });
 
-app.use((req, res, next) => {
-  const pathName = String(req.path || req.url || "");
-  const isProxyRequest =
-    pathName.startsWith("/v1") || pathName.startsWith("/v1beta") || pathName.startsWith("/v1/messages");
-  if (!isProxyRequest) {
-    next();
-    return;
-  }
-
-  const managedEnabled = hasActiveManagedProxyApiKeys();
-  const legacyKey = String(config.codexOAuth.sharedApiKey || "").trim();
-  if (!managedEnabled && !legacyKey) {
-    next();
-    return;
-  }
-
-  const provided = extractProxyApiKeyFromRequest(req);
-  const managedMatch = findManagedProxyApiKeyByValue(provided);
-  if (managedMatch) {
-    recordManagedProxyApiKeyUsage(managedMatch);
-    res.locals.proxyApiKeyId = managedMatch.id;
-    next();
-    return;
-  }
-  if (!managedEnabled && legacyKey && provided === legacyKey) {
-    next();
-    return;
-  }
-  if (managedEnabled && legacyKey && provided === legacyKey) {
-    next();
-    return;
-  }
-
-  res.status(401).json({
-    error: "invalid_api_key",
-    message:
-      "Invalid API key. Use one of: Authorization: Bearer <your_proxy_api_key>, x-api-key, x-goog-api-key, or ?key=<your_proxy_api_key>."
-  });
+registerAdminSettingsRoutes(app, {
+  config,
+  cloudflaredRuntime,
+  runtimeStats,
+  recentRequestsStore,
+  parseJsonBody,
+  normalizeUpstreamMode,
+  setActiveUpstreamBaseUrl,
+  normalizeCodexServiceTier,
+  parseReasoningEffortOrFallback,
+  validMultiAccountStrategies: VALID_MULTI_ACCOUNT_STRATEGIES,
+  multiAccountStrategyList: MULTI_ACCOUNT_STRATEGY_LIST,
+  expiredAccountCleanupController,
+  sanitizeModelMappings,
+  getActiveUpstreamBaseUrl,
+  isCodexMultiAccountEnabled,
+  runDirectChatCompletionTest,
+  tempMailController,
+  parseNumberEnv
+});
+const upstreamRuntimeHelpers = createUpstreamRuntimeHelpers({
+  maxAuditTextChars: RUNTIME_AUDIT_MAX_TEXT_CHARS,
+  extractUpstreamTransportError,
+  fetchWithUpstreamRetry,
+  formatPayloadForAudit,
+  parseContentType
+});
+const {
+  noteUpstreamRetry,
+  noteCompatibilityHint,
+  noteUpstreamRequestAudit,
+  fetchUpstreamWithRetry,
+  pipeUpstreamBodyToResponse,
+  readUpstreamTextOrThrow
+} = upstreamRuntimeHelpers;
+const openAIRequestNormalizationHelpers = createOpenAIRequestNormalizationHelpers({
+  config,
+  resolveCodexCompatibleRoute,
+  resolveReasoningEffort,
+  applyReasoningEffortDefaults
+});
+const {
+  normalizeCodexResponsesRequestBody,
+  normalizeChatCompletionsRequestBody,
+  toResponsesInputFromChatMessages
+} = openAIRequestNormalizationHelpers;
+const openAIResponsesCompatHelpers = createOpenAIResponsesCompatHelpers({
+  config,
+  parseJsonLoose
+});
+const {
+  parseResponsesResultFromSse,
+  extractCompletedResponseFromSse,
+  extractCompletedResponseFromJson,
+  pipeSseAndCaptureTokenUsage,
+  pipeCodexSseAsChatCompletions,
+  normalizeTokenUsage,
+  mergeNormalizedTokenUsage,
+  extractTokenUsageFromAuditResponse,
+  convertResponsesToChatCompletion,
+  extractAssistantTextFromResponse,
+  extractAssistantToolCallsFromResponse,
+  mapResponsesStatusToChatFinishReason
+} = openAIResponsesCompatHelpers;
+const anthropicLocalCompatHelpers = createAnthropicLocalCompatHelpers({
+  config,
+  parseJsonLoose,
+  truncate,
+  resolveReasoningEffort,
+  resolveCodexCompatibleRoute,
+  executeCodexResponsesViaOAuth,
+  resolveCompatErrorStatusCode,
+  mapHttpStatusToAnthropicErrorType,
+  mapResponsesStatusToChatFinishReason,
+  mapOpenAIFinishReasonToAnthropic
+});
+const proxyRouteHandlers = createProxyRouteHandlers({
+  config,
+  runtimeStats,
+  recentRequestsStore,
+  hopByHop,
+  runtimeAuditMaxBodyBytes: RUNTIME_AUDIT_MAX_BODY_BYTES,
+  runtimeAuditMaxTextChars: RUNTIME_AUDIT_MAX_TEXT_CHARS,
+  extractPreviousResponseId,
+  extractUpstreamTransportError,
+  isPreviousResponseIdUnsupportedError,
+  formatPayloadForAudit,
+  inferProtocolType,
+  isProxyApiPath,
+  parseContentType,
+  sanitizeAuditPath,
+  toChunkBuffer,
+  normalizeCherryAnthropicAgentOriginalUrl: anthropicLocalCompatHelpers.normalizeCherryAnthropicAgentOriginalUrl,
+  isGeminiNativeAliasPath,
+  chooseProtocolForV1ChatCompletions,
+  handleGeminiProtocol,
+  handleAnthropicProtocol,
+  getValidAuthContext,
+  getCodexOriginator,
+  noteUpstreamRetry,
+  noteCompatibilityHint,
+  noteUpstreamRequestAudit,
+  fetchUpstreamWithRetry,
+  pipeUpstreamBodyToResponse,
+  readUpstreamTextOrThrow,
+  normalizeCodexResponsesRequestBody,
+  normalizeChatCompletionsRequestBody,
+  parseJsonLoose,
+  buildResponsesChainEntry,
+  codexResponsesChain,
+  expandResponsesRequestBodyFromChain,
+  isCodexMultiAccountEnabled,
+  isCodexPoolRetryEnabled,
+  shouldRotateCodexAccountForStatus,
+  maybeMarkCodexPoolFailure,
+  maybeCaptureCodexUsageFromHeaders,
+  maybeMarkCodexPoolSuccess,
+  truncate,
+  extractCompletedResponseFromSse,
+  convertResponsesToChatCompletion,
+  pipeCodexSseAsChatCompletions,
+  pipeSseAndCaptureTokenUsage,
+  handleGeminiNativeProxy,
+  handleAnthropicNativeProxy,
+  normalizeTokenUsage,
+  extractTokenUsageFromAuditResponse,
+  estimateOpenAIChatCompletionTokens,
+  mergeNormalizedTokenUsage,
+  resolveAuditAccountLabel,
+  handleAnthropicModelsList,
+  isAnthropicNativeRequest,
+  getOpenAICompatibleModelIds,
+  isCodexTokenInvalidatedError,
+  codexResponseAffinity,
+  nextRuntimeRequestSeq: () => (runtimeRequestSeq += 1),
+  getAuthModeHint: () =>
+    config.authMode === "profile-store"
+      ? "Run `your external auth tool login flow` first."
+      : "Open /auth/login first."
 });
 
-app.use("/dashboard", express.static(publicDir));
-app.get("/dashboard", (_req, res) => {
-  res.redirect("/dashboard/");
-});
+registerProxyRoutes(app, { handlers: proxyRouteHandlers });
 
-app.get("/", async (_req, res) => {
-  const status = await getAuthStatus();
-  res.json({
-    name: "codex-pro-max",
-    mode: config.authMode,
-    upstreamMode: config.upstreamMode,
-    upstreamBaseUrl: getActiveUpstreamBaseUrl(),
-    sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
-    multiAccountEnabled: isCodexMultiAccountEnabled(),
-    multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
-    authenticated: status.authenticated,
-    status: "/auth/status",
-    login:
-      config.authMode === "profile-store"
-        ? "login via profile store"
-        : `http://${config.host}:${config.port}/auth/login`,
-    proxyBase: "/v1/*",
-    dashboard: `http://${config.host}:${config.port}/dashboard/`
-  });
-});
-
-app.get("/health", (_req, res) => {
-  res.json({
-    ok: true,
-    ts: Date.now(),
-    mode: config.authMode,
-    upstreamMode: config.upstreamMode,
-    upstreamBaseUrl: getActiveUpstreamBaseUrl()
-  });
-});
-
-app.get("/auth/status", async (_req, res) => {
-  try {
-    res.json(await getAuthStatus());
-  } catch (err) {
-    res.status(500).json({ error: "status_failed", message: err.message });
-  }
-});
-
-app.get("/auth/login", async (req, res) => {
-  if (config.authMode === "profile-store") {
-    res.status(400).json({
-      mode: "profile-store",
-      message: "This mode uses Profile Store's existing OAuth session.",
-      action: "Run: your external auth tool login flow",
-      authStorePath: config.profileStore.authStorePath
-    });
-    return;
-  }
-
-  const oauthRuntime = getActiveOAuthRuntime();
-  if (!oauthRuntime) {
-    res.status(400).json({
-      error: "oauth_unavailable",
-      message: "AUTH_MODE is profile-store; use Profile Store login flow."
-    });
-    return;
-  }
-
-  if (config.authMode === "codex-oauth") {
-    try {
-      await ensureCodexOAuthCallbackServer();
-    } catch (err) {
-      res.status(500).json({
-        error: "callback_server_failed",
-        message: err.message
-      });
-      return;
-    }
-  }
-
-  const state = randomBase64Url(24);
-  const verifier = randomBase64Url(64);
-  const challenge = sha256base64url(verifier);
-
-  pendingAuth.set(state, {
-    verifier,
-    createdAt: Date.now(),
-    mode: config.authMode,
-    label: typeof req.query.label === "string" ? req.query.label.trim() : "",
-    slot: parseSlotValue(req.query.slot),
-    force: String(req.query.force || "").trim() === "1"
-  });
-  cleanupPendingStates();
-
-  const authUrl = new URL(oauthRuntime.oauth.authorizeUrl);
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("client_id", oauthRuntime.oauth.clientId);
-  authUrl.searchParams.set("redirect_uri", oauthRuntime.oauth.redirectUri);
-  authUrl.searchParams.set("scope", oauthRuntime.oauth.scopes.join(" "));
-  authUrl.searchParams.set("state", state);
-  authUrl.searchParams.set("code_challenge", challenge);
-  authUrl.searchParams.set("code_challenge_method", "S256");
-  if (config.authMode === "codex-oauth") {
-    authUrl.searchParams.set("id_token_add_organizations", "true");
-    authUrl.searchParams.set("codex_cli_simplified_flow", "true");
-    authUrl.searchParams.set("originator", config.codexOAuth.originator);
-    authUrl.searchParams.set("max_age", "0");
-  }
-
-  if (req.query.prompt) {
-    authUrl.searchParams.set("prompt", String(req.query.prompt));
-  } else if (config.authMode === "codex-oauth" && isCodexMultiAccountEnabled()) {
-    // OpenAI OAuth does not support select_account; use login to re-prompt account auth.
-    authUrl.searchParams.set("prompt", "login");
-  }
-
-  res.redirect(authUrl.toString());
-});
-
-app.get("/auth/callback", async (req, res) => {
-  if (config.authMode === "profile-store") {
-    res.status(400).send("Callback is not used in AUTH_MODE=profile-store.");
-    return;
-  }
-  if (config.authMode === "codex-oauth") {
-    res
-      .status(400)
-      .send(
-        `Callback in AUTH_MODE=codex-oauth is handled at ${config.codexOAuth.redirectUri}. Start login from /auth/login.`
-      );
-    return;
-  }
-
-  const code = String(req.query.code || "");
-  const state = String(req.query.state || "");
-  const error = String(req.query.error || "");
-
-  if (error) {
-    res.status(400).send(`OAuth failed: ${error}`);
-    return;
-  }
-
-  if (!code || !state || !pendingAuth.has(state)) {
-    res.status(400).send("Invalid OAuth callback: missing code/state or expired state.");
-    return;
-  }
-
-  try {
-    const summary = await completeOAuthCallback({ code, state });
-
-    const msg = buildOAuthCallbackMessage(summary);
-    res.setHeader("content-type", "text/html; charset=utf-8");
-    res.end(OAUTH_CALLBACK_SUCCESS_HTML.replace("</body>", `${msg}</body>`));
-  } catch (err) {
-    console.error("OAuth callback exchange failed:", err);
-    res.status(500).send(`Token exchange failed: ${err.message}`);
-  }
-});
-
-app.post("/auth/logout", async (req, res) => {
-  if (config.authMode === "profile-store") {
-    res.status(400).json({
-      mode: "profile-store",
-      message: "Managed by Profile Store. Run `your external auth tool login flow` to change account."
-    });
-    return;
-  }
-
-  const oauthRuntime = getActiveOAuthRuntime();
-  if (!oauthRuntime) {
-    res.status(400).json({
-      error: "oauth_unavailable",
-      message: "No active OAuth runtime."
-    });
-    return;
-  }
-
-  if (config.authMode === "codex-oauth") {
-    const body = parseJsonBody(req);
-    const accountRef = String(body.entryId || body.accountId || "").trim();
-    const removed = removeCodexPoolAccountFromStore(oauthRuntime.store, accountRef);
-    if (!removed.removed) {
-      res.status(404).json({
-        error: "not_found",
-        message: "No removable OAuth account was found."
-      });
-      return;
-    }
-
-    oauthRuntime.store = removed.store;
-    await saveTokenStore(oauthRuntime.oauth.tokenStorePath, oauthRuntime.store);
-    clearAuthContextCache();
-    res.json({
-      ok: true,
-      mode: "codex-oauth",
-      removedEntryId: removed.removedEntryId,
-      removedAccountId: removed.removedAccountId,
-      remainingAccounts: removed.remainingAccounts,
-      activeEntryId: removed.activeEntryId
-    });
-    return;
-  }
-
-  oauthRuntime.store.token = null;
-  await saveTokenStore(oauthRuntime.oauth.tokenStorePath, oauthRuntime.store);
-  clearAuthContextCache();
-  res.json({ ok: true, mode: config.authMode });
-});
-
-app.get("/admin/state", async (_req, res) => {
-  try {
-    const authStatus = await getAuthStatus();
-    await checkCloudflaredInstalled(false).catch(() => {});
-    await tempMailController.refreshRunner(false).catch(() => {});
-    const apiKeySummary = buildApiKeySummary();
-    res.json({
-      ok: true,
-      startedAt: runtimeStats.startedAt,
-      uptimeMs: Date.now() - runtimeStats.startedAt,
-      config: {
-        authMode: config.authMode,
-        upstreamMode: config.upstreamMode,
-        upstreamBaseUrl: getActiveUpstreamBaseUrl(),
-        defaultModel: config.codex.defaultModel,
-        defaultInstructions: config.codex.defaultInstructions,
-        defaultReasoningEffort: config.codex.defaultReasoningEffort,
-        sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
-        apiKeyEnforced: apiKeySummary.enforced,
-        multiAccountEnabled: isCodexMultiAccountEnabled(),
-        multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
-        autoLogoutExpiredAccounts: config.expiredAccountCleanup.enabled === true,
-        preheatCooldownSeconds: config.codexPreheat.cooldownSeconds,
-        preheatBatchSize: config.codexPreheat.batchSize,
-        preheatMinPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
-        preheatMinSecondaryRemaining: config.codexPreheat.minSecondaryRemaining,
-        modelRouterEnabled: config.modelRouter.enabled,
-        modelMappings: config.modelRouter.customMappings,
-        recentRequestsPath: config.requestAudit.historyPath,
-        publicAccess: {
-          mode: cloudflaredRuntime.mode || config.publicAccess.defaultMode,
-          useHttp2: cloudflaredRuntime.useHttp2 !== false,
-          autoInstall: config.publicAccess.autoInstall !== false,
-          localPort: Number(cloudflaredRuntime.localPort || config.port)
-        }
-      },
-      auth: authStatus,
-      apiKeys: apiKeySummary,
-      publicAccess: getCloudflaredStatus(),
-      preheat: getCodexPreheatState(),
-      expiredAccountCleanup: expiredAccountCleanupController.getState(),
-      tempMail: tempMailController.getState(),
-      stats: {
-        totalRequests: runtimeStats.totalRequests,
-        okRequests: runtimeStats.okRequests,
-        errorRequests: runtimeStats.errorRequests,
-        recentRequestsPath: config.requestAudit.historyPath,
-        recentRequests: runtimeStats.recentRequests
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ error: "state_failed", message: err.message });
-  }
-});
-
-app.get("/admin/api-keys", async (_req, res) => {
-  const summary = buildApiKeySummary();
-  res.json({
-    ok: true,
-    ...summary
-  });
-});
-
-app.post("/admin/api-keys/generate", async (req, res) => {
-  try {
-    const body = parseJsonBody(req);
-    const nowSec = Math.floor(Date.now() / 1000);
-    const label = sanitizeProxyApiKeyLabel(body?.label);
-    const expiresInDaysRaw = Number(body?.expiresInDays);
-    const expiresInDays = Number.isFinite(expiresInDaysRaw)
-      ? Math.max(0, Math.min(3650, Math.floor(expiresInDaysRaw)))
-      : 0;
-    const expiresAt = expiresInDays > 0 ? nowSec + expiresInDays * 86400 : 0;
-    const apiKey = createProxyApiKey();
-    const id = `key_${crypto.randomUUID().replace(/-/g, "")}`;
-    const entry = {
-      id,
-      label,
-      prefix: apiKey.slice(0, 10),
-      value: apiKey,
-      hash: hashProxyApiKey(apiKey),
-      created_at: nowSec,
-      last_used_at: 0,
-      use_count: 0,
-      revoked_at: 0,
-      expires_at: expiresAt
-    };
-
-    if (!Array.isArray(proxyApiKeyStore.keys)) proxyApiKeyStore.keys = [];
-    proxyApiKeyStore.keys.unshift(entry);
-    await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore);
-
-    res.json({
-      ok: true,
-      apiKey,
-      key: {
-        id: entry.id,
-        label: entry.label,
-        prefix: entry.prefix,
-        value: entry.value,
-        createdAt: entry.created_at,
-        expiresAt: entry.expires_at > 0 ? entry.expires_at : null,
-        active: true
-      },
-      summary: buildApiKeySummary()
-    });
-  } catch (err) {
-    res.status(400).json({
-      error: "api_key_generate_failed",
-      message: err.message
-    });
-  }
-});
-
-app.post("/admin/api-keys/revoke", async (req, res) => {
-  try {
-    const body = parseJsonBody(req);
-    const id = String(body?.id || "").trim();
-    if (!id) {
-      throw new Error("id is required.");
-    }
-    const keys = Array.isArray(proxyApiKeyStore.keys) ? proxyApiKeyStore.keys : [];
-    const targetIdx = keys.findIndex((x) => String(x?.id || "") === id);
-    if (targetIdx < 0) {
-      res.status(404).json({
-        error: "api_key_not_found",
-        message: "API key not found."
-      });
-      return;
-    }
-    keys.splice(targetIdx, 1);
-    await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore);
-    res.json({
-      ok: true,
-      id,
-      summary: buildApiKeySummary()
-    });
-  } catch (err) {
-    res.status(400).json({
-      error: "api_key_revoke_failed",
-      message: err.message
-    });
-  }
-});
-
-app.get("/admin/public-access/status", async (_req, res) => {
-  await checkCloudflaredInstalled(false).catch(() => {});
-  res.json({
-    ok: true,
-    status: getCloudflaredStatus()
-  });
-});
-
-app.post("/admin/public-access/install", async (_req, res) => {
-  try {
-    const result = await installCloudflaredBinary();
-    res.json({
-      ok: true,
-      result,
-      status: getCloudflaredStatus()
-    });
-  } catch (err) {
-    res.status(400).json({
-      error: "public_access_install_failed",
-      message: err.message,
-      status: getCloudflaredStatus()
-    });
-  }
-});
-
-app.post("/admin/public-access/start", async (req, res) => {
-  try {
-    const body = parseJsonBody(req);
-    const modeRaw = String(body?.mode || "").trim().toLowerCase();
-    const mode = VALID_CLOUDFLARED_MODES.has(modeRaw) ? modeRaw : cloudflaredRuntime.mode || config.publicAccess.defaultMode;
-    const token = body?.token === undefined ? undefined : String(body.token || "").trim();
-    const useHttp2 = body?.useHttp2 === undefined ? undefined : Boolean(body.useHttp2);
-    const autoInstall = body?.autoInstall === undefined ? undefined : Boolean(body.autoInstall);
-    const localPort = body?.localPort === undefined ? undefined : parseNumberEnv(body.localPort, Number(config.port), {
-      min: 1,
-      max: 65535,
-      integer: true
-    });
-
-    const status = await startCloudflaredTunnel({
-      mode,
-      token,
-      useHttp2,
-      localPort,
-      autoInstall
-    });
-
-    config.publicAccess.defaultMode = status.mode;
-    config.publicAccess.defaultUseHttp2 = status.useHttp2 !== false;
-    config.publicAccess.defaultTunnelToken = cloudflaredRuntime.tunnelToken || "";
-    config.publicAccess.localPort = Number(status.localPort || config.port);
-
-    res.json({
-      ok: true,
-      status
-    });
-  } catch (err) {
-    res.status(400).json({
-      error: "public_access_start_failed",
-      message: err.message
-    });
-  }
-});
-
-app.post("/admin/public-access/stop", async (_req, res) => {
-  try {
-    const status = await stopCloudflaredTunnel();
-    res.json({
-      ok: true,
-      status
-    });
-  } catch (err) {
-    res.status(400).json({
-      error: "public_access_stop_failed",
-      message: err.message
-    });
-  }
-});
-
-app.get("/admin/model-candidates", async (req, res) => {
-  const forceRefresh = String(req.query.refresh || "").trim() === "1";
-  const models = await getOfficialModelCandidateIds({ forceRefresh });
-  res.json({
-    ok: true,
-    models,
-    wildcardPresets: ["gpt-*", "gpt-4*", "gpt-5*", "claude-*", "gemini-*"]
-  });
-});
-
-app.get("/admin/auth-pool", async (_req, res) => {
-  if (config.authMode !== "codex-oauth") {
-    res.status(400).json({
-      error: "unsupported_mode",
-      message: "Account pool management is only available in AUTH_MODE=codex-oauth."
-    });
-    return;
-  }
-
-  const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
-  codexOAuthStore = normalized.store;
-  if (normalized.changed) {
-    await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
-  }
-
-  const activeEntryId = codexOAuthStore.active_account_id || null;
-  const metrics = buildCodexPoolMetrics(codexOAuthStore.accounts || [], activeEntryId || "");
-  res.json({
-    ok: true,
-    multiAccountEnabled: isCodexMultiAccountEnabled(),
-    strategy: config.codexOAuth.multiAccountStrategy,
-    sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
-    activeEntryId,
-    activeAccountId:
-      (codexOAuthStore.accounts || []).find((x) => getCodexPoolEntryId(x) === String(activeEntryId || ""))
-        ?.account_id || null,
-    rotation: codexOAuthStore.rotation || { next_index: 0 },
-    poolMetrics: metrics.summary,
-    accounts: (metrics.decorated || []).map((d, idx) => {
-      const x = d.account;
-      return {
-        entryId: d.entryId,
-        accountId: x.account_id,
-        label: x.label || "",
-        slot: Number(x.slot || 0) || idx + 1,
-        enabled: x.enabled !== false,
-        expiresAt: x.token?.expires_at || null,
-        lastUsedAt: x.last_used_at || 0,
-        failureCount: x.failure_count || 0,
-        cooldownUntil: x.cooldown_until || 0,
-        lastError: x.last_error || "",
-        usageSnapshot: x.usage_snapshot || null,
-        usageUpdatedAt: x.usage_updated_at || 0,
-        healthScore: d.healthScore,
-        healthStatus: d.healthStatus,
-        primaryRemaining: d.primaryRemaining,
-        secondaryRemaining: d.secondaryRemaining,
-        lowQuota: d.lowQuota,
-        hardLimited: d.hardLimited
-      };
-    })
-  });
-});
-
-app.post("/admin/auth-pool/toggle", async (req, res) => {
-  if (config.authMode !== "codex-oauth") {
-    res.status(400).json({
-      error: "unsupported_mode",
-      message: "Account pool management is only available in AUTH_MODE=codex-oauth."
-    });
-    return;
-  }
-
-  const body = parseJsonBody(req);
-  const accountRef = String(body.entryId || body.accountId || "").trim();
-  const enabled = body.enabled !== false;
-  if (!accountRef) {
-    res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
-    return;
-  }
-
-  const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
-  codexOAuthStore = normalized.store;
-  const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], accountRef);
-  if (!target) {
-    res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
-    return;
-  }
-  target.enabled = enabled;
-  const targetEntryId = getCodexPoolEntryId(target);
-  if (!enabled && codexOAuthStore.active_account_id === targetEntryId) {
-    codexOAuthStore.active_account_id = null;
-  }
-  await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
-  clearAuthContextCache();
-  res.json({ ok: true, entryId: targetEntryId, accountId: target.account_id, enabled });
-});
-
-app.post("/admin/auth-pool/activate", async (req, res) => {
-  if (config.authMode !== "codex-oauth") {
-    res.status(400).json({
-      error: "unsupported_mode",
-      message: "Account pool management is only available in AUTH_MODE=codex-oauth."
-    });
-    return;
-  }
-
-  const body = parseJsonBody(req);
-  const accountRef = String(body.entryId || body.accountId || "").trim();
-  if (!accountRef) {
-    res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
-    return;
-  }
-
-  const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
-  codexOAuthStore = normalized.store;
-  const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], accountRef);
-  if (!target) {
-    res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
-    return;
-  }
-  target.enabled = true;
-  target.cooldown_until = 0;
-  target.last_error = "";
-  const targetEntryId = getCodexPoolEntryId(target);
-  codexOAuthStore.active_account_id = targetEntryId;
-  await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
-  clearAuthContextCache();
-  res.json({ ok: true, entryId: targetEntryId, accountId: target.account_id });
-});
-
-app.post("/admin/auth-pool/remove", async (req, res) => {
-  if (config.authMode !== "codex-oauth") {
-    res.status(400).json({
-      error: "unsupported_mode",
-      message: "Account pool management is only available in AUTH_MODE=codex-oauth."
-    });
-    return;
-  }
-
-  const body = parseJsonBody(req);
-  const accountRef = String(body.entryId || body.accountId || "").trim();
-  if (!accountRef) {
-    res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
-    return;
-  }
-
-  const result = removeCodexPoolAccountFromStore(codexOAuthStore, accountRef);
-  if (!result.removed) {
-    res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
-    return;
-  }
-  codexOAuthStore = result.store;
-  await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
-  clearAuthContextCache();
-  res.json({
-    ok: true,
-    entryId: result.removedEntryId,
-    accountId: result.removedAccountId,
-    removed: true,
-    remainingAccounts: result.remainingAccounts,
-    activeEntryId: result.activeEntryId
-  });
-});
-
-app.post("/admin/auth-pool/import", async (req, res) => {
-  if (config.authMode !== "codex-oauth") {
-    res.status(400).json({
-      error: "unsupported_mode",
-      message: "Account pool management is only available in AUTH_MODE=codex-oauth."
-    });
-    return;
-  }
-
-  const body = parseJsonBody(req);
-  try {
-    const result = await importIntoCodexAuthPool(Array.isArray(body.tokens) ? body.tokens : [], {
-      replace: body.replace === true,
-      probeUsage: body.probeUsage !== false
-    });
-    res.json({
-      ok: true,
-      imported: result.imported,
-      accountPoolSize: result.accountPoolSize,
-      usageProbe: result.usageProbe
-    });
-  } catch (err) {
-    res.status(400).json({
-      error: "invalid_request",
-      message: String(err?.message || err || "Token import failed.")
-    });
-  }
-});
-
-app.get("/admin/auth-pool/export", async (_req, res) => {
-  if (config.authMode !== "codex-oauth") {
-    res.status(400).json({
-      error: "unsupported_mode",
-      message: "Account pool management is only available in AUTH_MODE=codex-oauth."
-    });
-    return;
-  }
-
-  const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
-  codexOAuthStore = normalized.store;
-  const accounts = Array.isArray(codexOAuthStore.accounts) ? codexOAuthStore.accounts : [];
-
-  const sanitizeSegment = (value, fallback) => {
-    const cleaned = String(value || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]+/g, "-")
-      .replace(/-{2,}/g, "-")
-      .replace(/^-+|-+$/g, "");
-    return cleaned || fallback;
-  };
-
-  const files = accounts.map((account, index) => {
-    const entryId = getCodexPoolEntryId(account) || `entry_${index + 1}`;
-    const slot = Number(account?.slot || 0) || index + 1;
-    const labelPart = sanitizeSegment(account?.label || "", "account");
-    const accountPart = sanitizeSegment(account?.account_id || "", `slot-${slot}`);
-    const fileName = `slot-${slot}-${labelPart}-${accountPart}`.slice(0, 96) + ".json";
-
-    const token = account?.token || {};
-    const usageSnapshot =
-      account?.usage_snapshot && typeof account.usage_snapshot === "object" ? account.usage_snapshot : null;
-    const planType = normalizeOpenAICodexPlanType(usageSnapshot?.plan_type || account?.plan_type);
-
-    return {
-      fileName,
-      payload: {
-        label: typeof account?.label === "string" ? account.label : "",
-        slot,
-        enabled: account?.enabled !== false,
-        entry_id: entryId,
-        account_id: account?.account_id || null,
-        plan_type: planType || null,
-        usage_snapshot: usageSnapshot,
-        usage_updated_at: Number(account?.usage_updated_at || 0) || 0,
-        access_token: token?.access_token || "",
-        refresh_token: token?.refresh_token || null,
-        token_type: token?.token_type || "Bearer",
-        scope: token?.scope || null,
-        expires_at: Number(token?.expires_at || 0) || 0
-      }
-    };
-  });
-
-  res.json({
-    ok: true,
-    exported: files.length,
-    generatedAt: new Date().toISOString(),
-    files
-  });
-});
-
-app.post("/admin/auth-pool/refresh-usage", async (req, res) => {
-  if (config.authMode !== "codex-oauth") {
-    res.status(400).json({
-      error: "unsupported_mode",
-      message: "Account pool management is only available in AUTH_MODE=codex-oauth."
-    });
-    return;
-  }
-
-  const body = parseJsonBody(req);
-  const accountRef = String(body.entryId || body.accountId || "").trim();
-  const includeDisabled = body.includeDisabled === true;
-
-  const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
-  codexOAuthStore = normalized.store;
-
-  let targets = Array.isArray(codexOAuthStore.accounts) ? [...codexOAuthStore.accounts] : [];
-  if (!includeDisabled) {
-    targets = targets.filter((x) => x.enabled !== false);
-  }
-  if (accountRef) {
-    targets = targets.filter(
-      (x) => getCodexPoolEntryId(x) === accountRef || String(x.account_id || "") === accountRef
-    );
-  }
-  if (targets.length === 0) {
-    res.status(404).json({
-      error: "not_found",
-      message: accountRef
-        ? `No matching account to refresh: ${accountRef}`
-        : "No eligible accounts to refresh usage."
-    });
-    return;
-  }
-
-  const results = [];
-  let refreshed = 0;
-  for (let i = 0; i < targets.length; i += 1) {
-    const target = targets[i];
-    const probe = await refreshCodexUsageSnapshotInStore(
-      codexOAuthStore,
-      getCodexPoolEntryId(target),
-      config.codexOAuth,
-      { includeDisabled }
-    );
-    if (probe.ok) {
-      refreshed += 1;
-      results.push({
-        entryId: probe.entryId,
-        accountId: probe.accountId,
-        ok: true,
-        usage: probe.snapshot
-      });
+const shouldAutostartServer = !parseBooleanEnv(process.env.CODEX_PRO_MAX_DISABLE_AUTOSTART, false);
+const { mainServer } = startConfiguredServer({
+  app,
+  config,
+  shouldAutostart: shouldAutostartServer,
+  getActiveUpstreamBaseUrl,
+  onStartup: () => {
+    if (config.authMode === "profile-store") {
+      console.log(`source: ${config.profileStore.authStorePath}`);
+      console.log(`profile:${config.profileStore.profileId}`);
+    } else if (config.authMode === "codex-oauth") {
+      console.log(`oauth-authorize: ${config.codexOAuth.authorizeUrl}`);
+      console.log(`oauth-store:     ${config.codexOAuth.tokenStorePath}`);
+      console.log(`login:           http://${config.host}:${config.port}/auth/login`);
     } else {
-      results.push({
-        entryId: probe.entryId || getCodexPoolEntryId(target),
-        accountId: probe.accountId || target.account_id || null,
-        ok: false,
-        error: String(probe.error || probe.skipped || "usage_probe_failed")
-      });
+      console.log(`oauth-authorize: ${config.customOAuth.authorizeUrl}`);
+      console.log(`oauth-store:     ${config.customOAuth.tokenStorePath}`);
+      console.log(`login:           http://${config.host}:${config.port}/auth/login`);
     }
-    if (i < targets.length - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 120));
-    }
-  }
-
-  if (targets[0]?.token?.access_token) {
-    codexOAuthStore.token = targets[0].token;
-  }
-  const normalizedAfterRefresh = ensureCodexOAuthStoreShape(codexOAuthStore);
-  codexOAuthStore = normalizedAfterRefresh.store;
-  await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
-  clearAuthContextCache();
-  res.json({
-    ok: true,
-    refreshed,
-    total: targets.length,
-    results
-  });
-});
-
-app.get("/admin/preheat/state", (_req, res) => {
-  if (config.authMode !== "codex-oauth") {
-    res.status(400).json({
-      error: "unsupported_mode",
-      message: "Preheat is only available in AUTH_MODE=codex-oauth."
-    });
-    return;
-  }
-  res.json({
-    ok: true,
-    preheat: getCodexPreheatState()
-  });
-});
-
-app.post("/admin/preheat/run", async (req, res) => {
-  if (config.authMode !== "codex-oauth") {
-    res.status(400).json({
-      error: "unsupported_mode",
-      message: "Preheat is only available in AUTH_MODE=codex-oauth."
-    });
-    return;
-  }
-  try {
-    const body = parseJsonBody(req);
-    const force = body.force === true;
-    const summary = await runCodexPreheat("manual", { force });
-    res.json({
-      ok: true,
-      summary,
-      preheat: getCodexPreheatState()
-    });
-  } catch (err) {
-    res.status(400).json({
-      error: "preheat_failed",
-      message: err.message,
-      preheat: getCodexPreheatState()
-    });
-  }
-});
-
-app.post("/admin/requests/clear", async (_req, res) => {
-  runtimeStats.recentRequests = recentRequestsStore.clear().recentRequests;
-  res.json({ ok: true, cleared: true });
-});
-
-app.post("/admin/config", async (req, res) => {
-  try {
-    const body = parseJsonBody(req);
-    if (typeof body.upstreamMode === "string") {
-      const value = normalizeUpstreamMode(body.upstreamMode);
-      if (value !== "codex-chatgpt" && value !== "gemini-v1beta" && value !== "anthropic-v1") {
-        throw new Error("upstreamMode must be codex-chatgpt, gemini-v1beta, or anthropic-v1");
-      }
-      config.upstreamMode = value;
-    }
-    if (typeof body.upstreamBaseUrl === "string" && body.upstreamBaseUrl.trim().length > 0) {
-      setActiveUpstreamBaseUrl(body.upstreamBaseUrl.trim());
-    }
-    if (typeof body.defaultModel === "string" && body.defaultModel.trim().length > 0) {
-      config.codex.defaultModel = body.defaultModel.trim();
-    }
-    // Allow empty string (or null) so UI can intentionally clear default instructions.
-    if (body.defaultInstructions === null) {
-      config.codex.defaultInstructions = "";
-    } else if (typeof body.defaultInstructions === "string") {
-      config.codex.defaultInstructions = body.defaultInstructions.trim();
-    }
-    if (typeof body.defaultReasoningEffort === "string") {
-      const normalized = parseReasoningEffortOrFallback(body.defaultReasoningEffort, null, {
-        allowAdaptive: true
-      });
-      if (!normalized) {
-        throw new Error("defaultReasoningEffort must be one of: none, low, medium, high, xhigh, adaptive");
-      }
-      config.codex.defaultReasoningEffort = normalized;
-    }
-    if (typeof body.multiAccountEnabled === "boolean") {
-      config.codexOAuth.multiAccountEnabled = body.multiAccountEnabled;
-    }
-    if (typeof body.multiAccountStrategy === "string") {
-      const strategy = body.multiAccountStrategy.trim().toLowerCase();
-      if (!VALID_MULTI_ACCOUNT_STRATEGIES.has(strategy)) {
-        throw new Error(`multiAccountStrategy must be one of: ${MULTI_ACCOUNT_STRATEGY_LIST}`);
-      }
-      config.codexOAuth.multiAccountStrategy = strategy;
-    }
-    if (typeof body.autoLogoutExpiredAccounts === "boolean") {
-      config.expiredAccountCleanup.enabled = body.autoLogoutExpiredAccounts;
-      expiredAccountCleanupController.configure({
-        enabled: config.expiredAccountCleanup.enabled,
-        intervalSeconds: config.expiredAccountCleanup.intervalSeconds
-      });
-      if (config.expiredAccountCleanup.enabled) {
-        expiredAccountCleanupController.run("config_update").catch((err) => {
-          console.warn(`[auth-pool] expired account cleanup failed after config update: ${err?.message || err}`);
-        });
-      }
-    }
-    if (typeof body.publicAccessMode === "string") {
-      const mode = String(body.publicAccessMode || "").trim().toLowerCase();
-      if (!VALID_CLOUDFLARED_MODES.has(mode)) {
-        throw new Error("publicAccessMode must be one of: quick, auth.");
-      }
-      config.publicAccess.defaultMode = mode;
-      cloudflaredRuntime.mode = mode;
-    }
-    if (body.publicAccessUseHttp2 !== undefined) {
-      const useHttp2 = Boolean(body.publicAccessUseHttp2);
-      config.publicAccess.defaultUseHttp2 = useHttp2;
-      cloudflaredRuntime.useHttp2 = useHttp2;
-    }
-    if (body.publicAccessAutoInstall !== undefined) {
-      config.publicAccess.autoInstall = true;
-    }
-    if (body.publicAccessLocalPort !== undefined) {
-      const parsed = parseNumberEnv(body.publicAccessLocalPort, NaN, {
-        min: 1,
-        max: 65535,
-        integer: true
-      });
-      if (!Number.isFinite(parsed)) {
-        throw new Error("publicAccessLocalPort must be a number between 1 and 65535.");
-      }
-      config.publicAccess.localPort = parsed;
-      cloudflaredRuntime.localPort = parsed;
-    }
-    if (body.publicAccessToken !== undefined) {
-      config.publicAccess.defaultTunnelToken = String(body.publicAccessToken || "").trim();
-      cloudflaredRuntime.tunnelToken = config.publicAccess.defaultTunnelToken;
-    }
-    if (body.preheatCooldownSeconds !== undefined) {
-      const parsed = parseNumberEnv(body.preheatCooldownSeconds, NaN, {
-        min: 30,
-        max: 86400,
-        integer: true
-      });
-      if (!Number.isFinite(parsed)) {
-        throw new Error("preheatCooldownSeconds must be a number between 30 and 86400.");
-      }
-      config.codexPreheat.cooldownSeconds = parsed;
-    }
-    if (body.preheatBatchSize !== undefined) {
-      const parsed = parseNumberEnv(body.preheatBatchSize, NaN, {
-        min: 1,
-        max: 32,
-        integer: true
-      });
-      if (!Number.isFinite(parsed)) {
-        throw new Error("preheatBatchSize must be a number between 1 and 32.");
-      }
-      config.codexPreheat.batchSize = parsed;
-    }
-    if (body.preheatMinPrimaryRemaining !== undefined) {
-      const parsed = parseNumberEnv(body.preheatMinPrimaryRemaining, NaN, {
-        min: 0,
-        max: 100,
-        integer: true
-      });
-      if (!Number.isFinite(parsed)) {
-        throw new Error("preheatMinPrimaryRemaining must be a number between 0 and 100.");
-      }
-      config.codexPreheat.minPrimaryRemaining = parsed;
-    }
-    if (body.preheatMinSecondaryRemaining !== undefined) {
-      const parsed = parseNumberEnv(body.preheatMinSecondaryRemaining, NaN, {
-        min: 0,
-        max: 100,
-        integer: true
-      });
-      if (!Number.isFinite(parsed)) {
-        throw new Error("preheatMinSecondaryRemaining must be a number between 0 and 100.");
-      }
-      config.codexPreheat.minSecondaryRemaining = parsed;
-    }
-    if (typeof body.modelRouterEnabled === "boolean") {
-      config.modelRouter.enabled = body.modelRouterEnabled;
-    }
-    if (body.modelMappings !== undefined) {
-      config.modelRouter.customMappings = sanitizeModelMappings(body.modelMappings);
-    }
-    res.json({
-      ok: true,
-      config: {
-        authMode: config.authMode,
-        upstreamMode: config.upstreamMode,
-        upstreamBaseUrl: getActiveUpstreamBaseUrl(),
-        defaultModel: config.codex.defaultModel,
-        defaultInstructions: config.codex.defaultInstructions,
-        defaultReasoningEffort: config.codex.defaultReasoningEffort,
-        sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
-        multiAccountEnabled: isCodexMultiAccountEnabled(),
-        multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
-        autoLogoutExpiredAccounts: config.expiredAccountCleanup.enabled === true,
-        preheatCooldownSeconds: config.codexPreheat.cooldownSeconds,
-        preheatBatchSize: config.codexPreheat.batchSize,
-        preheatMinPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
-        preheatMinSecondaryRemaining: config.codexPreheat.minSecondaryRemaining,
-        modelRouterEnabled: config.modelRouter.enabled,
-        modelMappings: config.modelRouter.customMappings,
-        publicAccess: {
-          mode: cloudflaredRuntime.mode || config.publicAccess.defaultMode,
-          useHttp2: cloudflaredRuntime.useHttp2 !== false,
-          autoInstall: config.publicAccess.autoInstall !== false,
-          localPort: Number(cloudflaredRuntime.localPort || config.port)
-        }
-      }
-    });
-  } catch (err) {
-    res.status(400).json({ error: "invalid_config", message: err.message });
-  }
-});
-
-app.post("/admin/test", async (req, res) => {
-  try {
-    const body = parseJsonBody(req);
-    const prompt =
-      typeof body.prompt === "string" && body.prompt.trim().length > 0
-        ? body.prompt.trim()
-        : "Reply with one short sentence: proxy test passed.";
-    const result = await runDirectChatCompletionTest(prompt);
-    res.json({ ok: true, result });
-  } catch (err) {
-    res.status(400).json({ error: "test_failed", message: err.message });
-  }
-});
-
-app.post("/admin/temp-mail/start", async (req, res) => {
-  try {
-    const body = parseJsonBody(req);
-    const result = await tempMailController.start(body || {});
-    res.json({ ok: true, tempMail: result });
-  } catch (err) {
-    res.status(400).json({
-      error: "temp_mail_start_failed",
-      message: String(err?.message || err || "Failed to start Temp Mail.")
-    });
-  }
-});
-
-app.post("/admin/temp-mail/stop", async (_req, res) => {
-  try {
-    const result = await tempMailController.stop();
-    res.json({ ok: true, tempMail: result });
-  } catch (err) {
-    res.status(400).json({
-      error: "temp_mail_stop_failed",
-      message: String(err?.message || err || "Failed to stop Temp Mail.")
-    });
-  }
-});
-
-
-app.get("/v1/models", async (req, res) => {
-  if (isAnthropicNativeRequest(req)) {
-    await handleAnthropicModelsList(req, res);
-    return;
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  const models = getOpenAICompatibleModelIds().map((id) => ({
-    id,
-    object: "model",
-    created: now,
-    owned_by: "codex-pro-max"
-  }));
-  res.json({
-    object: "list",
-    data: models
-  });
-});
-
-app.use((req, res, next) => {
-  const pathName = String(req.path || req.originalUrl || req.url || "");
-  if (!isProxyApiPath(pathName)) {
-    next();
-    return;
-  }
-
-  const startedAt = Date.now();
-  const reqContentType = parseContentType(req.headers?.["content-type"]);
-  const requestPacket = formatPayloadForAudit(req.rawBody, reqContentType);
-
-  const responseChunks = [];
-  let responseBytes = 0;
-  const originalWrite = res.write.bind(res);
-  const originalEnd = res.end.bind(res);
-
-  function captureResponseChunk(chunk, encoding) {
-    if (chunk === undefined || chunk === null) return;
-    if (responseBytes >= RUNTIME_AUDIT_MAX_BODY_BYTES) return;
-    const buffer = toChunkBuffer(chunk, encoding);
-    if (!buffer || buffer.length === 0) return;
-    const remaining = RUNTIME_AUDIT_MAX_BODY_BYTES - responseBytes;
-    if (remaining <= 0) return;
-    const clipped = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer;
-    responseChunks.push(clipped);
-    responseBytes += clipped.length;
-  }
-
-  res.write = function patchedWrite(chunk, encoding, cb) {
-    captureResponseChunk(chunk, encoding);
-    return originalWrite(chunk, encoding, cb);
-  };
-  res.end = function patchedEnd(chunk, encoding, cb) {
-    captureResponseChunk(chunk, encoding);
-    return originalEnd(chunk, encoding, cb);
-  };
-
-  res.on("finish", () => {
-    const responseContentType = parseContentType(res.getHeader("content-type"));
-    const responsePacket = formatPayloadForAudit(Buffer.concat(responseChunks), responseContentType);
-    const rawPath = req.originalUrl || req.url || "";
-    const safePath = sanitizeAuditPath(rawPath);
-    const protocolType = inferProtocolType(safePath, res.locals?.protocolType);
-    const observedTokenUsage =
-      normalizeTokenUsage(res.locals?.tokenUsage) ||
-      extractTokenUsageFromAuditResponse({
-        protocolType,
-        responseContentType,
-        responsePacket
-      });
-    const estimatedChatInputTokens =
-      req.method === "POST" &&
-      res.statusCode >= 400 &&
-      (safePath === "/v1/chat/completions" || safePath.startsWith("/v1/chat/completions/"))
-        ? estimateOpenAIChatCompletionTokens(req.rawBody)
-        : 0;
-    const estimatedRequestUsage =
-      estimatedChatInputTokens > 0
-        ? {
-            inputTokens: estimatedChatInputTokens,
-            outputTokens: 0,
-            totalTokens: estimatedChatInputTokens
-          }
-        : null;
-    const tokenUsage = mergeNormalizedTokenUsage(estimatedRequestUsage, observedTokenUsage);
-    const modelRoute = res.locals?.modelRoute || null;
-    const authAccountId = res.locals?.authAccountId || null;
-    const authAccountLabel = resolveAuditAccountLabel(authAccountId);
-
-    runtimeStats.totalRequests += 1;
-    if (res.statusCode >= 200 && res.statusCode < 400) runtimeStats.okRequests += 1;
-    else runtimeStats.errorRequests += 1;
-
-    const requestRow = {
-      id: `req_${Date.now().toString(36)}_${(runtimeRequestSeq += 1).toString(36)}`,
-      ts: Date.now(),
-      method: req.method,
-      path: safePath,
-      status: res.statusCode,
-      durationMs: Date.now() - startedAt,
-      inputTokens: tokenUsage?.inputTokens ?? null,
-      outputTokens: tokenUsage?.outputTokens ?? null,
-      totalTokens: tokenUsage?.totalTokens ?? null,
-      requestedModel: modelRoute?.requestedModel ?? null,
-      mappedModel: modelRoute?.mappedModel ?? null,
-      routeType: modelRoute?.routeType ?? null,
-      routeRule: modelRoute?.routeRule ?? null,
-      protocolType,
-      upstreamMode: config.upstreamMode,
-      authAccountId,
-      authAccountLabel: authAccountLabel || null,
-      upstreamRetryCount: Number.isFinite(Number(res.locals?.upstreamRetryCount))
-        ? Number(res.locals.upstreamRetryCount)
-        : 0,
-      upstreamErrorCode: String(res.locals?.upstreamErrorCode || "").trim() || null,
-      upstreamErrorDetail: String(res.locals?.upstreamErrorDetail || "").trim() || null,
-      compatibilityHint: String(res.locals?.compatibilityHint || "").trim() || null,
-      requestContentType: reqContentType || null,
-      upstreamRequestContentType: String(res.locals?.upstreamRequestContentType || "").trim() || null,
-      responseContentType: responseContentType || null,
-      requestPacket: requestPacket || "",
-      upstreamRequestPacket: String(res.locals?.upstreamRequestPacket || ""),
-      responsePacket: responsePacket || ""
-    };
-
-    runtimeStats.recentRequests = recentRequestsStore.append(requestRow).recentRequests;
-  });
-
-  next();
-});
-
-app.use("/v1beta", async (req, res) => {
-  await handleGeminiNativeProxy(req, res);
-});
-
-app.use("/v1/messages", async (req, res) => {
-  await handleAnthropicNativeProxy(req, res);
-});
-
-app.use("/v1", async (req, res) => {
-  res.locals.protocolType = "openai-v1";
-  const normalizedAnthropicUrl = normalizeCherryAnthropicAgentOriginalUrl(req.originalUrl);
-  if (normalizedAnthropicUrl) {
-    const previousOriginalUrl = req.originalUrl;
-    req.originalUrl = normalizedAnthropicUrl;
-    try {
-      await handleAnthropicNativeProxy(req, res);
-    } finally {
-      req.originalUrl = previousOriginalUrl;
-    }
-    return;
-  }
-  const incoming = new URL(req.originalUrl, "http://localhost");
-
-  if (isGeminiNativeAliasPath(incoming.pathname)) {
-    res.locals.protocolType = "gemini-v1beta-native";
-    const aliasedOriginalUrl = req.originalUrl.replace(/^\/v1\/models\//, "/v1beta/models/");
-    const previousOriginalUrl = req.originalUrl;
-    req.originalUrl = aliasedOriginalUrl;
-    try {
-      await handleGeminiNativeProxy(req, res);
-    } finally {
-      req.originalUrl = previousOriginalUrl;
-    }
-    return;
-  }
-
-  const selectedProtocol =
-    incoming.pathname === "/v1/chat/completions" && req.method === "POST"
-      ? chooseProtocolForV1ChatCompletions(req)
-      : config.upstreamMode;
-
-  if (selectedProtocol === "gemini-v1beta") {
-    await handleGeminiProtocol(req, res);
-    return;
-  }
-
-  if (selectedProtocol === "anthropic-v1") {
-    await handleAnthropicProtocol(req, res);
-    return;
-  }
-
-  let target;
-  try {
-    target = buildUpstreamTarget(req.originalUrl);
-  } catch (err) {
-    res.status(400).json({
-      error: "unsupported_endpoint",
-      message: err.message
-    });
-    return;
-  }
-
-  const previousResponseId = target?.endpointKind === "responses" ? extractPreviousResponseId(req.rawBody) : "";
-  const preferredPoolEntryId = resolvePinnedCodexPoolEntryId(req, target);
-
-  let auth;
-  try {
-    auth = await getValidAuthContext({ preferredPoolEntryId });
-    res.locals.authAccountId = auth.poolAccountId || auth.accountId || null;
-  } catch (err) {
-    res.status(401).json({
-      error: "unauthorized",
-      message: err.message,
-      hint:
-        config.authMode === "profile-store"
-          ? "Run `your external auth tool login flow` first."
-          : "Open /auth/login first."
-    });
-    return;
-  }
-  const pinnedCodexRequest =
-    preferredPoolEntryId.length > 0 &&
-    (auth.poolEntryId === preferredPoolEntryId || auth.poolAccountId === preferredPoolEntryId);
-
-  const headers = new Headers();
-  for (const [k, v] of Object.entries(req.headers)) {
-    if (!hopByHop.has(k.toLowerCase()) && typeof v === "string") {
-      headers.set(k, v);
-    }
-  }
-  const applyAuthHeaders = (ctx) => {
-    headers.set("authorization", `Bearer ${ctx.accessToken}`);
-    if (config.upstreamMode !== "codex-chatgpt") return true;
-    if (!ctx.accountId) return false;
-    headers.set("chatgpt-account-id", ctx.accountId);
-    if (!headers.has("openai-beta")) headers.set("openai-beta", "responses=experimental");
-    if (!headers.has("originator")) headers.set("originator", getCodexOriginator());
-    if (!headers.has("user-agent")) headers.set("user-agent", "codex-pro-max");
-    if (!headers.has("accept")) headers.set("accept", "text/event-stream");
-    return true;
-  };
-  if (!applyAuthHeaders(auth)) {
-    res.status(401).json({
-      error: "missing_account_id",
-      message: "Could not extract chatgpt_account_id from OAuth token."
-    });
-    return;
-  }
-
-  const init = {
-    method: req.method,
-    headers,
-    redirect: "manual"
-  };
-
-  let collectCompletedResponseAsJson = false;
-  let streamChatCompletionsAsSse = false;
-  let responseShape = "responses";
-  let responseModel = config.codex.defaultModel;
-  let normalizedResponsesRequest = null;
-  let previousResponseChainEntry = null;
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    let body = req.rawBody || Buffer.alloc(0);
-
-    try {
-      if (config.upstreamMode === "codex-chatgpt") {
-        if (target.endpointKind === "responses") {
-          const normalized = normalizeCodexResponsesRequestBody(body);
-          body = normalized.body;
-          collectCompletedResponseAsJson = normalized.collectCompletedResponseAsJson;
-          responseShape = "responses";
-          responseModel = normalized.model || responseModel;
-          if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
-          normalizedResponsesRequest = parseJsonLoose(body.toString("utf8"));
-          if (previousResponseId && normalizedResponsesRequest && typeof normalizedResponsesRequest === "object") {
-            previousResponseChainEntry = codexResponsesChain.lookup(previousResponseId);
-            if (previousResponseChainEntry) {
-              normalizedResponsesRequest = expandResponsesRequestBodyFromChain(
-                normalizedResponsesRequest,
-                previousResponseChainEntry
-              );
-              body = Buffer.from(JSON.stringify(normalizedResponsesRequest), "utf8");
-              noteCompatibilityHint(res, "previous_response_id_emulated_locally");
-            } else {
-              noteCompatibilityHint(res, "previous_response_id_chain_missing");
-              res.status(409).json({
-                detail: "previous_response_id local chain missing"
-              });
-              return;
-            }
-          }
-          headers.set("content-type", "application/json");
-        } else if (target.endpointKind === "chat-completions") {
-          const normalized = normalizeChatCompletionsRequestBody(body);
-          body = normalized.body;
-          streamChatCompletionsAsSse = normalized.wantsStream;
-          collectCompletedResponseAsJson = !streamChatCompletionsAsSse;
-          responseShape = "chat-completions";
-          responseModel = normalized.model || responseModel;
-          if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
-          headers.set("content-type", "application/json");
-        }
-      }
-    } catch (err) {
-      res.status(400).json({
-        error: "invalid_request",
-        message: err.message
-      });
-      return;
-    }
-
-    init.body = body;
-    noteUpstreamRequestAudit(
-      res,
-      body,
-      headers.get("content-type") || req.headers?.["content-type"] || ""
+    console.log(`status:          http://${config.host}:${config.port}/auth/status`);
+    console.log(`dashboard:       http://${config.host}:${config.port}/dashboard/`);
+    console.log(`proxy:           http://${config.host}:${config.port}/v1/*`);
+    console.log(`preheat:         manual trigger only (dashboard button)`);
+    console.log(
+      `expired-cleanup: ${config.expiredAccountCleanup.enabled ? "enabled" : "disabled"} (${config.expiredAccountCleanup.intervalSeconds}s)`
     );
-  }
-
-  const canRetryWithPool = isCodexPoolRetryEnabled() && !pinnedCodexRequest;
-  const maxAttempts = canRetryWithPool ? 2 : 1;
-  let upstream;
-  let attempt = 0;
-  while (attempt < maxAttempts) {
-    attempt += 1;
-    try {
-      upstream = await fetchUpstreamWithRetry(target.url, init, res);
-    } catch (err) {
-      const details = extractUpstreamTransportError(err);
-      res.status(502).json({
-        error: "upstream_unreachable",
-        message: details.message || err.message,
-        code: details.code || details.name || null,
-        detail: details.detail || null,
-        retry_count: Number(res.locals?.upstreamRetryCount || 0)
+    if (config.expiredAccountCleanup.enabled) {
+      expiredAccountCleanupController.run("startup").catch((err) => {
+        console.warn(`[auth-pool] expired account cleanup failed on startup: ${err?.message || err}`);
       });
-      return;
     }
-
-    const shouldRetry =
-      canRetryWithPool &&
-      attempt < maxAttempts &&
-      shouldRotateCodexAccountForStatus(upstream.status) &&
-      Boolean(auth?.poolAccountId);
-
-    if (!shouldRetry) {
-      break;
-    }
-
-    await maybeMarkCodexPoolFailure(
-      auth,
-      `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}`,
-      upstream.status
-    ).catch(() => {});
-
-    let nextAuth;
-    try {
-      nextAuth = await getValidAuthContext();
-    } catch {
-      break;
-    }
-    if (!applyAuthHeaders(nextAuth)) {
-      break;
-    }
-    auth = nextAuth;
-    res.locals.authAccountId = auth.poolAccountId || auth.accountId || null;
-  }
-
-  if (!upstream) {
-    res.status(502).json({
-      error: "upstream_unreachable",
-      message: "No upstream response received."
-    });
-    return;
-  }
-
-  await maybeCaptureCodexUsageFromHeaders(auth, upstream.headers, "response").catch(() => {});
-
-  if (upstream.ok) {
-    await maybeMarkCodexPoolSuccess(auth).catch(() => {});
-  }
-
-  if (collectCompletedResponseAsJson) {
-    let raw;
-    try {
-      raw = await readUpstreamTextOrThrow(upstream);
-    } catch (err) {
-      const details = extractUpstreamTransportError(err);
-      noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
-      await maybeMarkCodexPoolFailure(
-        auth,
-        `Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`,
-        502
-      ).catch(() => {});
-      res.status(502).json({
-        error: "upstream_body_read_failed",
-        message: err.message,
-        code: details.code || details.name || null,
-        detail: details.detail || null,
-        retry_count: Number(res.locals?.upstreamRetryCount || 0)
-      });
-      return;
-    }
-    if (!upstream.ok) {
-      if (isPreviousResponseIdUnsupportedError(upstream.status, raw)) {
-        noteCompatibilityHint(res, "previous_response_id_unsupported");
-      }
-      await maybeMarkCodexPoolFailure(
-        auth,
-        `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}: ${truncate(raw, 200)}`,
-        upstream.status
-      ).catch(() => {});
-      maybeForgetPinnedCodexResponseAffinity(previousResponseId, upstream.status, raw);
-      res.status(upstream.status);
-      upstream.headers.forEach((value, key) => {
-        if (!hopByHop.has(key.toLowerCase())) {
-          res.setHeader(key, value);
-        }
-      });
-      res.send(raw);
-      return;
-    }
-
-    const completed = extractCompletedResponseFromSse(raw);
-    if (!completed) {
-      res.status(502).json({
-        error: "invalid_upstream_sse",
-        message: "Could not parse completed response from codex SSE stream."
-      });
-      return;
-    }
-    rememberCodexResponseAffinity(completed, auth);
-    rememberCodexResponseChain(completed, normalizedResponsesRequest);
-    if (responseShape === "chat-completions") {
-      const converted = convertResponsesToChatCompletion(completed);
-      converted.model = responseModel;
-      res.locals.tokenUsage = converted.usage;
-      res.status(200).json(converted);
-    } else {
-      completed.model = responseModel;
-      res.locals.tokenUsage = completed.usage || null;
-      res.status(200).json(completed);
-    }
-    return;
-  }
-
-  if (streamChatCompletionsAsSse) {
-    if (!upstream.ok) {
-      let raw;
-      try {
-        raw = await readUpstreamTextOrThrow(upstream);
-      } catch (err) {
-        const details = extractUpstreamTransportError(err);
-        noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
-        await maybeMarkCodexPoolFailure(
-          auth,
-          `Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`,
-          502
-        ).catch(() => {});
-        res.status(502).json({
-          error: "upstream_body_read_failed",
-          message: err.message,
-          code: details.code || details.name || null,
-          detail: details.detail || null,
-          retry_count: Number(res.locals?.upstreamRetryCount || 0)
-        });
-        return;
-      }
-      if (isPreviousResponseIdUnsupportedError(upstream.status, raw)) {
-        noteCompatibilityHint(res, "previous_response_id_unsupported");
-      }
-      await maybeMarkCodexPoolFailure(
-        auth,
-        `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}: ${truncate(raw, 200)}`,
-        upstream.status
-      ).catch(() => {});
-      maybeForgetPinnedCodexResponseAffinity(previousResponseId, upstream.status, raw);
-      res.status(upstream.status);
-      upstream.headers.forEach((value, key) => {
-        if (!hopByHop.has(key.toLowerCase())) {
-          res.setHeader(key, value);
-        }
-      });
-      res.send(raw);
-      return;
-    }
-
-    try {
-      const streamResult = await pipeCodexSseAsChatCompletions(upstream, res, responseModel);
-      if (streamResult?.usage) {
-        res.locals.tokenUsage = streamResult.usage;
-      }
-    } catch (err) {
-      noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
-      if (!res.headersSent) {
-        res.status(502).json({
-          error: "invalid_upstream_sse",
-          message: err.message,
-          code: err?.code || err?.cause?.code || null,
-          detail: extractUpstreamTransportError(err).detail || null,
-          retry_count: Number(res.locals?.upstreamRetryCount || 0)
-        });
-      } else {
-        res.end();
-      }
-    }
-    return;
-  }
-
-  res.status(upstream.status);
-  if (!upstream.ok) {
-    await maybeMarkCodexPoolFailure(
-      auth,
-      `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}`,
-      upstream.status
-    ).catch(() => {});
-  }
-  upstream.headers.forEach((value, key) => {
-    if (!hopByHop.has(key.toLowerCase())) {
-      res.setHeader(key, value);
-    }
-  });
-
-  if (!upstream.body) {
-    res.end();
-    return;
-  }
-
-  const upstreamContentType = parseContentType(upstream.headers.get("content-type") || "");
-  if (upstream.ok && upstreamContentType.includes("event-stream")) {
-    try {
-      const streamResult = await pipeSseAndCaptureTokenUsage(upstream, res);
-      if (streamResult?.usage) {
-        res.locals.tokenUsage = streamResult.usage;
-      }
-    } catch (err) {
-      noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
-      if (!res.headersSent) {
-        res.status(502).json({
-          error: "invalid_upstream_sse",
-          message: err.message,
-          code: err?.code || err?.cause?.code || null,
-          detail: extractUpstreamTransportError(err).detail || null,
-          retry_count: Number(res.locals?.upstreamRetryCount || 0)
-        });
-      } else {
-        res.end();
-      }
-    }
-    return;
-  }
-
-  await pipeUpstreamBodyToResponse(upstream, res);
-});
-
-const mainServer = app.listen(config.port, config.host, () => {
-  console.log(`codex-pro-max listening on http://${config.host}:${config.port}`);
-  console.log(`mode:   ${config.authMode}`);
-  console.log(`upstream-mode: ${config.upstreamMode}`);
-  console.log(`upstream-url:  ${getActiveUpstreamBaseUrl()}`);
-  if (config.authMode === "profile-store") {
-    console.log(`source: ${config.profileStore.authStorePath}`);
-    console.log(`profile:${config.profileStore.profileId}`);
-  } else if (config.authMode === "codex-oauth") {
-    console.log(`oauth-authorize: ${config.codexOAuth.authorizeUrl}`);
-    console.log(`oauth-store:     ${config.codexOAuth.tokenStorePath}`);
-    console.log(`login:           http://${config.host}:${config.port}/auth/login`);
-  } else {
-    console.log(`oauth-authorize: ${config.customOAuth.authorizeUrl}`);
-    console.log(`oauth-store:     ${config.customOAuth.tokenStorePath}`);
-    console.log(`login:           http://${config.host}:${config.port}/auth/login`);
-  }
-  console.log(`status:          http://${config.host}:${config.port}/auth/status`);
-  console.log(`dashboard:       http://${config.host}:${config.port}/dashboard/`);
-  console.log(`proxy:           http://${config.host}:${config.port}/v1/*`);
-  console.log(`preheat:         manual trigger only (dashboard button)`);
-  console.log(
-    `expired-cleanup: ${config.expiredAccountCleanup.enabled ? "enabled" : "disabled"} (${config.expiredAccountCleanup.intervalSeconds}s)`
-  );
-  if (config.expiredAccountCleanup.enabled) {
-    expiredAccountCleanupController.run("startup").catch((err) => {
-      console.warn(`[auth-pool] expired account cleanup failed on startup: ${err?.message || err}`);
-    });
-  }
-});
-
-mainServer.on("error", (err) => {
-  if (err && err.code === "EADDRINUSE") {
-    console.error(
-      `[startup] Port ${config.host}:${config.port} is already in use. ` +
-      `Stop the existing process or run with a different PORT.`
-    );
-    process.exit(1);
-    return;
-  }
-  console.error(`[startup] Failed to start server: ${err?.message || err}`);
-  process.exit(1);
-});
-
-let gracefulExitStarted = false;
-async function gracefulShutdown(signal = "SIGTERM") {
-  if (gracefulExitStarted) return;
-  gracefulExitStarted = true;
-  console.log(`[shutdown] received ${signal}, cleaning up...`);
-  try {
+  },
+  onShutdown: async () => {
     if (proxyApiKeyStoreFlushTimer) {
       clearTimeout(proxyApiKeyStoreFlushTimer);
       proxyApiKeyStoreFlushTimer = null;
@@ -2979,18 +1512,7 @@ async function gracefulShutdown(signal = "SIGTERM") {
     await tempMailController.shutdown().catch(() => {});
     await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore).catch(() => {});
     await stopCloudflaredTunnel().catch(() => {});
-  } finally {
-    mainServer.close(() => {
-      process.exit(0);
-    });
-    setTimeout(() => process.exit(0), 1200).unref();
   }
-}
-process.on("SIGINT", () => {
-  gracefulShutdown("SIGINT").catch(() => process.exit(0));
-});
-process.on("SIGTERM", () => {
-  gracefulShutdown("SIGTERM").catch(() => process.exit(0));
 });
 
 async function getAuthStatus() {
@@ -3285,1027 +1807,6 @@ function decodeJwtPayload(token) {
   } catch {
     return null;
   }
-}
-
-function buildUpstreamTarget(originalUrl) {
-  const incoming = new URL(originalUrl, "http://localhost");
-  const endpointKind = getCodexEndpointKind(incoming.pathname);
-  if (!endpointKind) {
-    throw new Error(
-      "In UPSTREAM_MODE=codex-chatgpt, supported endpoints are /v1/responses and /v1/chat/completions."
-    );
-  }
-
-  let mappedPath;
-  if (endpointKind === "responses") {
-    if (incoming.pathname === "/v1/codex/responses" || incoming.pathname.startsWith("/v1/codex/responses/")) {
-      mappedPath = incoming.pathname.replace(/^\/v1/, "");
-    } else {
-      mappedPath = incoming.pathname.replace(/^\/v1\/responses/, "/codex/responses");
-    }
-  } else {
-    mappedPath = incoming.pathname.replace(/^\/v1\/chat\/completions/, "/codex/responses");
-  }
-
-  const base = config.upstreamBaseUrl.replace(/\/+$/, "");
-  return {
-    url: `${base}${mappedPath}${incoming.search}`,
-    endpointKind
-  };
-}
-
-function resolvePinnedCodexPoolEntryId(req, target) {
-  if (config.authMode !== "codex-oauth" || !isCodexMultiAccountEnabled()) return "";
-  if (!target || target.endpointKind !== "responses") return "";
-  if (req.method === "GET" || req.method === "HEAD") return "";
-
-  const previousResponseId = extractPreviousResponseId(req.rawBody);
-  if (!previousResponseId) return "";
-
-  const affinity = codexResponseAffinity.lookup(previousResponseId);
-  return typeof affinity?.poolEntryId === "string" ? affinity.poolEntryId : "";
-}
-
-function rememberCodexResponseAffinity(response, authContext) {
-  if (config.authMode !== "codex-oauth" || !isCodexMultiAccountEnabled()) return;
-  const responseId = typeof response?.id === "string" ? response.id.trim() : "";
-  const poolEntryId =
-    typeof authContext?.poolEntryId === "string" && authContext.poolEntryId.trim().length > 0
-      ? authContext.poolEntryId.trim()
-      : typeof authContext?.poolAccountId === "string"
-        ? authContext.poolAccountId.trim()
-        : "";
-  if (!responseId || !poolEntryId) return;
-
-  codexResponseAffinity.remember(responseId, {
-    poolEntryId,
-    accountId: typeof authContext?.accountId === "string" ? authContext.accountId : ""
-  });
-}
-
-function rememberCodexResponseChain(response, requestBody) {
-  if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) return;
-  const entry = buildResponsesChainEntry(requestBody, response);
-  if (!entry) return;
-  codexResponsesChain.remember(entry);
-}
-
-function maybeForgetPinnedCodexResponseAffinity(previousResponseId, statusCode, reason) {
-  if (config.authMode !== "codex-oauth" || !isCodexMultiAccountEnabled()) return;
-  if (!previousResponseId) return;
-  if (!isCodexTokenInvalidatedError(statusCode, reason)) return;
-  codexResponseAffinity.forget(previousResponseId);
-}
-
-function noteUpstreamRetry(res, retryCount = 0, err = null) {
-  if (!res?.locals) return;
-  const normalizedRetryCount = Math.max(
-    Number(res.locals.upstreamRetryCount || 0),
-    Math.max(0, Number(retryCount || 0))
-  );
-  res.locals.upstreamRetryCount = normalizedRetryCount;
-  if (!err) return;
-  const details = extractUpstreamTransportError(err);
-  res.locals.upstreamErrorCode = details.code || details.name || "";
-  res.locals.upstreamErrorDetail = details.detail || details.message || "";
-}
-
-function noteCompatibilityHint(res, hint = "") {
-  if (!res?.locals) return;
-  const normalizedHint = String(hint || "").trim();
-  if (!normalizedHint) return;
-  res.locals.compatibilityHint = normalizedHint;
-}
-
-function noteUpstreamRequestAudit(res, body, contentType = "") {
-  if (!res?.locals) return;
-  res.locals.upstreamRequestContentType = parseContentType(contentType) || null;
-  res.locals.upstreamRequestPacket = formatPayloadForAudit(body, contentType) || "";
-}
-
-async function fetchUpstreamWithRetry(targetUrl, init, res) {
-  try {
-    const result = await fetchWithUpstreamRetry(targetUrl, init, {
-      onRetry: ({ retryCount, code, name, detail }) => {
-        noteUpstreamRetry(res, retryCount + 1, {
-          code: code || name || "",
-          message: detail || code || name || "fetch failed"
-        });
-      }
-    });
-    noteUpstreamRetry(res, result.retryCount, result.lastTransportError);
-    return result.response;
-  } catch (err) {
-    noteUpstreamRetry(res, err?.retryCount || 0, err);
-    throw err;
-  }
-}
-
-async function pipeUpstreamBodyToResponse(upstream, res) {
-  if (!upstream?.body) {
-    res.end();
-    return;
-  }
-  const bodyStream = Readable.fromWeb(upstream.body);
-  bodyStream.on("error", () => {});
-  await new Promise((resolve) => {
-    pipeline(bodyStream, res, (err) => {
-      if (err) {
-        noteUpstreamRetry(res, res?.locals?.upstreamRetryCount || 0, err);
-        if (!res.headersSent) {
-          res.status(502).json({
-            error: "upstream_stream_failed",
-            message: err?.message || "stream failed",
-            code: err?.code || err?.cause?.code || null,
-            detail: extractUpstreamTransportError(err).detail || null,
-            retry_count: Number(res?.locals?.upstreamRetryCount || 0)
-          });
-        } else if (!res.writableEnded) {
-          res.end();
-        }
-      }
-      resolve();
-    });
-  });
-}
-
-async function readUpstreamTextOrThrow(upstream) {
-  try {
-    return await upstream.text();
-  } catch (err) {
-    const details = extractUpstreamTransportError(err);
-    throw new Error(`Upstream body read failed: ${details.message || "stream failed"}`, { cause: err });
-  }
-}
-
-function getCodexEndpointKind(pathname) {
-  if (
-    pathname === "/v1/responses" ||
-    pathname.startsWith("/v1/responses/") ||
-    pathname === "/v1/codex/responses" ||
-    pathname.startsWith("/v1/codex/responses/")
-  ) {
-    return "responses";
-  }
-  if (/^\/v1\/chat\/completions\/v1\/messages(\/count_tokens)?\/?$/.test(pathname)) {
-    return null;
-  }
-  if (pathname === "/v1/chat/completions" || pathname.startsWith("/v1/chat/completions/")) {
-    return "chat-completions";
-  }
-  return null;
-}
-
-function normalizeCodexResponsesRequestBody(rawBody) {
-  if (!rawBody || rawBody.length === 0) {
-    const modelRoute = resolveCodexCompatibleRoute(config.codex.defaultModel);
-    const fallbackInstructions = config.codex.defaultInstructions;
-    const fallback = {
-      model: modelRoute.mappedModel,
-      stream: true,
-      store: false,
-      instructions: fallbackInstructions,
-      reasoning: {
-        effort: resolveReasoningEffort(undefined, {
-          input: [{ role: "user", content: [{ type: "input_text", text: "" }] }],
-          instructions: fallbackInstructions
-        }, modelRoute.mappedModel)
-      },
-      input: [{ role: "user", content: [{ type: "input_text", text: "" }] }]
-    };
-    return {
-      body: Buffer.from(JSON.stringify(fallback), "utf8"),
-      collectCompletedResponseAsJson: true,
-      model: modelRoute.requestedModel,
-      modelRoute
-    };
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(rawBody.toString("utf8"));
-  } catch {
-    return {
-      body: rawBody,
-      collectCompletedResponseAsJson: false
-    };
-  }
-
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return {
-      body: rawBody,
-      collectCompletedResponseAsJson: false,
-      model: config.codex.defaultModel,
-      modelRoute: null
-    };
-  }
-
-  const wantsStream = parsed.stream === true;
-  const normalized = { ...parsed };
-  const modelRoute = resolveCodexCompatibleRoute(normalized.model || config.codex.defaultModel);
-  normalized.model = modelRoute.mappedModel;
-  normalized.stream = true;
-  if (normalized.store === undefined) normalized.store = false;
-  if (!normalized.instructions || String(normalized.instructions).trim() === "") {
-    normalized.instructions = config.codex.defaultInstructions;
-  }
-  if (normalized.input === undefined && Array.isArray(normalized.messages)) {
-    normalized.input = toResponsesInputFromChatMessages(normalized.messages);
-  }
-  if (Array.isArray(normalized.input)) {
-    normalized.input = toResponsesInputFromChatMessages(normalized.input);
-  }
-  applyReasoningEffortDefaults(normalized, normalized.reasoning_effort, {
-    input: normalized.input,
-    tools: normalized.tools,
-    instructions: normalized.instructions
-  }, modelRoute.mappedModel);
-  delete normalized.messages;
-  delete normalized.reasoning_effort;
-
-  return {
-    body: Buffer.from(JSON.stringify(normalized), "utf8"),
-    collectCompletedResponseAsJson: !wantsStream,
-    model: modelRoute.requestedModel,
-    modelRoute
-  };
-}
-
-function normalizeChatCompletionsRequestBody(rawBody) {
-  if (!rawBody || rawBody.length === 0) {
-    throw new Error("/v1/chat/completions requires a JSON body.");
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(rawBody.toString("utf8"));
-  } catch {
-    throw new Error("Invalid JSON body for /v1/chat/completions.");
-  }
-
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Invalid JSON object body for /v1/chat/completions.");
-  }
-  const wantsStream = parsed.stream === true;
-
-  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
-  const systemMessages = messages
-    .filter((msg) => msg && (msg.role === "system" || msg.role === "developer"))
-    .map((msg) => (typeof msg.content === "string" ? msg.content : ""))
-    .filter((text) => text.length > 0);
-
-  const modelRoute = resolveCodexCompatibleRoute(parsed.model || config.codex.defaultModel);
-  const upstreamBody = {
-    model: modelRoute.mappedModel,
-    stream: true,
-    store: false,
-    instructions: systemMessages.join("\n\n") || config.codex.defaultInstructions,
-    reasoning: {
-      effort: resolveReasoningEffort(parsed.reasoning_effort, {
-        messages,
-        tools: parsed.tools,
-        tool_choice: parsed.tool_choice,
-        instructions: systemMessages.join("\n\n") || config.codex.defaultInstructions
-      }, modelRoute.mappedModel)
-    },
-    input: toResponsesInputFromChatMessages(messages)
-  };
-
-  if (parsed.temperature !== undefined) upstreamBody.temperature = parsed.temperature;
-  if (parsed.top_p !== undefined) upstreamBody.top_p = parsed.top_p;
-  // Some upstream Codex deployments reject max_output_tokens; keep compatibility by omitting it.
-  if (parsed.tool_choice !== undefined) upstreamBody.tool_choice = normalizeChatToolChoice(parsed.tool_choice);
-  if (parsed.tools !== undefined) upstreamBody.tools = normalizeChatTools(parsed.tools);
-
-  return {
-    body: Buffer.from(JSON.stringify(upstreamBody), "utf8"),
-    wantsStream,
-    model: modelRoute.requestedModel,
-    modelRoute
-  };
-}
-
-function toResponsesInputFromChatMessages(messages) {
-  const converted = [];
-  for (const raw of messages) {
-    if (!raw || typeof raw !== "object") continue;
-
-    if (raw.type === "function_call" || raw.type === "function_call_output") {
-      converted.push(raw);
-      continue;
-    }
-
-    if (raw.role === "system" || raw.role === "developer") continue;
-
-    if (raw.role === "assistant" && Array.isArray(raw.tool_calls) && raw.tool_calls.length > 0) {
-      const assistantText = normalizeChatMessageContent(raw.content, "assistant");
-      if (assistantText.length > 0) {
-        converted.push({
-          role: "assistant",
-          content: assistantText
-        });
-      }
-
-      for (const toolCall of raw.tool_calls) {
-        if (!toolCall || toolCall.type !== "function") continue;
-        const callId =
-          typeof toolCall.id === "string" && toolCall.id.length > 0
-            ? toolCall.id
-            : `call_${crypto.randomUUID().replace(/-/g, "")}`;
-        const name = typeof toolCall.function?.name === "string" ? toolCall.function.name : "";
-        const argumentsText =
-          typeof toolCall.function?.arguments === "string" ? toolCall.function.arguments : "{}";
-        if (!name) continue;
-
-        converted.push({
-          type: "function_call",
-          call_id: callId,
-          name,
-          arguments: argumentsText
-        });
-      }
-      continue;
-    }
-
-    if (raw.role === "tool") {
-      const callId = typeof raw.tool_call_id === "string" ? raw.tool_call_id : "";
-      if (!callId) continue;
-      const output = extractToolOutputText(raw.content);
-      converted.push({
-        type: "function_call_output",
-        call_id: callId,
-        output
-      });
-      continue;
-    }
-
-    const role = normalizeChatRole(raw.role);
-    const normalizedContent = normalizeChatMessageContent(raw.content, role);
-    if (normalizedContent.length === 0) continue;
-    converted.push({
-      role,
-      content: normalizedContent
-    });
-  }
-
-  if (converted.length > 0) return converted;
-  return [{ role: "user", content: [{ type: "input_text", text: "" }] }];
-}
-
-function normalizeChatRole(role) {
-  if (role === "assistant") return "assistant";
-  return "user";
-}
-
-function normalizeChatMessageContent(content, role) {
-  const targetType = role === "assistant" ? "output_text" : "input_text";
-
-  if (typeof content === "string") {
-    return [{ type: targetType, text: content }];
-  }
-
-  if (content && typeof content === "object" && !Array.isArray(content)) {
-    content = [content];
-  }
-  if (!Array.isArray(content)) {
-    return [];
-  }
-
-  const converted = [];
-  for (const item of content) {
-    if (!item || typeof item !== "object") continue;
-    if (item.type === "refusal" && role === "assistant") {
-      const refusalText =
-        typeof item.refusal === "string" ? item.refusal : typeof item.text === "string" ? item.text : "";
-      if (refusalText) converted.push({ type: "refusal", refusal: refusalText });
-      continue;
-    }
-
-    if (role !== "assistant" && (item.type === "image_url" || item.type === "input_image")) {
-      const imageUrl =
-        typeof item.image_url === "string"
-          ? item.image_url
-          : typeof item.image_url?.url === "string"
-            ? item.image_url.url
-            : "";
-      if (imageUrl) converted.push({ type: "input_image", image_url: imageUrl });
-      continue;
-    }
-
-    const text =
-      typeof item.text === "string" ? item.text : typeof item.output_text === "string" ? item.output_text : "";
-    if (!text) continue;
-
-    if (item.type === "text" || item.type === "input_text" || item.type === "output_text") {
-      converted.push({ type: targetType, text });
-      continue;
-    }
-  }
-  return converted;
-}
-
-function extractToolOutputText(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return JSON.stringify(content ?? "");
-
-  const parts = [];
-  for (const item of content) {
-    if (!item || typeof item !== "object") continue;
-    if (typeof item.text === "string") {
-      parts.push(item.text);
-      continue;
-    }
-    if (typeof item.output_text === "string") {
-      parts.push(item.output_text);
-      continue;
-    }
-  }
-  if (parts.length > 0) return parts.join("");
-  return JSON.stringify(content);
-}
-
-function normalizeChatTools(tools) {
-  if (!Array.isArray(tools)) return tools;
-  const converted = [];
-  for (const tool of tools) {
-    if (!tool || typeof tool !== "object") continue;
-    if (tool.type === "function" && tool.function && typeof tool.function === "object") {
-      const name = typeof tool.function.name === "string" ? tool.function.name : "";
-      if (!name) continue;
-      converted.push({
-        type: "function",
-        name,
-        ...(typeof tool.function.description === "string" ? { description: tool.function.description } : {}),
-        ...(tool.function.parameters ? { parameters: tool.function.parameters } : {})
-      });
-      continue;
-    }
-    converted.push(tool);
-  }
-  return converted;
-}
-
-function normalizeChatToolChoice(toolChoice) {
-  if (
-    toolChoice &&
-    typeof toolChoice === "object" &&
-    toolChoice.type === "function" &&
-    toolChoice.function &&
-    typeof toolChoice.function === "object"
-  ) {
-    const name = typeof toolChoice.function.name === "string" ? toolChoice.function.name : "";
-    if (!name) return "auto";
-    return { type: "function", name };
-  }
-  return toolChoice;
-}
-
-function extractCompletedResponseFromSse(rawText) {
-  if (typeof rawText !== "string" || rawText.length === 0) return null;
-
-  let completed = null;
-  const lines = rawText.split(/\r?\n/);
-  for (const line of lines) {
-    if (!line.startsWith("data:")) continue;
-    const payload = line.slice(5).trim();
-    if (!payload || payload === "[DONE]") continue;
-
-    let parsed;
-    try {
-      parsed = JSON.parse(payload);
-    } catch {
-      continue;
-    }
-
-    if (
-      (parsed.type === "response.completed" || parsed.type === "response.done") &&
-      parsed.response &&
-      typeof parsed.response === "object"
-    ) {
-      completed = parsed.response;
-    }
-  }
-
-  return completed;
-}
-
-function extractCompletedResponseFromJson(rawText) {
-  if (typeof rawText !== "string" || rawText.trim().length === 0) return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(rawText);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  if (parsed.response && typeof parsed.response === "object") return parsed.response;
-  return parsed;
-}
-
-async function pipeSseAndCaptureTokenUsage(upstream, res) {
-  if (!upstream.body) {
-    throw new Error("No upstream SSE body.");
-  }
-
-  const reader = upstream.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let usage = null;
-
-  const handleSseBlock = (block) => {
-    if (!block || typeof block !== "string") return;
-    for (const line of block.split(/\r?\n/)) {
-      if (!line.startsWith("data:")) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-
-      let parsed;
-      try {
-        parsed = JSON.parse(payload);
-      } catch {
-        continue;
-      }
-
-      usage = mergeNormalizedTokenUsage(
-        usage,
-        parsed?.response?.usage || parsed?.message?.usage || parsed?.usage || parsed?.usageMetadata || null
-      );
-    }
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      res.write(Buffer.from(value));
-      buffer += decoder.decode(value, { stream: true });
-    }
-
-    let separatorIndex = buffer.indexOf("\n\n");
-    while (separatorIndex !== -1) {
-      const block = buffer.slice(0, separatorIndex);
-      buffer = buffer.slice(separatorIndex + 2);
-      handleSseBlock(block);
-      separatorIndex = buffer.indexOf("\n\n");
-    }
-  }
-
-  buffer += decoder.decode();
-  if (buffer.trim().length > 0) {
-    handleSseBlock(buffer);
-  }
-
-  res.end();
-  return {
-    usage: toChatUsageFromNormalizedTokenUsage(usage)
-  };
-}
-
-async function pipeCodexSseAsChatCompletions(upstream, res, model) {
-  if (!upstream.body) {
-    throw new Error("No upstream SSE body.");
-  }
-
-  res.status(200);
-  res.setHeader("content-type", "text/event-stream; charset=utf-8");
-  res.setHeader("cache-control", "no-cache");
-  res.setHeader("connection", "keep-alive");
-  res.setHeader("x-accel-buffering", "no");
-
-  const completionId = `chatcmpl_${crypto.randomUUID().replace(/-/g, "")}`;
-  const created = Math.floor(Date.now() / 1000);
-  let emittedAssistantRole = false;
-  let emittedDone = false;
-  let emittedText = false;
-  let emittedToolCalls = false;
-  let toolCallCounter = 0;
-  let finalUsage = null;
-  const functionCallsByItemId = new Map();
-  const decoder = new TextDecoder();
-  const reader = upstream.body.getReader();
-  let buffer = "";
-
-  const emit = (payload) => {
-    res.write(`data: ${JSON.stringify(payload)}\n\n`);
-  };
-
-  const emitAssistantRole = () => {
-    if (emittedAssistantRole) return;
-    emittedAssistantRole = true;
-    emit({
-      id: completionId,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [
-        {
-          index: 0,
-          delta: { role: "assistant" },
-          finish_reason: null
-        }
-      ]
-    });
-  };
-
-  const emitToolCallChunk = (toolCallIndex, callId, name, argumentsDelta) => {
-    emitAssistantRole();
-    emittedToolCalls = true;
-    const functionPayload = {};
-    if (typeof name === "string" && name.length > 0) functionPayload.name = name;
-    if (typeof argumentsDelta === "string") functionPayload.arguments = argumentsDelta;
-
-    emit({
-      id: completionId,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [
-        {
-          index: 0,
-          delta: {
-            tool_calls: [
-              {
-                index: toolCallIndex,
-                ...(callId ? { id: callId } : {}),
-                type: "function",
-                function: functionPayload
-              }
-            ]
-          },
-          finish_reason: null
-        }
-      ]
-    });
-  };
-
-  const handleSseBlock = (block) => {
-    const dataLines = block
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trim());
-    if (dataLines.length === 0) return;
-
-    const payload = dataLines.join("\n").trim();
-    if (!payload || payload === "[DONE]") return;
-
-    let event;
-    try {
-      event = JSON.parse(payload);
-    } catch {
-      return;
-    }
-
-    if (event.type === "response.output_text.delta") {
-      const deltaText = typeof event.delta === "string" ? event.delta : "";
-      if (!deltaText) return;
-      emitAssistantRole();
-      emittedText = true;
-      emit({
-        id: completionId,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [
-          {
-            index: 0,
-            delta: { content: deltaText },
-            finish_reason: null
-          }
-        ]
-      });
-      return;
-    }
-
-    if (event.type === "response.output_item.added" && event.item?.type === "function_call") {
-      const itemId = event.item.id;
-      const callId = typeof event.item.call_id === "string" ? event.item.call_id : "";
-      const name = typeof event.item.name === "string" ? event.item.name : "";
-      const toolCallIndex = toolCallCounter++;
-      if (itemId) {
-        functionCallsByItemId.set(itemId, {
-          toolCallIndex,
-          callId,
-          name,
-          arguments: ""
-        });
-      }
-      emitToolCallChunk(toolCallIndex, callId, name, "");
-      return;
-    }
-
-    if (event.type === "response.function_call_arguments.delta") {
-      const itemId = event.item_id;
-      const tracked = itemId ? functionCallsByItemId.get(itemId) : null;
-      if (!tracked) return;
-      const deltaText = typeof event.delta === "string" ? event.delta : "";
-      if (!deltaText) return;
-      tracked.arguments += deltaText;
-      emitToolCallChunk(tracked.toolCallIndex, tracked.callId, undefined, deltaText);
-      return;
-    }
-
-    if (event.type === "response.function_call_arguments.done") {
-      const itemId = event.item_id;
-      const tracked = itemId ? functionCallsByItemId.get(itemId) : null;
-      if (!tracked) return;
-      if (!tracked.arguments && typeof event.arguments === "string") {
-        tracked.arguments = event.arguments;
-        emitToolCallChunk(tracked.toolCallIndex, tracked.callId, tracked.name, tracked.arguments);
-      }
-      return;
-    }
-
-    if (event.type === "response.failed") {
-      const message = event.response?.error?.message || "Codex response failed.";
-      throw new Error(message);
-    }
-
-    if (event.type === "response.completed" || event.type === "response.done") {
-      if (!emittedToolCalls) {
-        emitAssistantRole();
-      }
-      const finishReason = emittedToolCalls ? "tool_calls" : "stop";
-      const chunk = {
-        id: completionId,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [
-          {
-            index: 0,
-            delta: {},
-            finish_reason: finishReason
-          }
-        ]
-      };
-      const usage = mapCodexUsageToChatUsage(event.response?.usage);
-      if (usage) {
-        finalUsage = usage;
-        chunk.usage = usage;
-      }
-      emit(chunk);
-      res.write("data: [DONE]\n\n");
-      emittedDone = true;
-    }
-  };
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    let separatorIndex = buffer.indexOf("\n\n");
-    while (separatorIndex !== -1) {
-      const block = buffer.slice(0, separatorIndex);
-      buffer = buffer.slice(separatorIndex + 2);
-      handleSseBlock(block);
-      separatorIndex = buffer.indexOf("\n\n");
-    }
-  }
-
-  if (buffer.trim().length > 0) {
-    handleSseBlock(buffer);
-  }
-
-  if (!emittedDone) {
-    if (!emittedToolCalls) {
-      emitAssistantRole();
-    }
-    const finishReason = emittedToolCalls ? "tool_calls" : "stop";
-    emit({
-      id: completionId,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [
-        {
-          index: 0,
-          delta: {},
-          finish_reason: finishReason
-        }
-      ]
-    });
-    res.write("data: [DONE]\n\n");
-  }
-
-  res.end();
-  return { usage: finalUsage };
-}
-
-function mapCodexUsageToChatUsage(usage) {
-  if (!usage || typeof usage !== "object") return null;
-  return {
-    prompt_tokens: Number(usage.input_tokens || 0),
-    completion_tokens: Number(usage.output_tokens || 0),
-    total_tokens: Number(usage.total_tokens || 0)
-  };
-}
-
-function normalizeTokenUsage(usage) {
-  if (!usage || typeof usage !== "object") return null;
-
-  const inputTokens = Number(
-    usage.input_tokens ?? usage.prompt_tokens ?? usage.inputTokens ?? usage.promptTokens
-  );
-  const outputTokens = Number(
-    usage.output_tokens ?? usage.completion_tokens ?? usage.outputTokens ?? usage.completionTokens
-  );
-  const totalTokens = Number(usage.total_tokens ?? usage.totalTokens);
-
-  const hasInput = Number.isFinite(inputTokens);
-  const hasOutput = Number.isFinite(outputTokens);
-  const hasTotal = Number.isFinite(totalTokens);
-
-  if (!hasInput && !hasOutput && !hasTotal) return null;
-  const resolvedTotalTokens =
-    hasTotal ? totalTokens : (hasInput ? inputTokens : 0) + (hasOutput ? outputTokens : 0);
-
-  return {
-    inputTokens: hasInput ? inputTokens : null,
-    outputTokens: hasOutput ? outputTokens : null,
-    totalTokens: Number.isFinite(resolvedTotalTokens) ? resolvedTotalTokens : null
-  };
-}
-
-function mergeNormalizedTokenUsage(current, next) {
-  const currentUsage = normalizeTokenUsage(current);
-  const nextUsage = normalizeTokenUsage(next);
-  if (!currentUsage) return nextUsage;
-  if (!nextUsage) return currentUsage;
-
-  return normalizeTokenUsage({
-    inputTokens: nextUsage.inputTokens ?? currentUsage.inputTokens,
-    outputTokens: nextUsage.outputTokens ?? currentUsage.outputTokens,
-    totalTokens: nextUsage.totalTokens ?? currentUsage.totalTokens
-  });
-}
-
-function toChatUsageFromNormalizedTokenUsage(usage) {
-  const normalized = normalizeTokenUsage(usage);
-  if (!normalized) return null;
-  return {
-    prompt_tokens: Number(normalized.inputTokens || 0),
-    completion_tokens: Number(normalized.outputTokens || 0),
-    total_tokens: Number(normalized.totalTokens || 0)
-  };
-}
-
-function parseSseUsageFromAuditPayload(packetText, options = {}) {
-  if (!packetText || typeof packetText !== "string") return null;
-  const usageRootPath = typeof options.usageRootPath === "string" ? options.usageRootPath.trim() : "";
-  let usage = null;
-
-  const readUsageObject = (event) => {
-    if (!event || typeof event !== "object") return null;
-    if (!usageRootPath) {
-      return event?.usage || event?.usageMetadata || event?.message?.usage || event?.response?.usage || null;
-    }
-    const paths = usageRootPath.split(".").filter(Boolean);
-    let cursor = event;
-    for (const key of paths) {
-      if (!cursor || typeof cursor !== "object") return null;
-      cursor = cursor[key];
-    }
-    return cursor || null;
-  };
-
-  for (const line of packetText.split(/\r?\n/)) {
-    if (!line.startsWith("data:")) continue;
-    const payload = line.slice(5).trim();
-    if (!payload || payload === "[DONE]") continue;
-
-    let parsed;
-    try {
-      parsed = JSON.parse(payload);
-    } catch {
-      continue;
-    }
-
-    usage = mergeNormalizedTokenUsage(usage, readUsageObject(parsed));
-  }
-
-  return usage;
-}
-
-function extractTokenUsageFromAuditResponse({ protocolType, responseContentType, responsePacket }) {
-  if (!responsePacket || typeof responsePacket !== "string") return null;
-  const contentType = String(responseContentType || "").toLowerCase();
-  const protocol = String(protocolType || "").toLowerCase();
-  const trimmedPacket = responsePacket.trim();
-
-  if (contentType.includes("json") || trimmedPacket.startsWith("{") || trimmedPacket.startsWith("[")) {
-    const parsed = parseJsonLoose(responsePacket);
-    if (parsed && typeof parsed === "object") {
-      const jsonUsage =
-        parsed?.usage ||
-        parsed?.response?.usage ||
-        parsed?.usageMetadata ||
-        parsed?.message?.usage ||
-        parsed?.error?.usage ||
-        null;
-      const normalizedJsonUsage = normalizeTokenUsage(jsonUsage);
-      if (normalizedJsonUsage) return normalizedJsonUsage;
-    }
-  }
-
-  const looksLikeSse =
-    contentType.includes("event-stream") || /(^|\n)\s*(event:|data:)/.test(responsePacket);
-  if (!looksLikeSse) return null;
-
-  const completed = extractCompletedResponseFromSse(responsePacket);
-  const completedUsage = normalizeTokenUsage(completed?.usage);
-  if (completedUsage) return completedUsage;
-
-  if (protocol.includes("anthropic")) {
-    const anthropicUsage =
-      parseSseUsageFromAuditPayload(responsePacket) ||
-      parseSseUsageFromAuditPayload(responsePacket, { usageRootPath: "message.usage" });
-    if (anthropicUsage) return anthropicUsage;
-  }
-
-  if (protocol.includes("gemini")) {
-    const geminiUsage = parseSseUsageFromAuditPayload(responsePacket);
-    if (geminiUsage) return geminiUsage;
-  }
-
-  return parseSseUsageFromAuditPayload(responsePacket);
-}
-
-function convertResponsesToChatCompletion(response) {
-  const content = extractAssistantTextFromResponse(response);
-  const toolCalls = extractAssistantToolCallsFromResponse(response);
-  const nowSec = Math.floor(Date.now() / 1000);
-  const usage = response?.usage || {};
-
-  const message = {
-    role: "assistant",
-    content: content.length > 0 ? content : null
-  };
-  if (toolCalls.length > 0) {
-    message.tool_calls = toolCalls;
-  }
-
-  return {
-    id: response?.id || `chatcmpl_${crypto.randomUUID().replace(/-/g, "")}`,
-    object: "chat.completion",
-    created: Number.isFinite(response?.created_at) ? response.created_at : nowSec,
-    model: response?.model || config.codex.defaultModel,
-    choices: [
-      {
-        index: 0,
-        message,
-        finish_reason:
-          toolCalls.length > 0 ? "tool_calls" : mapResponsesStatusToChatFinishReason(response?.status)
-      }
-    ],
-    usage: {
-      prompt_tokens: Number(usage.input_tokens || 0),
-      completion_tokens: Number(usage.output_tokens || 0),
-      total_tokens: Number(usage.total_tokens || 0)
-    }
-  };
-}
-
-function extractAssistantTextFromResponse(response) {
-  const output = Array.isArray(response?.output) ? response.output : [];
-  const parts = [];
-  for (const item of output) {
-    if (!item || item.type !== "message" || item.role !== "assistant") continue;
-    const content = Array.isArray(item.content) ? item.content : [];
-    for (const chunk of content) {
-      if (!chunk || chunk.type !== "output_text" || typeof chunk.text !== "string") continue;
-      parts.push(chunk.text);
-    }
-  }
-  return parts.join("");
-}
-
-function extractAssistantToolCallsFromResponse(response) {
-  const output = Array.isArray(response?.output) ? response.output : [];
-  const calls = [];
-  for (const item of output) {
-    if (!item || item.type !== "function_call") continue;
-    const name = typeof item.name === "string" ? item.name : "";
-    if (!name) continue;
-    calls.push({
-      id:
-        typeof item.call_id === "string" && item.call_id.length > 0
-          ? item.call_id
-          : `call_${crypto.randomUUID().replace(/-/g, "")}`,
-      type: "function",
-      function: {
-        name,
-        arguments: typeof item.arguments === "string" ? item.arguments : "{}"
-      }
-    });
-  }
-  return calls;
-}
-
-function mapResponsesStatusToChatFinishReason(status) {
-  if (status === "incomplete") return "length";
-  if (status === "failed" || status === "cancelled") return "stop";
-  return "stop";
 }
 
 function getActiveOAuthRuntime() {
@@ -6582,6 +4083,18 @@ function mapHttpStatusToAnthropicErrorType(httpStatus) {
   return "invalid_request_error";
 }
 
+function resolveCompatErrorStatusCode(err, fallback = 502) {
+  const explicit = Number(err?.statusCode);
+  if (Number.isFinite(explicit) && explicit >= 100 && explicit <= 599) {
+    return explicit;
+  }
+  const message = String(err?.message || "");
+  if (/chatgpt_account_id|oauth token|access token|unauthorized|forbidden/i.test(message)) {
+    return 401;
+  }
+  return fallback;
+}
+
 function parseAnthropicErrorMessage(rawText, fallbackMessage) {
   if (typeof rawText !== "string" || rawText.trim().length === 0) return fallbackMessage;
   try {
@@ -6718,7 +4231,7 @@ async function handleAnthropicNativeProxy(req, res) {
   res.locals.protocolType = "anthropic-v1-native";
   const apiKey = resolveAnthropicApiKey(req);
   if (!apiKey) {
-    await handleAnthropicNativeCompat(req, res);
+    await anthropicLocalCompatHelpers.handleAnthropicNativeCompat(req, res);
     return;
   }
 
@@ -6743,7 +4256,7 @@ async function handleAnthropicNativeProxy(req, res) {
     let requestBody = req.rawBody || Buffer.alloc(0);
     const incoming = new URL(req.originalUrl, "http://localhost");
     if (
-      isAnthropicNativeMessagesPath(incoming.pathname) &&
+      anthropicLocalCompatHelpers.isAnthropicNativeMessagesPath(incoming.pathname) &&
       requestBody.length > 0 &&
       readHeaderValue(req, "content-type").toLowerCase().includes("application/json")
     ) {
@@ -6787,7 +4300,7 @@ async function handleAnthropicNativeProxy(req, res) {
       isCodexMultiAccountEnabled() &&
       (upstream.status === 401 || upstream.status === 403 || upstream.status === 429)
     ) {
-      await handleAnthropicNativeCompat(req, res);
+      await anthropicLocalCompatHelpers.handleAnthropicNativeCompat(req, res);
       return;
     }
     sendAnthropicError(res, {
@@ -7338,6 +4851,7 @@ function mapOpenAIFinishReasonToGemini(reason) {
 function mapOpenAIFinishReasonToAnthropic(reason) {
   const value = String(reason || "").toLowerCase();
   if (value === "length") return "max_tokens";
+  if (value === "tool_calls") return "tool_use";
   return "end_turn";
 }
 
@@ -7458,86 +4972,6 @@ function sendGeminiSseResponse(res, payload) {
   res.end();
 }
 
-function parseAnthropicMessageText(content) {
-  if (typeof content === "string") return content;
-  if (!content || typeof content !== "object") return "";
-  const chunks = Array.isArray(content) ? content : [content];
-  const parts = [];
-  for (const chunk of chunks) {
-    if (!chunk || typeof chunk !== "object") continue;
-    if (typeof chunk.text === "string") {
-      parts.push(chunk.text);
-      continue;
-    }
-    if (chunk.type === "tool_result") {
-      parts.push(parseAnthropicMessageText(chunk.content));
-      continue;
-    }
-    if (chunk.type === "image" || chunk.type === "tool_use") {
-      parts.push(`[${chunk.type}]`);
-    }
-  }
-  return parts.join("\n");
-}
-
-function parseAnthropicJsonBody(rawBody) {
-  if (!rawBody || rawBody.length === 0) {
-    throw new Error("Anthropic request body is required.");
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(rawBody.toString("utf8"));
-  } catch {
-    throw new Error("Invalid JSON body for Anthropic endpoint.");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Anthropic request body must be a JSON object.");
-  }
-  return parsed;
-}
-
-function parseAnthropicNativeBody(rawBody) {
-  const parsed = parseAnthropicJsonBody(rawBody);
-
-  const conversation = [];
-  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
-  for (const item of messages) {
-    if (!item || typeof item !== "object") continue;
-    const role = item.role === "assistant" ? "assistant" : "user";
-    const text = parseAnthropicMessageText(item.content);
-    if (text.trim().length === 0) continue;
-    conversation.push({ role, text });
-  }
-  if (conversation.length === 0) {
-    conversation.push({ role: "user", text: " " });
-  }
-
-  const systemText = parseAnthropicMessageText(parsed.system);
-  return {
-    model:
-      typeof parsed.model === "string" && parsed.model.trim().length > 0
-        ? parsed.model
-        : config.anthropic.defaultModel,
-    systemText,
-    conversation,
-    stream: parsed.stream === true,
-    max_tokens: parsed.max_tokens,
-    temperature: parsed.temperature,
-    top_p: parsed.top_p,
-    stop: Array.isArray(parsed.stop_sequences)
-      ? parsed.stop_sequences
-      : typeof parsed.stop_sequence === "string"
-        ? [parsed.stop_sequence]
-        : undefined
-  };
-}
-
-function estimateTokenCountFromText(text) {
-  const source = typeof text === "string" ? text : String(text || "");
-  if (!source) return 0;
-  return Math.max(1, Math.ceil(Buffer.byteLength(source, "utf8") / 4));
-}
-
 function estimateOpenAIChatCompletionTokens(rawBody) {
   if (!rawBody || rawBody.length === 0) return 0;
 
@@ -7581,121 +5015,6 @@ function estimateOpenAIChatCompletionTokens(rawBody) {
   return Math.max(1, Number(inputTokens || 0));
 }
 
-function estimateAnthropicCountTokens(rawBody) {
-  const parsed = parseAnthropicJsonBody(rawBody);
-  const segments = [];
-  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
-
-  const systemText = parseAnthropicMessageText(parsed.system);
-  if (systemText.trim().length > 0) {
-    segments.push(systemText);
-  }
-
-  for (const item of messages) {
-    if (!item || typeof item !== "object") continue;
-    const role = item.role === "assistant" ? "assistant" : "user";
-    const text = parseAnthropicMessageText(item.content);
-    segments.push(`${role}\n${text}`);
-  }
-
-  if (Array.isArray(parsed.tools) && parsed.tools.length > 0) {
-    segments.push(JSON.stringify(parsed.tools));
-  }
-  if (parsed.tool_choice && typeof parsed.tool_choice === "object") {
-    segments.push(JSON.stringify(parsed.tool_choice));
-  }
-  if (parsed.metadata && typeof parsed.metadata === "object") {
-    segments.push(JSON.stringify(parsed.metadata));
-  }
-  if (Array.isArray(parsed.documents) && parsed.documents.length > 0) {
-    segments.push(JSON.stringify(parsed.documents));
-  }
-
-  const fallbackSerialized = JSON.stringify(parsed);
-  const combined = segments.filter((part) => typeof part === "string" && part.length > 0).join("\n\n");
-  let inputTokens = estimateTokenCountFromText(combined || fallbackSerialized);
-
-  if (messages.length > 0) inputTokens += messages.length * 6;
-  if (systemText.trim().length > 0) inputTokens += 4;
-  if (Array.isArray(parsed.tools) && parsed.tools.length > 0) inputTokens += parsed.tools.length * 20;
-
-  return Math.max(1, Number(inputTokens || 0));
-}
-
-function buildAnthropicMessageResponse({ model, text, finishReason, usage }) {
-  return {
-    id: `msg_${crypto.randomUUID().replace(/-/g, "")}`,
-    type: "message",
-    role: "assistant",
-    model,
-    content: [{ type: "text", text: text || "" }],
-    stop_reason: mapOpenAIFinishReasonToAnthropic(finishReason),
-    stop_sequence: null,
-    usage: {
-      input_tokens: Number(usage?.prompt_tokens || 0),
-      output_tokens: Number(usage?.completion_tokens || 0)
-    }
-  };
-}
-
-function sendAnthropicMessageAsSse(res, message) {
-  res.status(200);
-  res.setHeader("content-type", "text/event-stream; charset=utf-8");
-  res.setHeader("cache-control", "no-cache");
-  res.setHeader("connection", "keep-alive");
-  res.setHeader("x-accel-buffering", "no");
-
-  const writeEvent = (event, data) => {
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-
-  writeEvent("message_start", {
-    type: "message_start",
-    message: {
-      id: message.id,
-      type: "message",
-      role: "assistant",
-      model: message.model,
-      content: [],
-      stop_reason: null,
-      stop_sequence: null,
-      usage: {
-        input_tokens: Number(message?.usage?.input_tokens || 0),
-        output_tokens: 0
-      }
-    }
-  });
-  writeEvent("content_block_start", {
-    type: "content_block_start",
-    index: 0,
-    content_block: { type: "text", text: "" }
-  });
-  if (typeof message?.content?.[0]?.text === "string" && message.content[0].text.length > 0) {
-    writeEvent("content_block_delta", {
-      type: "content_block_delta",
-      index: 0,
-      delta: {
-        type: "text_delta",
-        text: message.content[0].text
-      }
-    });
-  }
-  writeEvent("content_block_stop", { type: "content_block_stop", index: 0 });
-  writeEvent("message_delta", {
-    type: "message_delta",
-    delta: {
-      stop_reason: message.stop_reason,
-      stop_sequence: message.stop_sequence
-    },
-    usage: {
-      output_tokens: Number(message?.usage?.output_tokens || 0)
-    }
-  });
-  writeEvent("message_stop", { type: "message_stop" });
-  res.end();
-}
-
 async function runCodexConversationViaOAuth({
   model,
   requestedModel,
@@ -7707,11 +5026,6 @@ async function runCodexConversationViaOAuth({
   top_p,
   stop
 }) {
-  let auth = await getValidAuthContext();
-  if (!auth.accountId) {
-    throw new Error("Could not extract chatgpt_account_id from OAuth token.");
-  }
-
   const messages = [];
   if (typeof systemText === "string" && systemText.trim().length > 0) {
     messages.push({ role: "system", content: systemText });
@@ -7726,6 +5040,57 @@ async function runCodexConversationViaOAuth({
     messages.push({ role: "user", content: " " });
   }
 
+  const instructions = typeof systemText === "string" && systemText.trim().length > 0 ? systemText : config.codex.defaultInstructions;
+  const input = toResponsesInputFromChatMessages(messages);
+  const result = await executeCodexResponsesViaOAuth({
+    model,
+    requestedModel,
+    upstreamModel,
+    instructions,
+    input,
+    temperature,
+    top_p,
+    stop,
+    reasoningContext: {
+      messages,
+      input,
+      instructions
+    }
+  });
+
+  const usageNormalized = normalizeTokenUsage(result.completed?.usage);
+  const usage = {
+    prompt_tokens: Number(usageNormalized?.inputTokens || result.completed?.usage?.input_tokens || 0),
+    completion_tokens: Number(usageNormalized?.outputTokens || result.completed?.usage?.output_tokens || 0),
+    total_tokens: Number(
+      usageNormalized?.totalTokens ||
+        result.completed?.usage?.total_tokens ||
+        Number(usageNormalized?.inputTokens || 0) + Number(usageNormalized?.outputTokens || 0)
+    )
+  };
+  return {
+    model: result.model,
+    text: extractAssistantTextFromResponse(result.completed),
+    finishReason: mapResponsesStatusToChatFinishReason(result.completed?.status),
+    usage,
+    authAccountId: result.authAccountId
+  };
+}
+
+function buildCodexResponsesRequestBody({
+  model,
+  requestedModel,
+  upstreamModel,
+  instructions,
+  input,
+  stop,
+  tools,
+  toolChoice,
+  include,
+  reasoningSummary,
+  reasoningEffort,
+  reasoningContext = null
+}) {
   const route =
     typeof upstreamModel === "string" && upstreamModel.trim().length > 0
       ? {
@@ -7738,23 +5103,88 @@ async function runCodexConversationViaOAuth({
       : resolveCodexCompatibleRoute(model || config.codex.defaultModel);
   const resolvedRequestedModel = route.requestedModel;
   const resolvedUpstreamModel = route.mappedModel;
-  const instructions = typeof systemText === "string" && systemText.trim().length > 0 ? systemText : config.codex.defaultInstructions;
-  const baseBody = {
+  const resolvedInstructions =
+    typeof instructions === "string" && instructions.trim().length > 0
+      ? instructions
+      : config.codex.defaultInstructions;
+  const resolvedInput = Array.isArray(input) && input.length > 0
+    ? input
+    : [{ role: "user", content: [{ type: "input_text", text: "" }] }];
+  const reasoning = {
+    effort: resolveReasoningEffort(
+      reasoningEffort,
+      reasoningContext || {
+        input: resolvedInput,
+        tools,
+        tool_choice: toolChoice,
+        instructions: resolvedInstructions
+      },
+      resolvedUpstreamModel
+    )
+  };
+  if (typeof reasoningSummary === "string" && reasoningSummary.trim().length > 0) {
+    reasoning.summary = reasoningSummary.trim();
+  }
+
+  const body = {
     model: resolvedUpstreamModel,
     stream: false,
     store: false,
-    instructions,
-    reasoning: {
-      effort: resolveReasoningEffort(undefined, { messages, instructions }, resolvedUpstreamModel)
-    },
-    input: toResponsesInputFromChatMessages(messages)
+    instructions: resolvedInstructions,
+    reasoning,
+    input: resolvedInput
   };
 
-  // Intentionally omit max_output_tokens for broad upstream compatibility.
-  if (typeof temperature === "number" && Number.isFinite(temperature)) baseBody.temperature = temperature;
-  if (typeof top_p === "number" && Number.isFinite(top_p)) baseBody.top_p = top_p;
-  if (Array.isArray(stop) && stop.length > 0) baseBody.stop = stop;
-  else if (typeof stop === "string" && stop.length > 0) baseBody.stop = [stop];
+  if (Array.isArray(stop) && stop.length > 0) body.stop = stop;
+  else if (typeof stop === "string" && stop.length > 0) body.stop = [stop];
+  if (Array.isArray(tools)) body.tools = tools;
+  if (toolChoice !== undefined) body.tool_choice = toolChoice;
+  if (Array.isArray(include) && include.length > 0) body.include = include;
+
+  return {
+    route: {
+      requestedModel: resolvedRequestedModel,
+      mappedModel: resolvedUpstreamModel
+    },
+    body
+  };
+}
+
+async function executeCodexResponsesViaOAuth({
+  model,
+  requestedModel,
+  upstreamModel,
+  instructions,
+  input,
+  stop,
+  tools,
+  toolChoice,
+  include,
+  reasoningSummary,
+  reasoningEffort,
+  reasoningContext = null
+}) {
+  let auth = await getValidAuthContext();
+  if (!auth.accountId) {
+    throw new Error("Could not extract chatgpt_account_id from OAuth token.");
+  }
+
+  const { route, body: baseBody } = buildCodexResponsesRequestBody({
+    model,
+    requestedModel,
+    upstreamModel,
+    instructions,
+    input,
+    stop,
+    tools,
+    toolChoice,
+    include,
+    reasoningSummary,
+    reasoningEffort,
+    reasoningContext
+  });
+  const resolvedRequestedModel = route.requestedModel;
+  const resolvedUpstreamModel = route.mappedModel;
 
   const url = `${config.upstreamBaseUrl.replace(/\/+$/, "")}/codex/responses`;
   const executeOnce = async (currentAuth) => {
@@ -7782,15 +5212,26 @@ async function runCodexConversationViaOAuth({
       return { response, raw };
     };
 
+    const parseRequestResult = (result, expectSse = false) => {
+      if (expectSse) {
+        const parsedSse = parseResponsesResultFromSse(result.raw);
+        if (parsedSse.failed) {
+          const upstreamErr = new Error(parsedSse.failed.message);
+          upstreamErr.statusCode = Number(parsedSse.failed.statusCode || 502) || 502;
+          throw upstreamErr;
+        }
+        return parsedSse.completed;
+      }
+      return extractCompletedResponseFromJson(result.raw);
+    };
+
     let activeBody = { ...baseBody };
     let requestResult = await sendCodexRequest(activeBody, "application/json");
-    if (!requestResult.response.ok) {
-      if (isUnsupportedMaxOutputTokensError(requestResult.response.status, requestResult.raw)) {
-        const fallbackBody = { ...baseBody };
-        delete fallbackBody.max_output_tokens;
-        activeBody = fallbackBody;
-        requestResult = await sendCodexRequest(activeBody, "application/json");
-      }
+    if (!requestResult.response.ok && isUnsupportedMaxOutputTokensError(requestResult.response.status, requestResult.raw)) {
+      const fallbackBody = { ...baseBody };
+      delete fallbackBody.max_output_tokens;
+      activeBody = fallbackBody;
+      requestResult = await sendCodexRequest(activeBody, "application/json");
     }
     if (!requestResult.response.ok) {
       const maybeStreamOnly =
@@ -7814,10 +5255,10 @@ async function runCodexConversationViaOAuth({
     );
 
     const contentType = requestResult.response.headers.get("content-type") || "";
-    let completed =
+    let completed = parseRequestResult(
+      requestResult,
       activeBody.stream === true || contentType.includes("text/event-stream")
-        ? extractCompletedResponseFromSse(requestResult.raw)
-        : extractCompletedResponseFromJson(requestResult.raw);
+    );
 
     if (!completed && activeBody.stream !== true) {
       activeBody = { ...baseBody, stream: true };
@@ -7829,11 +5270,13 @@ async function runCodexConversationViaOAuth({
         streamErr.statusCode = requestResult.response.status;
         throw streamErr;
       }
-      completed = extractCompletedResponseFromSse(requestResult.raw);
+      completed = parseRequestResult(requestResult, true);
     }
 
     if (!completed) {
-      throw new Error("Could not parse completed response from upstream.");
+      const parseErr = new Error("Could not parse completed response from upstream.");
+      parseErr.statusCode = 502;
+      throw parseErr;
     }
 
     return completed;
@@ -7880,21 +5323,9 @@ async function runCodexConversationViaOAuth({
     throw lastError || new Error("Upstream request failed.");
   }
 
-  const usageNormalized = normalizeTokenUsage(completed.usage);
-  const usage = {
-    prompt_tokens: Number(usageNormalized?.inputTokens || completed?.usage?.input_tokens || 0),
-    completion_tokens: Number(usageNormalized?.outputTokens || completed?.usage?.output_tokens || 0),
-    total_tokens: Number(
-      usageNormalized?.totalTokens ||
-        completed?.usage?.total_tokens ||
-        Number(usageNormalized?.inputTokens || 0) + Number(usageNormalized?.outputTokens || 0)
-    )
-  };
   return {
     model: resolvedRequestedModel,
-    text: extractAssistantTextFromResponse(completed),
-    finishReason: mapResponsesStatusToChatFinishReason(completed.status),
-    usage,
+    completed,
     authAccountId: auth.poolAccountId || auth.accountId || null
   };
 }
@@ -7959,11 +5390,12 @@ async function handleGeminiNativeCompat(req, res) {
       upstreamModel: codexRoute.mappedModel
     });
   } catch (err) {
-    res.status(401).json({
+    const statusCode = resolveCompatErrorStatusCode(err, 502);
+    res.status(statusCode).json({
       error: {
-        code: 401,
+        code: statusCode,
         message: err.message,
-        status: "UNAUTHENTICATED"
+        status: statusCode === 401 ? "UNAUTHENTICATED" : "INTERNAL"
       }
     });
     return;
@@ -7988,109 +5420,6 @@ async function handleGeminiNativeCompat(req, res) {
   }
 
   res.status(200).json(payload);
-}
-
-async function handleAnthropicNativeCompat(req, res) {
-  res.locals.protocolType = "anthropic-v1-native";
-  const incoming = new URL(req.originalUrl, "http://localhost");
-  if (!isAnthropicNativeMessagesPath(incoming.pathname)) {
-    res.status(400).json({
-      type: "error",
-      error: {
-        type: "invalid_request_error",
-        message:
-          "In local Anthropic compatibility mode, only POST /v1/messages and POST /v1/messages/count_tokens are supported."
-      }
-    });
-    return;
-  }
-  if (req.method !== "POST") {
-    res.status(405).json({
-      type: "error",
-      error: {
-        type: "invalid_request_error",
-        message: `Use POST ${incoming.pathname}.`
-      }
-    });
-    return;
-  }
-
-  if (incoming.pathname === "/v1/messages/count_tokens") {
-    let inputTokens;
-    try {
-      inputTokens = estimateAnthropicCountTokens(req.rawBody);
-    } catch (err) {
-      res.status(400).json({
-        type: "error",
-        error: {
-          type: "invalid_request_error",
-          message: err.message
-        }
-      });
-      return;
-    }
-
-    const usage = {
-      prompt_tokens: Number(inputTokens || 0),
-      completion_tokens: 0,
-      total_tokens: Number(inputTokens || 0)
-    };
-    res.locals.tokenUsage = usage;
-    res.status(200).json({
-      input_tokens: Number(inputTokens || 0)
-    });
-    return;
-  }
-
-  let parsedReq;
-  try {
-    parsedReq = parseAnthropicNativeBody(req.rawBody);
-  } catch (err) {
-    res.status(400).json({
-      type: "error",
-      error: {
-        type: "invalid_request_error",
-        message: err.message
-      }
-    });
-    return;
-  }
-
-  const codexRoute = resolveCodexCompatibleRoute(parsedReq.model || config.anthropic.defaultModel);
-  res.locals.modelRoute = codexRoute;
-
-  let result;
-  try {
-    result = await runCodexConversationViaOAuth({
-      ...parsedReq,
-      requestedModel: codexRoute.requestedModel,
-      upstreamModel: codexRoute.mappedModel
-    });
-  } catch (err) {
-    const statusCode = Number(err?.statusCode || 401);
-    res.status(statusCode).json({
-      type: "error",
-      error: {
-        type: mapHttpStatusToAnthropicErrorType(statusCode),
-        message: err.message
-      }
-    });
-    return;
-  }
-
-  const message = buildAnthropicMessageResponse({
-    model: result.model,
-    text: result.text,
-    finishReason: result.finishReason,
-    usage: result.usage
-  });
-  res.locals.authAccountId = result.authAccountId || null;
-
-  if (parsedReq.stream === true) {
-    sendAnthropicMessageAsSse(res, message);
-    return;
-  }
-  res.status(200).json(message);
 }
 
 async function handleGeminiOpenAICompatWithCodex(req, res) {
@@ -8118,7 +5447,7 @@ async function handleGeminiOpenAICompatWithCodex(req, res) {
       stop: chatReq.stop
     });
   } catch (err) {
-    const statusCode = Number(err?.statusCode || 401);
+    const statusCode = resolveCompatErrorStatusCode(err, 502);
     res.status(statusCode).json({
       error: statusCode === 429 ? "usage_limit_reached" : "unauthorized",
       message: err.message,
@@ -8172,7 +5501,7 @@ async function handleAnthropicOpenAICompatWithCodex(req, res) {
       stop: chatReq.stop
     });
   } catch (err) {
-    const statusCode = Number(err?.statusCode || 401);
+    const statusCode = resolveCompatErrorStatusCode(err, 502);
     res.status(statusCode).json({
       error: statusCode === 429 ? "usage_limit_reached" : "unauthorized",
       message: err.message,
@@ -8892,4 +6221,31 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 }
+
+export { app, mainServer };
+
+export const __testing = {
+  config,
+  normalizeCodexServiceTier,
+  normalizeCodexResponsesRequestBody,
+  normalizeChatCompletionsRequestBody,
+  parseResponsesResultFromSse,
+  normalizeCherryAnthropicAgentOriginalUrl: anthropicLocalCompatHelpers.normalizeCherryAnthropicAgentOriginalUrl,
+  parseAnthropicNativeBody: anthropicLocalCompatHelpers.parseAnthropicNativeBody,
+  normalizeAnthropicNativeTools: anthropicLocalCompatHelpers.normalizeAnthropicNativeTools,
+  normalizeAnthropicNativeToolChoice: anthropicLocalCompatHelpers.normalizeAnthropicNativeToolChoice,
+  normalizeAnthropicNativeExecutionConfig: anthropicLocalCompatHelpers.normalizeAnthropicNativeExecutionConfig,
+  resolveAnthropicNativeReasoningSummary: anthropicLocalCompatHelpers.resolveAnthropicNativeReasoningSummary,
+  normalizeAnthropicToolUseInput: anthropicLocalCompatHelpers.normalizeAnthropicToolUseInput,
+  toResponsesInputFromAnthropicMessages: anthropicLocalCompatHelpers.toResponsesInputFromAnthropicMessages,
+  planAnthropicFunctionCallEmission: anthropicLocalCompatHelpers.planAnthropicFunctionCallEmission,
+  rememberAnthropicPendingToolBatch: anthropicLocalCompatHelpers.rememberAnthropicPendingToolBatch,
+  maybeBuildQueuedAnthropicToolMessage: anthropicLocalCompatHelpers.maybeBuildQueuedAnthropicToolMessage,
+  clearAnthropicPendingToolBatches: anthropicLocalCompatHelpers.clearAnthropicPendingToolBatches,
+  buildAnthropicMessageFromResponsesResponse: anthropicLocalCompatHelpers.buildAnthropicMessageFromResponsesResponse,
+  renderAnthropicMessageSseEvents: anthropicLocalCompatHelpers.renderAnthropicMessageSseEvents,
+  estimateAnthropicCountTokens: anthropicLocalCompatHelpers.estimateAnthropicCountTokens,
+  buildCodexResponsesRequestBody,
+  handleAnthropicNativeProxy
+};
 

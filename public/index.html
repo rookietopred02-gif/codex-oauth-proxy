@@ -953,10 +953,35 @@
       }
 
       .req-detail-code-meta {
-        padding: 8px 12px 0;
         color: var(--muted);
         font-size: 11px;
         font-family: "JetBrains Mono", monospace;
+      }
+
+      .req-detail-code-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 12px 0;
+      }
+
+      .req-detail-copy-btn {
+        padding: 4px 8px;
+        font-size: 11px;
+        line-height: 1.1;
+        flex-shrink: 0;
+      }
+
+      .req-detail-copy-btn.is-copied {
+        border-color: rgba(74, 222, 128, 0.45);
+        color: #c6f6d5;
+      }
+
+      .req-detail-code-toolbar .req-detail-code-meta {
+        padding: 0;
+        color: var(--muted);
+        min-width: 0;
       }
 
       .req-detail-code-wrap {
@@ -1082,23 +1107,35 @@
         color: var(--bad);
       }
 
-      .autosave-status {
-        margin-top: 8px;
-        font-size: 11px;
-        color: var(--muted);
-        font-family: "JetBrains Mono", monospace;
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 12px;
       }
 
-      .autosave-status:empty {
-        display: none;
+      .section-head .section-title {
+        margin: 0;
       }
 
-      .autosave-status.ok {
-        color: var(--ok);
+      .requests-toggle {
+        min-width: 132px;
+        border-color: rgba(150, 76, 99, 0.56);
+        background: linear-gradient(180deg, rgba(111, 30, 56, 0.96), rgba(73, 17, 35, 0.96));
+        color: #ffe7ee;
+        box-shadow: inset 0 0 0 1px rgba(255, 209, 220, 0.08);
       }
 
-      .autosave-status.bad {
-        color: var(--bad);
+      .requests-toggle:hover,
+      .requests-toggle:focus-visible {
+        border-color: rgba(205, 121, 146, 0.8);
+        background: linear-gradient(180deg, rgba(135, 39, 69, 0.98), rgba(87, 22, 42, 0.98));
+        color: #fff4f7;
+      }
+
+      .requests-section-body[hidden] {
+        display: none !important;
       }
 
       .result {
@@ -2311,7 +2348,6 @@
           </div>
           <div class="status" id="authBadge">loading...</div>
           <div class="btns">
-            <button id="refreshBtn" data-i18n="runtime_refresh">Refresh</button>
             <button id="loginBtn" data-i18n="runtime_connect_account">Connect Account</button>
             <button id="logoutBtn" class="secondary" data-i18n="runtime_logout_current">Logout Current</button>
             <button id="exportTokensBtn" class="secondary" data-i18n="runtime_export_tokens">Export Tokens</button>
@@ -2408,6 +2444,13 @@
               </select>
             </div>
             <div class="field">
+              <label for="defaultServiceTier" data-i18n="proxy_service_tier">Service Tier</label>
+              <select id="defaultServiceTier">
+                <option value="default" data-i18n="service_tier_default">Default</option>
+                <option value="priority" data-i18n="service_tier_priority">Priority</option>
+              </select>
+            </div>
+            <div class="field">
               <label for="multiAccountStrategy" data-i18n="proxy_pool_strategy">Account Pool Strategy</label>
               <select id="multiAccountStrategy">
                 <option value="smart" data-i18n="strategy_smart">smart (health-aware)</option>
@@ -2418,7 +2461,6 @@
               </select>
             </div>
           </div>
-          <div class="autosave-status" id="configAutoSaveStatus"></div>
           <div class="runtime-subcard">
             <h4 data-i18n="public_access_title">Public Access (Cloudflared)</h4>
             <div class="runtime-inline-grid runtime-inline-grid--public">
@@ -2631,7 +2673,6 @@
             <button id="resetMappingsBtn" class="secondary" data-i18n="router_reset_mappings">Reset Mappings</button>
             <button id="reloadModelOptionsBtn" class="secondary" data-i18n="router_reload_models">Reload Model Options</button>
           </div>
-          <div class="autosave-status" id="routerAutoSaveStatus"></div>
           <div class="log">
             <table>
               <thead>
@@ -2647,49 +2688,54 @@
         </section>
 
         <section id="requestsSection" class="card span-12 card--requests">
-          <h3 data-i18n="recent_requests_title">Recent Proxy Requests</h3>
-          <div class="btns">
-            <button id="refreshReqBtn" data-i18n="recent_requests_refresh">Refresh Requests</button>
-            <button id="clearReqBtn" class="secondary" data-i18n="recent_requests_clear">Clear Records</button>
+          <div class="section-head">
+            <h3 class="section-title" data-i18n="recent_requests_title">Recent Proxy Requests</h3>
+            <button id="requestsToggleBtn" class="requests-toggle" type="button" aria-controls="requestsSectionBody" aria-expanded="true">Hide Requests</button>
           </div>
-          <div class="recent-req-kpis">
-            <div class="metric-card">
-              <div class="metric-label" data-i18n="recent_requests_total_requests">Total Requests</div>
-              <div id="recentReqCount" class="metric-value">0</div>
-              <div class="metric-sub" data-i18n="recent_requests_total_requests_sub">shown rows</div>
+          <div id="requestsSectionBody" class="requests-section-body">
+            <div class="btns">
+              <button id="refreshReqBtn" data-i18n="recent_requests_refresh">Refresh Requests</button>
+              <button id="clearReqBtn" class="secondary" data-i18n="recent_requests_clear">Clear Records</button>
             </div>
-            <div class="metric-card">
-              <div class="metric-label" data-i18n="recent_requests_total_input">Total Input</div>
-              <div id="recentReqInputTotal" class="metric-value">0</div>
-              <div class="metric-sub" data-i18n="recent_requests_total_input_sub">sum of input tokens</div>
+            <div class="recent-req-kpis">
+              <div class="metric-card">
+                <div class="metric-label" data-i18n="recent_requests_total_requests">Total Requests</div>
+                <div id="recentReqCount" class="metric-value">0</div>
+                <div class="metric-sub" data-i18n="recent_requests_total_requests_sub">shown rows</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label" data-i18n="recent_requests_total_input">Total Input</div>
+                <div id="recentReqInputTotal" class="metric-value">0</div>
+                <div class="metric-sub" data-i18n="recent_requests_total_input_sub">sum of input tokens</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label" data-i18n="recent_requests_total_output">Total Output</div>
+                <div id="recentReqOutputTotal" class="metric-value">0</div>
+                <div class="metric-sub" data-i18n="recent_requests_total_output_sub">sum of output tokens</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label" data-i18n="recent_requests_total_tokens">Total</div>
+                <div id="recentReqGrandTotal" class="metric-value">0</div>
+                <div class="metric-sub" data-i18n="recent_requests_total_tokens_sub">input + output total</div>
+              </div>
             </div>
-            <div class="metric-card">
-              <div class="metric-label" data-i18n="recent_requests_total_output">Total Output</div>
-              <div id="recentReqOutputTotal" class="metric-value">0</div>
-              <div class="metric-sub" data-i18n="recent_requests_total_output_sub">sum of output tokens</div>
+            <div class="log">
+              <table>
+                <thead>
+                  <tr>
+                    <th data-i18n="recent_requests_time">Time</th>
+                    <th data-i18n="recent_requests_method">Method</th>
+                    <th data-i18n="recent_requests_path">Path</th>
+                    <th data-i18n="recent_requests_input">Input</th>
+                    <th data-i18n="recent_requests_output">Output</th>
+                    <th data-i18n="recent_requests_total">Total</th>
+                    <th data-i18n="recent_requests_status">Status</th>
+                    <th data-i18n="recent_requests_latency">Latency</th>
+                  </tr>
+                </thead>
+                <tbody id="reqTable"></tbody>
+              </table>
             </div>
-            <div class="metric-card">
-              <div class="metric-label" data-i18n="recent_requests_total_tokens">Total</div>
-              <div id="recentReqGrandTotal" class="metric-value">0</div>
-              <div class="metric-sub" data-i18n="recent_requests_total_tokens_sub">input + output total</div>
-            </div>
-          </div>
-          <div class="log">
-            <table>
-              <thead>
-                <tr>
-                  <th data-i18n="recent_requests_time">Time</th>
-                  <th data-i18n="recent_requests_method">Method</th>
-                  <th data-i18n="recent_requests_path">Path</th>
-                  <th data-i18n="recent_requests_input">Input</th>
-                  <th data-i18n="recent_requests_output">Output</th>
-                  <th data-i18n="recent_requests_total">Total</th>
-                  <th data-i18n="recent_requests_status">Status</th>
-                  <th data-i18n="recent_requests_latency">Latency</th>
-                </tr>
-              </thead>
-              <tbody id="reqTable"></tbody>
-            </table>
           </div>
         </section>
       </div>
@@ -2705,30 +2751,33 @@
           <div class="req-detail-code-grid">
             <details class="req-detail-card" open>
               <summary data-i18n="request_detail_request_packet">Request Packet</summary>
-              <div id="reqDetailReqMeta" class="req-detail-code-meta mono">-</div>
+              <div class="req-detail-code-toolbar">
+                <div id="reqDetailReqMeta" class="req-detail-code-meta mono">-</div>
+                <button id="reqDetailReqCopyBtn" class="secondary req-detail-copy-btn" data-i18n="request_detail_copy">Copy</button>
+              </div>
               <div class="req-detail-code-wrap">
                 <pre id="reqDetailReqCode" class="req-detail-code mono">(empty)</pre>
               </div>
             </details>
             <details class="req-detail-card" open>
-              <summary data-i18n="request_detail_upstream_request_packet">Upstream Request Packet</summary>
-              <div id="reqDetailUpstreamReqMeta" class="req-detail-code-meta mono">-</div>
-              <div class="req-detail-code-wrap">
-                <pre id="reqDetailUpstreamReqCode" class="req-detail-code mono">(empty)</pre>
-              </div>
-            </details>
-            <details class="req-detail-card" open>
               <summary data-i18n="request_detail_response_packet">Response Packet</summary>
-              <div id="reqDetailResMeta" class="req-detail-code-meta mono">-</div>
+              <div class="req-detail-code-toolbar">
+                <div id="reqDetailResMeta" class="req-detail-code-meta mono">-</div>
+                <button id="reqDetailResCopyBtn" class="secondary req-detail-copy-btn" data-i18n="request_detail_copy">Copy</button>
+              </div>
               <div class="req-detail-code-wrap">
                 <pre id="reqDetailResCode" class="req-detail-code mono">(empty)</pre>
-            </div>
-          </details>
+              </div>
+            </details>
+          </div>
         </div>
       </div>
     </div>
 
-    <script>
+    <script type="module">
+      import { api } from "./dashboard/api.js";
+      import { createRecentRequestsUi } from "./dashboard/requests.js";
+
       const $ = (id) => document.getElementById(id);
       let currentMappings = {};
       let modelCandidates = [];
@@ -2745,8 +2794,6 @@
       let autoSaveSnapshot = "";
       let lastAccounts = [];
       let lastActiveEntryId = "";
-      let requestDetailMap = new Map();
-      let activeRequestDetailId = "";
       let lastApiKeySummary = { keys: [] };
       let transientApiKeyValues = new Map();
       let lastPublicAccessStatus = null;
@@ -2773,11 +2820,13 @@
       let tempMailRefreshTimerId = 0;
       const USAGE_AUTO_REFRESH_MIN_MS = 5 * 60 * 1000;
       const AUTO_SAVE_DEBOUNCE_MS = 500;
+      const REQUESTS_PANEL_EXPANDED_STORAGE_KEY = "codex_proxy_dashboard_requests_panel_expanded";
       const CONFIG_FIELD_IDS = [
         "upstreamMode",
         "defaultModel",
         "defaultInstructions",
         "defaultReasoningEffort",
+        "defaultServiceTier",
         "multiAccountStrategy",
         "publicAccessMode",
         "publicAccessToken",
@@ -2883,7 +2932,11 @@
           proxy_default_model: "Default Model",
           proxy_default_instructions: "Default Instructions",
           proxy_reasoning_effort: "Reasoning Effort",
+          proxy_service_tier: "Service Tier",
+          proxy_service_tier_openai_only: "Service Tier only applies to openai-v1 upstream.",
           proxy_pool_strategy: "Account Pool Strategy",
+          service_tier_default: "Default",
+          service_tier_priority: "Priority",
           reasoning_adaptive: "adaptive (auto)",
           reasoning_none: "none",
           reasoning_low: "low",
@@ -3021,8 +3074,9 @@
           request_detail_title_fmt: "Proxy Request Detail · {method} {path}",
           request_detail_close: "Close",
           request_detail_request_packet: "Request Packet",
-          request_detail_upstream_request_packet: "Upstream Request Packet",
           request_detail_response_packet: "Response Packet",
+          request_detail_copy: "Copy",
+          request_detail_copied: "Copied",
           request_detail_content_type: "content-type: {type}",
           request_detail_empty: "(empty)",
           req_meta_request_time: "Request Time",
@@ -3054,6 +3108,8 @@
           recent_requests_title: "Recent Proxy Requests",
           recent_requests_refresh: "Refresh Requests",
           recent_requests_clear: "Clear Records",
+          recent_requests_toggle_show: "Show Requests",
+          recent_requests_toggle_hide: "Hide Requests",
           recent_requests_total_requests: "Total Requests",
           recent_requests_total_requests_sub: "shown rows",
           recent_requests_total_input: "Total Input",
@@ -3090,6 +3146,7 @@
           alert_api_key_generate_failed: "Generate API key failed: {message}",
           alert_api_key_revoke_failed: "Revoke API key failed: {message}",
           alert_api_key_copy_failed: "Copy API key failed: {message}",
+          alert_request_detail_copy_failed: "Copy request log failed: {message}",
           alert_token_export_empty: "No account tokens to export.",
           alert_token_export_success: "Exported {count} token files.",
           alert_token_export_failed: "Export tokens failed: {message}",
@@ -3192,7 +3249,11 @@
           proxy_default_model: "預設模型",
           proxy_default_instructions: "預設指示詞",
           proxy_reasoning_effort: "思維長度",
+          proxy_service_tier: "服務等級",
+          proxy_service_tier_openai_only: "服務等級只對 openai-v1 上游生效。",
           proxy_pool_strategy: "帳號池策略",
+          service_tier_default: "預設",
+          service_tier_priority: "優先",
           reasoning_adaptive: "自適應（自動）",
           reasoning_none: "無",
           reasoning_low: "低",
@@ -3329,8 +3390,9 @@
           request_detail_title_fmt: "代理請求詳情 · {method} {path}",
           request_detail_close: "關閉",
           request_detail_request_packet: "請求封包",
-          request_detail_upstream_request_packet: "上游請求封包",
           request_detail_response_packet: "回應封包",
+          request_detail_copy: "複製",
+          request_detail_copied: "已複製",
           request_detail_content_type: "內容類型：{type}",
           request_detail_empty: "（空）",
           req_meta_request_time: "請求時間",
@@ -3362,6 +3424,8 @@
           recent_requests_title: "近期代理請求",
           recent_requests_refresh: "刷新請求",
           recent_requests_clear: "清除紀錄",
+          recent_requests_toggle_show: "展開請求",
+          recent_requests_toggle_hide: "收合請求",
           recent_requests_total_requests: "請求總數",
           recent_requests_total_requests_sub: "目前顯示筆數",
           recent_requests_total_input: "輸入總計",
@@ -3398,6 +3462,7 @@
           alert_api_key_generate_failed: "產生 API 金鑰失敗：{message}",
           alert_api_key_revoke_failed: "撤銷 API 金鑰失敗：{message}",
           alert_api_key_copy_failed: "複製 API 金鑰失敗：{message}",
+          alert_request_detail_copy_failed: "複製請求日誌失敗：{message}",
           alert_token_export_empty: "沒有可導出的帳號 Token。",
           alert_token_export_success: "已導出 {count} 個 Token 檔案。",
           alert_token_export_failed: "導出 Token 失敗：{message}",
@@ -3448,6 +3513,7 @@
           ["產生 API 金鑰", "生成 API 密钥"],
           ["已產生金鑰（僅顯示一次）", "已生成密钥（仅显示一次）"],
           ["複製", "复制"],
+          ["請求日誌", "请求日志"],
           ["目前沒有 API 金鑰。", "目前没有 API 密钥。"],
           ["啟用中", "启用中"],
           ["已撤銷", "已撤销"],
@@ -3468,6 +3534,9 @@
           ["安裝中", "安装中"],
           ["公網 URL", "公网 URL"],
           ["複製 URL", "复制 URL"],
+          ["服務等級", "服务等级"],
+          ["服務", "服务"],
+          ["優先", "优先"],
           ["沒有可導出的帳號 Token。", "没有可导出的账号 Token。"],
           ["已導出 {count} 個 Token 檔案。", "已导出 {count} 个 Token 文件。"],
           ["導出 Token 失敗：{message}", "导出 Token 失败：{message}"],
@@ -3977,11 +4046,11 @@
         syncAccountStatusRefreshControls();
         renderModelOptions();
         renderMappingsTable();
+        syncServiceTierControl();
         syncAllCustomSelects();
+        recentRequestsUi.renderToggle();
         renderTempMailState(lastTempMailState);
-        if (activeRequestDetailId) {
-          openRequestDetailModal(activeRequestDetailId);
-        }
+        recentRequestsUi.reopenActiveDetail();
       }
 
       function initLanguageControl() {
@@ -4687,9 +4756,30 @@
         return `${v.slice(0, 8)}...${v.slice(-6)}`;
       }
 
-      function safeCodeText(value) {
-        const text = String(value || "");
-        return text.length > 0 ? text : t("request_detail_empty");
+      async function copyTextToClipboard(text) {
+        const normalized = String(text ?? "");
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(normalized);
+          return;
+        }
+        const input = document.createElement("textarea");
+        input.value = normalized;
+        input.setAttribute("readonly", "readonly");
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+
+      function syncServiceTierControl() {
+        const select = $("defaultServiceTier");
+        if (!(select instanceof HTMLSelectElement)) return;
+        const enabled = $("upstreamMode").value === "codex-chatgpt";
+        select.disabled = !enabled;
+        select.title = enabled ? "" : t("proxy_service_tier_openai_only");
+        syncCustomSelect(select);
       }
 
       function healthDisplayLabel(label) {
@@ -4750,91 +4840,24 @@
         return localized === key ? raw : localized;
       }
 
-      function buildReqDetailMetaItems(row) {
-        const timeText = row?.ts ? new Date(Number(row.ts)).toLocaleString() : "-";
-        const latencyText = Number.isFinite(Number(row?.durationMs)) ? `${Number(row.durationMs)} ms` : "-";
-        const tokenText = tt("token_usage_format", {
-          input: fmtToken(row?.inputTokens),
-          output: fmtToken(row?.outputTokens)
-        });
-        const totalText = fmtToken(row?.totalTokens);
-        const protocolText = getProtocolLabel(row);
-        const modelText = getModelDisplay(row);
-        const accountText = getAccountDisplay(row);
-        const pathText = `${String(row?.method || "-")} ${String(row?.path || "-")}`;
-        const statusText = String(row?.status ?? "-");
-        const retryCount = Math.max(0, Number(row?.upstreamRetryCount || 0));
-        const transportErrorCode = String(row?.upstreamErrorCode || "").trim();
-        const transportErrorDetail = String(row?.upstreamErrorDetail || "").trim();
-        const compatibilityText = localizeCompatibilityHint(row?.compatibilityHint);
-
-        const items = [
-          { key: t("req_meta_request_time"), value: timeText },
-          { key: t("req_meta_latency"), value: latencyText },
-          { key: t("req_meta_token_usage"), value: tokenText },
-          { key: t("req_meta_total_tokens"), value: totalText },
-          { key: t("req_meta_protocol"), value: protocolText },
-          { key: t("req_meta_model"), value: modelText },
-          { key: t("req_meta_account"), value: accountText },
-          { key: t("req_meta_path"), value: pathText },
-          { key: t("req_meta_status"), value: statusText }
-        ];
-        if (retryCount > 0) {
-          items.push({ key: t("req_meta_upstream_retries"), value: String(retryCount) });
-        }
-        if (transportErrorCode) {
-          items.push({ key: t("req_meta_transport_error_code"), value: transportErrorCode });
-        }
-        if (transportErrorDetail) {
-          items.push({ key: t("req_meta_transport_error_detail"), value: transportErrorDetail });
-        }
-        if (compatibilityText !== "-") {
-          items.push({ key: t("req_meta_compatibility"), value: compatibilityText });
-        }
-        return items;
-      }
-
-      function openRequestDetailModal(requestId) {
-        const id = String(requestId || "").trim();
-        if (!id) return;
-        const row = requestDetailMap.get(id);
-        if (!row) return;
-
-        activeRequestDetailId = id;
-        $("reqDetailTitle").textContent = tt("request_detail_title_fmt", {
-          method: String(row.method || "-"),
-          path: String(row.path || "-")
-        });
-        const metaItems = buildReqDetailMetaItems(row);
-        $("reqDetailMetaGrid").innerHTML = metaItems
-          .map(
-            (item) =>
-              `<div class="req-detail-meta-item"><div class="k">${escapeHtml(item.key)}</div><div class="v">${escapeHtml(
-                item.value
-              )}</div></div>`
-          )
-          .join("");
-
-        const reqCt = String(row?.requestContentType || "").trim();
-        const upstreamReqCt = String(row?.upstreamRequestContentType || "").trim();
-        const resCt = String(row?.responseContentType || "").trim();
-        $("reqDetailReqMeta").textContent = tt("request_detail_content_type", { type: reqCt || "-" });
-        $("reqDetailUpstreamReqMeta").textContent = tt("request_detail_content_type", { type: upstreamReqCt || "-" });
-        $("reqDetailResMeta").textContent = tt("request_detail_content_type", { type: resCt || "-" });
-        $("reqDetailReqCode").textContent = safeCodeText(row?.requestPacket);
-        $("reqDetailUpstreamReqCode").textContent = safeCodeText(row?.upstreamRequestPacket);
-        $("reqDetailResCode").textContent = safeCodeText(row?.responsePacket);
-
-        const backdrop = $("reqDetailBackdrop");
-        backdrop.hidden = false;
-        document.body.style.overflow = "hidden";
-      }
-
-      function closeRequestDetailModal() {
-        activeRequestDetailId = "";
-        $("reqDetailBackdrop").hidden = true;
-        document.body.style.overflow = "";
-      }
+      const recentRequestsUi = createRecentRequestsUi({
+        $,
+        t,
+        tt,
+        escapeHtml,
+        fmtToken,
+        copyTextToClipboard,
+        showCopyError: (err) => {
+          alert(tt("alert_request_detail_copy_failed", { message: err.message }));
+        },
+        readStoredBool,
+        writeStoredString,
+        panelStorageKey: REQUESTS_PANEL_EXPANDED_STORAGE_KEY,
+        resolveProtocolLabel: getProtocolLabel,
+        resolveModelDisplay: getModelDisplay,
+        resolveAccountDisplay: getAccountDisplay,
+        resolveCompatibilityHint: localizeCompatibilityHint
+      });
 
       function getAccountIdentity(account) {
         return String(account?.entryId || account?.accountId || "");
@@ -5481,32 +5504,8 @@
         await refreshState(true);
       }
 
-      async function api(path, init = {}) {
-        const res = await fetch(path, init);
-        const text = await res.text();
-        let data = null;
-        try {
-          data = text ? JSON.parse(text) : null;
-        } catch {
-          data = { raw: text };
-        }
-        if (!res.ok) {
-          const msg = data?.message || data?.error || text || `HTTP ${res.status}`;
-          const error = new Error(msg);
-          error.status = res.status;
-          error.data = data;
-          throw error;
-        }
-        return data;
-      }
-
-      function setAutoSaveStatus(message, tone = "") {
-        for (const id of ["configAutoSaveStatus", "routerAutoSaveStatus"]) {
-          const el = $(id);
-          if (!el) continue;
-          el.className = tone ? `autosave-status ${tone}` : "autosave-status";
-          el.textContent = String(message || "");
-        }
+      function setAutoSaveStatus(_message, _tone = "") {
+        // Auto-save stays silent in the dashboard UI.
       }
 
       function getConfigFieldElements() {
@@ -5545,6 +5544,7 @@
           defaultModel: $("defaultModel").value,
           defaultInstructions: $("defaultInstructions").value,
           defaultReasoningEffort: $("defaultReasoningEffort").value,
+          defaultServiceTier: $("defaultServiceTier").value,
           multiAccountStrategy: $("multiAccountStrategy").value,
           publicAccessMode: $("publicAccessMode").value,
           publicAccessToken: $("publicAccessToken").value,
@@ -5689,6 +5689,7 @@
         $("defaultModel").value = state.config.defaultModel;
         $("defaultInstructions").value = state.config.defaultInstructions;
         $("defaultReasoningEffort").value = state.config.defaultReasoningEffort || "medium";
+        $("defaultServiceTier").value = state.config.defaultServiceTier || "default";
         $("multiAccountStrategy").value = state.config.multiAccountStrategy || "smart";
         $("autoLogoutExpiredAccounts").checked = state.config.autoLogoutExpiredAccounts === true;
         $("preheatCooldownSeconds").value = Number(state.config.preheatCooldownSeconds || 1200);
@@ -5700,6 +5701,7 @@
         renderMappingsTable();
         renderModelOptions();
         applyPublicAccessConfigFromState(state);
+        syncServiceTierControl();
         syncAllCustomSelects();
       }
 
@@ -5861,29 +5863,7 @@
         setTextAndPulse("recentReqInputTotal", fmtToken(requestTotals.input), false);
         setTextAndPulse("recentReqOutputTotal", fmtToken(requestTotals.output), false);
         setTextAndPulse("recentReqGrandTotal", fmtToken(requestTotals.total), false);
-        requestDetailMap = new Map();
-        $("reqTable").innerHTML = rows
-          .map((r, idx) => {
-            const requestId = String(r?.id || `${r?.ts || Date.now()}-${idx}`);
-            requestDetailMap.set(requestId, r);
-            const t = new Date(r.ts).toLocaleTimeString();
-            const statusClass = r.status >= 400 ? "req-status-bad" : "req-status-ok";
-            const routeText =
-              r.requestedModel && r.mappedModel
-                ? `${escapeHtml(r.requestedModel)} → ${escapeHtml(r.mappedModel)}`
-                : "";
-            return `<tr class="req-row" tabindex="0" data-req-id="${escapeHtml(requestId)}">
-              <td>${t}</td>
-              <td>${r.method}</td>
-              <td class="mono">${escapeHtml(r.path)}${routeText ? `<br><span class="req-route">${routeText}</span>` : ""}</td>
-              <td>${fmtToken(r.inputTokens)}</td>
-              <td>${fmtToken(r.outputTokens)}</td>
-              <td>${fmtToken(r.totalTokens)}</td>
-              <td class="${statusClass}">${r.status}</td>
-              <td>${r.durationMs} ms</td>
-            </tr>`;
-          })
-          .join("");
+        recentRequestsUi.renderRows(rows);
       }
 
       async function refreshState(force = false) {
@@ -6319,7 +6299,6 @@
         }
       }
 
-      $("refreshBtn").addEventListener("click", refreshState);
       $("loginBtn").addEventListener("click", openAccountLoginFlow);
       $("logoutBtn").addEventListener("click", async () => {
         try {
@@ -6431,6 +6410,12 @@
           alert(tt("alert_public_access_copy_failed", { message: err.message }));
         }
       });
+      $("reqDetailReqCopyBtn").addEventListener("click", () => {
+        recentRequestsUi.copyRequestDetailLog("reqDetailReqCode", "reqDetailReqCopyBtn").catch(() => {});
+      });
+      $("reqDetailResCopyBtn").addEventListener("click", () => {
+        recentRequestsUi.copyRequestDetailLog("reqDetailResCode", "reqDetailResCopyBtn").catch(() => {});
+      });
       $("accountPoolCards").addEventListener("click", async (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
@@ -6459,6 +6444,7 @@
       const instantSaveFields = [
         "upstreamMode",
         "defaultReasoningEffort",
+        "defaultServiceTier",
         "multiAccountStrategy",
         "publicAccessMode",
         "publicAccessHttp2",
@@ -6467,6 +6453,7 @@
       for (const id of instantSaveFields) {
         $(id).addEventListener("change", () => triggerAutoSaveNow());
       }
+      $("upstreamMode").addEventListener("change", syncServiceTierControl);
 
       const debouncedSaveFields = [
         "defaultModel",
@@ -6525,6 +6512,7 @@
           alert(tt("alert_refresh_requests_failed", { message: err.message }));
         }
       });
+      $("requestsToggleBtn").addEventListener("click", () => recentRequestsUi.togglePanel());
       $("clearReqBtn").addEventListener("click", async () => {
         if (!confirm(t("confirm_clear_requests"))) return;
         try {
@@ -6554,7 +6542,7 @@
         const row = target.closest("tr[data-req-id]");
         if (!(row instanceof HTMLElement)) return;
         const id = row.getAttribute("data-req-id");
-        openRequestDetailModal(id);
+        recentRequestsUi.openRequestDetailModal(id);
       });
       $("reqTable").addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -6564,18 +6552,18 @@
         if (!(row instanceof HTMLElement)) return;
         event.preventDefault();
         const id = row.getAttribute("data-req-id");
-        openRequestDetailModal(id);
+        recentRequestsUi.openRequestDetailModal(id);
       });
-      $("reqDetailCloseBtn").addEventListener("click", closeRequestDetailModal);
+      $("reqDetailCloseBtn").addEventListener("click", () => recentRequestsUi.closeRequestDetailModal());
       $("reqDetailBackdrop").addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
-        if (target.id === "reqDetailBackdrop") closeRequestDetailModal();
+        if (target.id === "reqDetailBackdrop") recentRequestsUi.closeRequestDetailModal();
       });
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Escape") return;
-        if (!$("reqDetailBackdrop").hidden && activeRequestDetailId) {
-          closeRequestDetailModal();
+        if (recentRequestsUi.hasOpenDetail()) {
+          recentRequestsUi.closeRequestDetailModal();
         }
       });
       for (const id of ["tempMailCount", "tempMailPassword", "tempMailDelay", "tempMailWorkers"]) {

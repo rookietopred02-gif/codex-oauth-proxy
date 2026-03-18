@@ -33,6 +33,7 @@ AUTH_MODE=codex-oauth
 UPSTREAM_MODE=codex-chatgpt
 UPSTREAM_BASE_URL=https://chatgpt.com/backend-api
 CODEX_DEFAULT_MODEL=gpt-5.4
+CODEX_DEFAULT_SERVICE_TIER=default
 CODEX_DEFAULT_REASONING_EFFORT=adaptive
 CODEX_PREHEAT_BATCH_SIZE=2
 ```
@@ -71,6 +72,7 @@ Use the dashboard to:
 
 - trigger OAuth login/logout
 - edit runtime proxy settings
+- set OpenAI `Service Tier` from the dashboard (`Default` or `Priority`)
 - edit Model Router mappings (`exact` + `*` wildcard)
 - tune default reasoning effort (`adaptive|none|low|medium|high|xhigh`)
 - manually run account preheat from dashboard (`Run Preheat Now`)
@@ -91,6 +93,7 @@ API key:
 - once you generate dashboard API keys or set `LOCAL_API_KEY` / `PROXY_API_KEY`, callers must send one of those keys
 - in `gemini-v1beta` / `anthropic-v1`, API key can be left empty to use local protocol facade powered by Codex OAuth
 - with Model Router enabled, model IDs can be remapped across protocols (for example `gpt-5.4 -> gemini-2.5-pro`)
+- with `UPSTREAM_MODE=codex-chatgpt`, dashboard `Service Tier=Priority` or `CODEX_DEFAULT_SERVICE_TIER=priority` injects `service_tier: "priority"` into outbound `/v1/responses` and `/v1/chat/completions` requests only when the caller did not already provide `service_tier`
 
 Supported endpoints:
 
