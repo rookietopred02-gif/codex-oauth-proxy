@@ -42,6 +42,9 @@ import {
 } from "./http/audit.js";
 import { createUpstreamRuntimeHelpers } from "./http/upstream-runtime.js";
 import { createAnthropicLocalCompatHelpers } from "./protocols/anthropic/local-compat.js";
+import { createAnthropicOpenAICompatHelpers } from "./protocols/anthropic/openai-compat.js";
+import { createCodexOAuthResponsesHelpers } from "./protocols/codex/oauth-responses.js";
+import { createGeminiLocalCompatHelpers } from "./protocols/gemini/local-compat.js";
 import { createOpenAIRequestNormalizationHelpers } from "./protocols/openai/request-normalization.js";
 import { createOpenAIResponsesCompatHelpers } from "./protocols/openai/responses-compat.js";
 import { registerProxyRoutes } from "./routes/proxy.js";
@@ -1389,6 +1392,31 @@ const {
   extractAssistantToolCallsFromResponse,
   mapResponsesStatusToChatFinishReason
 } = openAIResponsesCompatHelpers;
+const codexOAuthResponsesHelpers = createCodexOAuthResponsesHelpers({
+  config,
+  truncate,
+  getValidAuthContext,
+  getCodexOriginator,
+  parseResponsesResultFromSse,
+  extractCompletedResponseFromJson,
+  normalizeTokenUsage,
+  extractAssistantTextFromResponse,
+  mapResponsesStatusToChatFinishReason,
+  resolveReasoningEffort,
+  resolveCodexCompatibleRoute,
+  isUnsupportedMaxOutputTokensError,
+  isCodexPoolRetryEnabled,
+  shouldRotateCodexAccountForStatus,
+  maybeMarkCodexPoolFailure,
+  maybeMarkCodexPoolSuccess,
+  maybeCaptureCodexUsageFromHeaders,
+  toResponsesInputFromChatMessages
+});
+const {
+  buildCodexResponsesRequestBody,
+  executeCodexResponsesViaOAuth,
+  runCodexConversationViaOAuth
+} = codexOAuthResponsesHelpers;
 const anthropicLocalCompatHelpers = createAnthropicLocalCompatHelpers({
   config,
   parseJsonLoose,
@@ -1400,6 +1428,28 @@ const anthropicLocalCompatHelpers = createAnthropicLocalCompatHelpers({
   mapHttpStatusToAnthropicErrorType,
   mapResponsesStatusToChatFinishReason,
   mapOpenAIFinishReasonToAnthropic
+});
+const geminiLocalCompatHelpers = createGeminiLocalCompatHelpers({
+  config,
+  resolveCodexCompatibleRoute,
+  resolveCompatErrorStatusCode,
+  parseOpenAIChatCompletionsLikeRequest,
+  splitSystemAndConversation,
+  buildOpenAIChatCompletion,
+  sendOpenAICompletionAsSse,
+  mapOpenAIFinishReasonToGemini,
+  runCodexConversationViaOAuth,
+  getOpenAICompatibleModelIds
+});
+const anthropicOpenAICompatHelpers = createAnthropicOpenAICompatHelpers({
+  config,
+  resolveCodexCompatibleRoute,
+  resolveCompatErrorStatusCode,
+  parseOpenAIChatCompletionsLikeRequest,
+  splitSystemAndConversation,
+  buildOpenAIChatCompletion,
+  sendOpenAICompletionAsSse,
+  runCodexConversationViaOAuth
 });
 const proxyRouteHandlers = createProxyRouteHandlers({
   config,
@@ -4135,7 +4185,7 @@ async function handleGeminiNativeProxy(req, res) {
   res.locals.protocolType = "gemini-v1beta-native";
   const apiKey = resolveGeminiApiKey(req);
   if (!apiKey) {
-    await handleGeminiNativeCompat(req, res);
+    await geminiLocalCompatHelpers.handleGeminiNativeCompat(req, res);
     return;
   }
 
@@ -4192,7 +4242,7 @@ async function handleGeminiNativeProxy(req, res) {
   if (!upstream.ok) {
     const raw = await upstream.text().catch(() => "");
     if (shouldFallbackGeminiUpstreamToCompat(req, upstream.status)) {
-      await handleGeminiNativeCompat(req, res);
+      await geminiLocalCompatHelpers.handleGeminiNativeCompat(req, res);
       return;
     }
     sendGeminiError(res, {
@@ -4361,7 +4411,7 @@ async function handleGeminiProtocol(req, res) {
 
   const apiKey = resolveGeminiApiKey(req);
   if (!apiKey) {
-    await handleGeminiOpenAICompatWithCodex(req, res);
+    await geminiLocalCompatHelpers.handleGeminiOpenAICompatWithCodex(req, res);
     return;
   }
 
@@ -4447,7 +4497,7 @@ async function handleGeminiProtocol(req, res) {
   }
   if (!upstream.ok) {
     if (shouldFallbackGeminiUpstreamToCompat(req, upstream.status)) {
-      await handleGeminiOpenAICompatWithCodex(req, res);
+      await geminiLocalCompatHelpers.handleGeminiOpenAICompatWithCodex(req, res);
       return;
     }
     sendGeminiError(res, {
@@ -4520,7 +4570,7 @@ async function handleAnthropicProtocol(req, res) {
 
   const apiKey = resolveAnthropicApiKey(req);
   if (!apiKey) {
-    await handleAnthropicOpenAICompatWithCodex(req, res);
+    await anthropicOpenAICompatHelpers.handleAnthropicOpenAICompatWithCodex(req, res);
     return;
   }
 
@@ -4862,116 +4912,6 @@ function isUnsupportedMaxOutputTokensError(statusCode, rawText) {
   return text.includes("unsupported parameter") && text.includes("max_output_tokens");
 }
 
-function collectGeminiTextParts(parts) {
-  if (!Array.isArray(parts)) return "";
-  const texts = [];
-  for (const part of parts) {
-    if (!part || typeof part !== "object") continue;
-    if (typeof part.text === "string" && part.text.length > 0) {
-      texts.push(part.text);
-      continue;
-    }
-    if (part.inlineData || part.inline_data || part.fileData || part.file_data || part.image_url) {
-      texts.push("[image]");
-    }
-  }
-  return texts.join("\n");
-}
-
-function parseGeminiNativeBody(rawBody, fallbackModel) {
-  if (!rawBody || rawBody.length === 0) {
-    throw new Error("Gemini request body is required.");
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(rawBody.toString("utf8"));
-  } catch {
-    throw new Error("Invalid JSON body for Gemini endpoint.");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Gemini request body must be a JSON object.");
-  }
-
-  const systemText = collectGeminiTextParts(parsed?.systemInstruction?.parts || parsed?.system_instruction?.parts);
-  const contents = Array.isArray(parsed.contents) ? parsed.contents : [];
-  const conversation = [];
-  for (const item of contents) {
-    if (!item || typeof item !== "object") continue;
-    const role = String(item.role || "").toLowerCase() === "model" ? "assistant" : "user";
-    const text = collectGeminiTextParts(item.parts);
-    if (text.trim().length === 0) continue;
-    conversation.push({ role, text });
-  }
-  if (conversation.length === 0) {
-    conversation.push({ role: "user", text: " " });
-  }
-
-  const generationConfig =
-    parsed.generationConfig && typeof parsed.generationConfig === "object" ? parsed.generationConfig : {};
-
-  return {
-    model: typeof parsed.model === "string" && parsed.model.trim().length > 0 ? parsed.model : fallbackModel,
-    systemText,
-    conversation,
-    stream: false,
-    max_tokens: generationConfig.maxOutputTokens,
-    temperature: generationConfig.temperature,
-    top_p: generationConfig.topP,
-    stop: Array.isArray(generationConfig.stopSequences)
-      ? generationConfig.stopSequences
-      : typeof generationConfig.stopSequences === "string"
-        ? [generationConfig.stopSequences]
-        : undefined
-  };
-}
-
-function buildGeminiModelDescriptor(model) {
-  return {
-    name: `models/${model}`,
-    version: "proxy-local",
-    displayName: model,
-    description: "Local Gemini-compatible facade powered by Codex OAuth.",
-    inputTokenLimit: 1048576,
-    outputTokenLimit: 8192,
-    supportedGenerationMethods: ["generateContent", "streamGenerateContent"],
-    temperature: 1,
-    maxTemperature: 2,
-    topP: 0.95,
-    topK: 40
-  };
-}
-
-function buildGeminiGenerateContentResponse({ model, text, finishReason, usage }) {
-  return {
-    candidates: [
-      {
-        content: {
-          role: "model",
-          parts: [{ text: text || "" }]
-        },
-        finishReason: mapOpenAIFinishReasonToGemini(finishReason),
-        index: 0
-      }
-    ],
-    usageMetadata: {
-      promptTokenCount: Number(usage?.prompt_tokens || 0),
-      candidatesTokenCount: Number(usage?.completion_tokens || 0),
-      totalTokenCount: Number(usage?.total_tokens || 0)
-    },
-    modelVersion: model
-  };
-}
-
-function sendGeminiSseResponse(res, payload) {
-  res.status(200);
-  res.setHeader("content-type", "text/event-stream; charset=utf-8");
-  res.setHeader("cache-control", "no-cache");
-  res.setHeader("connection", "keep-alive");
-  res.setHeader("x-accel-buffering", "no");
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-  res.end();
-}
-
 function estimateOpenAIChatCompletionTokens(rawBody) {
   if (!rawBody || rawBody.length === 0) return 0;
 
@@ -5013,521 +4953,6 @@ function estimateOpenAIChatCompletionTokens(rawBody) {
   if (Array.isArray(parsed.tools) && parsed.tools.length > 0) inputTokens += parsed.tools.length * 20;
 
   return Math.max(1, Number(inputTokens || 0));
-}
-
-async function runCodexConversationViaOAuth({
-  model,
-  requestedModel,
-  upstreamModel,
-  systemText,
-  conversation,
-  max_tokens,
-  temperature,
-  top_p,
-  stop
-}) {
-  const messages = [];
-  if (typeof systemText === "string" && systemText.trim().length > 0) {
-    messages.push({ role: "system", content: systemText });
-  }
-  for (const msg of Array.isArray(conversation) ? conversation : []) {
-    if (!msg || typeof msg !== "object") continue;
-    const role = msg.role === "assistant" ? "assistant" : "user";
-    const text = typeof msg.text === "string" && msg.text.length > 0 ? msg.text : " ";
-    messages.push({ role, content: text });
-  }
-  if (messages.length === 0) {
-    messages.push({ role: "user", content: " " });
-  }
-
-  const instructions = typeof systemText === "string" && systemText.trim().length > 0 ? systemText : config.codex.defaultInstructions;
-  const input = toResponsesInputFromChatMessages(messages);
-  const result = await executeCodexResponsesViaOAuth({
-    model,
-    requestedModel,
-    upstreamModel,
-    instructions,
-    input,
-    temperature,
-    top_p,
-    stop,
-    reasoningContext: {
-      messages,
-      input,
-      instructions
-    }
-  });
-
-  const usageNormalized = normalizeTokenUsage(result.completed?.usage);
-  const usage = {
-    prompt_tokens: Number(usageNormalized?.inputTokens || result.completed?.usage?.input_tokens || 0),
-    completion_tokens: Number(usageNormalized?.outputTokens || result.completed?.usage?.output_tokens || 0),
-    total_tokens: Number(
-      usageNormalized?.totalTokens ||
-        result.completed?.usage?.total_tokens ||
-        Number(usageNormalized?.inputTokens || 0) + Number(usageNormalized?.outputTokens || 0)
-    )
-  };
-  return {
-    model: result.model,
-    text: extractAssistantTextFromResponse(result.completed),
-    finishReason: mapResponsesStatusToChatFinishReason(result.completed?.status),
-    usage,
-    authAccountId: result.authAccountId
-  };
-}
-
-function buildCodexResponsesRequestBody({
-  model,
-  requestedModel,
-  upstreamModel,
-  instructions,
-  input,
-  stop,
-  tools,
-  toolChoice,
-  include,
-  reasoningSummary,
-  reasoningEffort,
-  reasoningContext = null
-}) {
-  const route =
-    typeof upstreamModel === "string" && upstreamModel.trim().length > 0
-      ? {
-          requestedModel:
-            typeof requestedModel === "string" && requestedModel.trim().length > 0
-              ? requestedModel.trim()
-              : model || config.codex.defaultModel,
-          mappedModel: upstreamModel.trim()
-        }
-      : resolveCodexCompatibleRoute(model || config.codex.defaultModel);
-  const resolvedRequestedModel = route.requestedModel;
-  const resolvedUpstreamModel = route.mappedModel;
-  const resolvedInstructions =
-    typeof instructions === "string" && instructions.trim().length > 0
-      ? instructions
-      : config.codex.defaultInstructions;
-  const resolvedInput = Array.isArray(input) && input.length > 0
-    ? input
-    : [{ role: "user", content: [{ type: "input_text", text: "" }] }];
-  const reasoning = {
-    effort: resolveReasoningEffort(
-      reasoningEffort,
-      reasoningContext || {
-        input: resolvedInput,
-        tools,
-        tool_choice: toolChoice,
-        instructions: resolvedInstructions
-      },
-      resolvedUpstreamModel
-    )
-  };
-  if (typeof reasoningSummary === "string" && reasoningSummary.trim().length > 0) {
-    reasoning.summary = reasoningSummary.trim();
-  }
-
-  const body = {
-    model: resolvedUpstreamModel,
-    stream: false,
-    store: false,
-    instructions: resolvedInstructions,
-    reasoning,
-    input: resolvedInput
-  };
-
-  if (Array.isArray(stop) && stop.length > 0) body.stop = stop;
-  else if (typeof stop === "string" && stop.length > 0) body.stop = [stop];
-  if (Array.isArray(tools)) body.tools = tools;
-  if (toolChoice !== undefined) body.tool_choice = toolChoice;
-  if (Array.isArray(include) && include.length > 0) body.include = include;
-
-  return {
-    route: {
-      requestedModel: resolvedRequestedModel,
-      mappedModel: resolvedUpstreamModel
-    },
-    body
-  };
-}
-
-async function executeCodexResponsesViaOAuth({
-  model,
-  requestedModel,
-  upstreamModel,
-  instructions,
-  input,
-  stop,
-  tools,
-  toolChoice,
-  include,
-  reasoningSummary,
-  reasoningEffort,
-  reasoningContext = null
-}) {
-  let auth = await getValidAuthContext();
-  if (!auth.accountId) {
-    throw new Error("Could not extract chatgpt_account_id from OAuth token.");
-  }
-
-  const { route, body: baseBody } = buildCodexResponsesRequestBody({
-    model,
-    requestedModel,
-    upstreamModel,
-    instructions,
-    input,
-    stop,
-    tools,
-    toolChoice,
-    include,
-    reasoningSummary,
-    reasoningEffort,
-    reasoningContext
-  });
-  const resolvedRequestedModel = route.requestedModel;
-  const resolvedUpstreamModel = route.mappedModel;
-
-  const url = `${config.upstreamBaseUrl.replace(/\/+$/, "")}/codex/responses`;
-  const executeOnce = async (currentAuth) => {
-    if (!currentAuth.accountId) {
-      const accountErr = new Error("Could not extract chatgpt_account_id from OAuth token.");
-      accountErr.statusCode = 401;
-      throw accountErr;
-    }
-
-    const sendCodexRequest = async (body, acceptHeader) => {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${currentAuth.accessToken}`,
-          "chatgpt-account-id": currentAuth.accountId,
-          "openai-beta": "responses=experimental",
-          originator: getCodexOriginator(),
-          accept: acceptHeader,
-          "content-type": "application/json",
-          "user-agent": "codex-pro-max-local-compat"
-        },
-        body: JSON.stringify(body)
-      });
-      const raw = await response.text();
-      return { response, raw };
-    };
-
-    const parseRequestResult = (result, expectSse = false) => {
-      if (expectSse) {
-        const parsedSse = parseResponsesResultFromSse(result.raw);
-        if (parsedSse.failed) {
-          const upstreamErr = new Error(parsedSse.failed.message);
-          upstreamErr.statusCode = Number(parsedSse.failed.statusCode || 502) || 502;
-          throw upstreamErr;
-        }
-        return parsedSse.completed;
-      }
-      return extractCompletedResponseFromJson(result.raw);
-    };
-
-    let activeBody = { ...baseBody };
-    let requestResult = await sendCodexRequest(activeBody, "application/json");
-    if (!requestResult.response.ok && isUnsupportedMaxOutputTokensError(requestResult.response.status, requestResult.raw)) {
-      const fallbackBody = { ...baseBody };
-      delete fallbackBody.max_output_tokens;
-      activeBody = fallbackBody;
-      requestResult = await sendCodexRequest(activeBody, "application/json");
-    }
-    if (!requestResult.response.ok) {
-      const maybeStreamOnly =
-        requestResult.response.status === 400 &&
-        /(stream|event-stream|sse)/i.test(requestResult.raw || "");
-      if (maybeStreamOnly) {
-        activeBody = { ...baseBody, stream: true };
-        requestResult = await sendCodexRequest(activeBody, "text/event-stream");
-      }
-    }
-    if (!requestResult.response.ok) {
-      const requestErr = new Error(
-        `Upstream request failed: HTTP ${requestResult.response.status}: ${truncate(requestResult.raw, 400)}`
-      );
-      requestErr.statusCode = requestResult.response.status;
-      throw requestErr;
-    }
-
-    await maybeCaptureCodexUsageFromHeaders(currentAuth, requestResult.response.headers, "response").catch(
-      () => {}
-    );
-
-    const contentType = requestResult.response.headers.get("content-type") || "";
-    let completed = parseRequestResult(
-      requestResult,
-      activeBody.stream === true || contentType.includes("text/event-stream")
-    );
-
-    if (!completed && activeBody.stream !== true) {
-      activeBody = { ...baseBody, stream: true };
-      requestResult = await sendCodexRequest(activeBody, "text/event-stream");
-      if (!requestResult.response.ok) {
-        const streamErr = new Error(
-          `Upstream request failed: HTTP ${requestResult.response.status}: ${truncate(requestResult.raw, 400)}`
-        );
-        streamErr.statusCode = requestResult.response.status;
-        throw streamErr;
-      }
-      completed = parseRequestResult(requestResult, true);
-    }
-
-    if (!completed) {
-      const parseErr = new Error("Could not parse completed response from upstream.");
-      parseErr.statusCode = 502;
-      throw parseErr;
-    }
-
-    return completed;
-  };
-
-  const canRetryWithPool = isCodexPoolRetryEnabled();
-  const maxAttempts = canRetryWithPool ? 2 : 1;
-  let completed = null;
-  let lastError = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      completed = await executeOnce(auth);
-      await maybeMarkCodexPoolSuccess(auth).catch(() => {});
-      lastError = null;
-      break;
-    } catch (err) {
-      lastError = err;
-      const statusCode = Number(err?.statusCode || 0);
-      const canRotateNow =
-        canRetryWithPool &&
-        attempt < maxAttempts &&
-        Boolean(auth?.poolAccountId) &&
-        shouldRotateCodexAccountForStatus(statusCode);
-
-      if (!canRotateNow) {
-        if (canRetryWithPool && shouldRotateCodexAccountForStatus(statusCode)) {
-          await maybeMarkCodexPoolFailure(auth, err.message, statusCode).catch(() => {});
-        }
-        break;
-      }
-
-      await maybeMarkCodexPoolFailure(auth, err.message, statusCode).catch(() => {});
-      auth = await getValidAuthContext();
-      if (!auth.accountId) {
-        const accountErr = new Error("Could not extract chatgpt_account_id from OAuth token.");
-        accountErr.statusCode = 401;
-        lastError = accountErr;
-        break;
-      }
-    }
-  }
-
-  if (!completed) {
-    throw lastError || new Error("Upstream request failed.");
-  }
-
-  return {
-    model: resolvedRequestedModel,
-    completed,
-    authAccountId: auth.poolAccountId || auth.accountId || null
-  };
-}
-
-async function handleGeminiNativeCompat(req, res) {
-  res.locals.protocolType = "gemini-v1beta-native";
-  const incoming = new URL(req.originalUrl, "http://localhost");
-  const pathname = incoming.pathname;
-
-  if (req.method === "GET" && (pathname === "/v1beta/models" || pathname === "/v1beta/models/")) {
-    const modelIds = getOpenAICompatibleModelIds();
-    res.status(200).json({
-      models: modelIds.map((id) => buildGeminiModelDescriptor(id))
-    });
-    return;
-  }
-
-  const modelDetailMatch = pathname.match(/^\/v1beta\/models\/([^/:]+)$/);
-  if (req.method === "GET" && modelDetailMatch) {
-    const modelId = decodeURIComponent(modelDetailMatch[1]);
-    res.status(200).json(buildGeminiModelDescriptor(modelId));
-    return;
-  }
-
-  const generateMatch = pathname.match(/^\/v1beta\/models\/([^/:]+):(generateContent|streamGenerateContent)$/);
-  if (!generateMatch || req.method !== "POST") {
-    res.status(400).json({
-      error: {
-        code: 400,
-        message:
-          "In local Gemini compatibility mode, supported endpoints are GET /v1beta/models, GET /v1beta/models/{model}, POST /v1beta/models/{model}:generateContent, POST /v1beta/models/{model}:streamGenerateContent.",
-        status: "INVALID_ARGUMENT"
-      }
-    });
-    return;
-  }
-
-  const modelFromPath = decodeURIComponent(generateMatch[1]);
-  const action = generateMatch[2];
-  let parsedReq;
-  try {
-    parsedReq = parseGeminiNativeBody(req.rawBody, modelFromPath || config.gemini.defaultModel);
-  } catch (err) {
-    res.status(400).json({
-      error: {
-        code: 400,
-        message: err.message,
-        status: "INVALID_ARGUMENT"
-      }
-    });
-    return;
-  }
-  parsedReq.model = modelFromPath || parsedReq.model;
-  const codexRoute = resolveCodexCompatibleRoute(parsedReq.model);
-  res.locals.modelRoute = codexRoute;
-
-  let result;
-  try {
-    result = await runCodexConversationViaOAuth({
-      ...parsedReq,
-      requestedModel: codexRoute.requestedModel,
-      upstreamModel: codexRoute.mappedModel
-    });
-  } catch (err) {
-    const statusCode = resolveCompatErrorStatusCode(err, 502);
-    res.status(statusCode).json({
-      error: {
-        code: statusCode,
-        message: err.message,
-        status: statusCode === 401 ? "UNAUTHENTICATED" : "INTERNAL"
-      }
-    });
-    return;
-  }
-
-  const payload = buildGeminiGenerateContentResponse({
-    model: result.model,
-    text: result.text,
-    finishReason: result.finishReason,
-    usage: result.usage
-  });
-  res.locals.authAccountId = result.authAccountId || null;
-
-  if (action === "streamGenerateContent") {
-    const wantsSse = String(incoming.searchParams.get("alt") || "").toLowerCase() === "sse";
-    if (wantsSse) {
-      sendGeminiSseResponse(res, payload);
-      return;
-    }
-    res.status(200).json([payload]);
-    return;
-  }
-
-  res.status(200).json(payload);
-}
-
-async function handleGeminiOpenAICompatWithCodex(req, res) {
-  let chatReq;
-  try {
-    chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.gemini.defaultModel);
-  } catch (err) {
-    res.status(400).json({ error: "invalid_request", message: err.message });
-    return;
-  }
-
-  const { systemText, conversation } = splitSystemAndConversation(chatReq.messages);
-  const modelRoute = resolveCodexCompatibleRoute(chatReq.model || config.gemini.defaultModel);
-  res.locals.modelRoute = modelRoute;
-  let result;
-  try {
-    result = await runCodexConversationViaOAuth({
-      requestedModel: modelRoute.requestedModel,
-      upstreamModel: modelRoute.mappedModel,
-      systemText,
-      conversation,
-      max_tokens: chatReq.max_tokens,
-      temperature: chatReq.temperature,
-      top_p: chatReq.top_p,
-      stop: chatReq.stop
-    });
-  } catch (err) {
-    const statusCode = resolveCompatErrorStatusCode(err, 502);
-    res.status(statusCode).json({
-      error: statusCode === 429 ? "usage_limit_reached" : "unauthorized",
-      message: err.message,
-      hint:
-        statusCode === 401
-          ? config.authMode === "profile-store"
-            ? "Run profile store login first."
-            : "Open /auth/login first."
-          : null
-    });
-    return;
-  }
-
-  const completion = buildOpenAIChatCompletion({
-    model: modelRoute.requestedModel,
-    text: result.text,
-    finishReason: result.finishReason,
-    usage: result.usage
-  });
-  res.locals.authAccountId = result.authAccountId || null;
-  res.locals.tokenUsage = completion.usage;
-  if (chatReq.stream === true) {
-    sendOpenAICompletionAsSse(res, completion);
-    return;
-  }
-  res.status(200).json(completion);
-}
-
-async function handleAnthropicOpenAICompatWithCodex(req, res) {
-  let chatReq;
-  try {
-    chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.anthropic.defaultModel);
-  } catch (err) {
-    res.status(400).json({ error: "invalid_request", message: err.message });
-    return;
-  }
-
-  const { systemText, conversation } = splitSystemAndConversation(chatReq.messages);
-  const modelRoute = resolveCodexCompatibleRoute(chatReq.model || config.anthropic.defaultModel);
-  res.locals.modelRoute = modelRoute;
-  let result;
-  try {
-    result = await runCodexConversationViaOAuth({
-      requestedModel: modelRoute.requestedModel,
-      upstreamModel: modelRoute.mappedModel,
-      systemText,
-      conversation,
-      max_tokens: chatReq.max_tokens,
-      temperature: chatReq.temperature,
-      top_p: chatReq.top_p,
-      stop: chatReq.stop
-    });
-  } catch (err) {
-    const statusCode = resolveCompatErrorStatusCode(err, 502);
-    res.status(statusCode).json({
-      error: statusCode === 429 ? "usage_limit_reached" : "unauthorized",
-      message: err.message,
-      hint:
-        statusCode === 401
-          ? config.authMode === "profile-store"
-            ? "Run profile store login first."
-            : "Open /auth/login first."
-          : null
-    });
-    return;
-  }
-
-  const completion = buildOpenAIChatCompletion({
-    model: modelRoute.requestedModel,
-    text: result.text,
-    finishReason: result.finishReason,
-    usage: result.usage
-  });
-  res.locals.authAccountId = result.authAccountId || null;
-  res.locals.tokenUsage = completion.usage;
-  if (chatReq.stream === true) {
-    sendOpenAICompletionAsSse(res, completion);
-    return;
-  }
-  res.status(200).json(completion);
 }
 
 async function runDirectChatCompletionTest(prompt) {
