@@ -1,0 +1,109 @@
+{
+  "name": "codex-pro-max",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local OAuth reverse proxy for Codex/OpenAI-compatible APIs",
+  "author": "fi",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "productName": "codex-pro-max",
+  "scripts": {
+    "start": "node src/server.js",
+    "desktop:dev": "electron .",
+    "build:runner": "node scripts/build-temp-mail-runner.mjs",
+    "build:cloudflared": "node scripts/build-cloudflared-bundles.mjs",
+    "build:desktop-resources": "npm run build:runner && npm run build:cloudflared",
+    "dist:win": "npm run build:desktop-resources && electron-builder --win nsis --x64",
+    "dist:mac": "npm run build:desktop-resources && electron-builder --mac dmg --universal",
+    "dist:linux": "npm run build:desktop-resources && electron-builder --linux AppImage --x64",
+    "test": "node --test",
+    "verify:claude-agent-sdk": "node tools/verify-claude-agent-sdk-compat.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "local.codexpromax.desktop",
+    "productName": "codex-pro-max",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "public/**/*",
+      "package.json",
+      "README.md",
+      "!test/**/*",
+      "!tests/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "build-resources/temp-mail-runner",
+        "to": "temp-mail-runner",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build-resources/cloudflared",
+        "to": "cloudflared",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "${productName} Setup ${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "Development"
+    }
+  }
+}
