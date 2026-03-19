@@ -39,8 +39,18 @@ var (
 	errStoppedRun = errors.New("run stopped")
 )
 
+const runnerVersion = "temp-mail-runner 0.1.0"
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
+
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--version", "-version", "version":
+			fmt.Println(runnerVersion)
+			return
+		}
+	}
 
 	start, err := readStartEnvelope()
 	if err != nil {

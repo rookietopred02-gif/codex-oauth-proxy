@@ -14,11 +14,37 @@ function flattenTokenCandidates(items) {
   return out;
 }
 
+const DEFAULT_USAGE_PROBE_CONCURRENCY = 4;
+
+function clampConcurrency(value, fallback = DEFAULT_USAGE_PROBE_CONCURRENCY) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(12, Math.floor(n)));
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+  const queue = Array.isArray(items) ? items : [];
+  if (queue.length === 0) return;
+
+  let cursor = 0;
+  const workerCount = Math.min(queue.length, clampConcurrency(concurrency));
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < queue.length) {
+        const index = cursor;
+        cursor += 1;
+        await worker(queue[index], index);
+      }
+    })
+  );
+}
+
 export async function importCodexOAuthTokens({
   store,
   items,
   replace = false,
   probeUsage = true,
+  probeUsageConcurrency = DEFAULT_USAGE_PROBE_CONCURRENCY,
   ensureStoreShape,
   normalizeToken,
   upsertAccount,
@@ -89,7 +115,8 @@ export async function importCodexOAuthTokens({
           normalizePlanType(raw.plan_type) ||
           normalizePlanType(raw.planType) ||
           normalizePlanType(rawUsageSnapshot?.plan_type),
-        usageSnapshot: rawUsageSnapshot
+        usageSnapshot: rawUsageSnapshot,
+        skipSlotNormalization: true
       }
     );
 
@@ -110,10 +137,10 @@ export async function importCodexOAuthTokens({
   let usageProbeFailed = 0;
   const usageProbeErrors = [];
   if (probeUsage) {
-    const uniqueRefs = [...new Set(importedRefs.filter(Boolean))];
-    for (const ref of uniqueRefs) {
-      const target = findAccountByRef(nextStore.accounts, ref);
-      if (!target || target.enabled === false) continue;
+    const probeTargets = [...new Set(importedRefs.filter(Boolean))]
+      .map((ref) => ({ ref, account: findAccountByRef(nextStore.accounts, ref) }))
+      .filter((entry) => entry.account && entry.account.enabled !== false);
+    await runWithConcurrency(probeTargets, probeUsageConcurrency, async ({ ref }) => {
       try {
         const probe = await refreshUsageSnapshot(nextStore, ref);
         if (probe?.ok) {
@@ -132,7 +159,7 @@ export async function importCodexOAuthTokens({
           error: String(err?.message || err || "usage_probe_failed")
         });
       }
-    }
+    });
   }
 
   const renormalized = ensureStoreShape(nextStore);

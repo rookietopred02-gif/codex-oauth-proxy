@@ -6,6 +6,9 @@ export function createProxyRouteHandlers(context) {
     hopByHop,
     runtimeAuditMaxBodyBytes,
     runtimeAuditMaxTextChars,
+    readJsonBody,
+    readRawBody,
+    getCachedJsonBody,
     extractPreviousResponseId,
     extractUpstreamTransportError,
     isPreviousResponseIdUnsupportedError,
@@ -105,11 +108,11 @@ export function createProxyRouteHandlers(context) {
     };
   }
 
-  function resolvePinnedCodexPoolEntryId(req, target) {
+  function resolvePinnedCodexPoolEntryId(req, target, rawBody) {
     if (config.authMode !== "codex-oauth" || !isCodexMultiAccountEnabled() || !isCodexPoolRetryEnabled()) return "";
     if (!target || target.endpointKind !== "responses") return "";
     if (req.method === "GET" || req.method === "HEAD") return "";
-    const previousResponseId = extractPreviousResponseId(req.rawBody);
+    const previousResponseId = extractPreviousResponseId(rawBody);
     if (!previousResponseId) return "";
     const affinity = codexResponseAffinity.lookup(previousResponseId);
     return typeof affinity?.poolEntryId === "string" ? affinity.poolEntryId : "";
@@ -174,7 +177,6 @@ export function createProxyRouteHandlers(context) {
 
     const startedAt = Date.now();
     const reqContentType = parseContentType(req.headers?.["content-type"]);
-    const requestPacket = formatPayloadForAudit(req.rawBody, reqContentType, runtimeAuditMaxTextChars);
 
     const responseChunks = [];
     let responseBytes = 0;
@@ -203,10 +205,17 @@ export function createProxyRouteHandlers(context) {
     };
 
     res.on("finish", () => {
+      const requestBodyForAudit = getCachedJsonBody(req) ?? req.rawBody ?? Buffer.alloc(0);
       const responseContentType = parseContentType(res.getHeader("content-type"));
       const responsePacket = formatPayloadForAudit(
         Buffer.concat(responseChunks),
         responseContentType,
+        runtimeAuditMaxTextChars
+      );
+      const requestPacket = formatPayloadForAudit(requestBodyForAudit, reqContentType, runtimeAuditMaxTextChars);
+      const upstreamRequestPacket = formatPayloadForAudit(
+        res.locals?.upstreamRequestBody,
+        res.locals?.upstreamRequestContentType,
         runtimeAuditMaxTextChars
       );
       const rawPath = req.originalUrl || req.url || "";
@@ -223,7 +232,7 @@ export function createProxyRouteHandlers(context) {
         req.method === "POST" &&
         res.statusCode >= 400 &&
         (safePath === "/v1/chat/completions" || safePath.startsWith("/v1/chat/completions/"))
-          ? estimateOpenAIChatCompletionTokens(req.rawBody)
+          ? estimateOpenAIChatCompletionTokens(req.rawBody, getCachedJsonBody(req))
           : 0;
       const estimatedRequestUsage =
         estimatedChatInputTokens > 0
@@ -270,7 +279,7 @@ export function createProxyRouteHandlers(context) {
         upstreamRequestContentType: String(res.locals?.upstreamRequestContentType || "").trim() || null,
         responseContentType: responseContentType || null,
         requestPacket: requestPacket || "",
-        upstreamRequestPacket: String(res.locals?.upstreamRequestPacket || ""),
+        upstreamRequestPacket: upstreamRequestPacket || "",
         responsePacket: responsePacket || ""
       };
 
@@ -316,6 +325,17 @@ export function createProxyRouteHandlers(context) {
       return;
     }
 
+    if (incoming.pathname === "/v1/chat/completions" && req.method === "POST") {
+      await readRawBody(req);
+      if (getCachedJsonBody(req) === undefined) {
+        try {
+          await readJsonBody(req);
+        } catch {
+          // preserve downstream invalid-request behavior
+        }
+      }
+    }
+
     const selectedProtocol =
       incoming.pathname === "/v1/chat/completions" && req.method === "POST"
         ? chooseProtocolForV1ChatCompletions(req)
@@ -342,8 +362,18 @@ export function createProxyRouteHandlers(context) {
       return;
     }
 
-    const previousResponseId = target?.endpointKind === "responses" ? extractPreviousResponseId(req.rawBody) : "";
-    const preferredPoolEntryId = resolvePinnedCodexPoolEntryId(req, target);
+    const requestBody =
+      req.method !== "GET" && req.method !== "HEAD" ? await readRawBody(req) : Buffer.alloc(0);
+    let parsedRequestBody = getCachedJsonBody(req);
+    if (parsedRequestBody === undefined && requestBody.length > 0) {
+      try {
+        parsedRequestBody = await readJsonBody(req);
+      } catch {
+        parsedRequestBody = undefined;
+      }
+    }
+    const previousResponseId = target?.endpointKind === "responses" ? extractPreviousResponseId(requestBody) : "";
+    const preferredPoolEntryId = resolvePinnedCodexPoolEntryId(req, target, requestBody);
 
     let auth;
     try {
@@ -399,18 +429,21 @@ export function createProxyRouteHandlers(context) {
     let normalizedResponsesRequest = null;
     let previousResponseChainEntry = null;
     if (req.method !== "GET" && req.method !== "HEAD") {
-      let body = req.rawBody || Buffer.alloc(0);
+      let body = requestBody;
+      let upstreamAuditBody = parsedRequestBody ?? body;
 
       try {
         if (config.upstreamMode === "codex-chatgpt") {
           if (target.endpointKind === "responses") {
-            const normalized = normalizeCodexResponsesRequestBody(body);
+            const normalized = normalizeCodexResponsesRequestBody(body, {
+              parsedBody: parsedRequestBody
+            });
             body = normalized.body;
             collectCompletedResponseAsJson = normalized.collectCompletedResponseAsJson;
             responseShape = "responses";
             responseModel = normalized.model || responseModel;
             if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
-            normalizedResponsesRequest = parseJsonLoose(body.toString("utf8"));
+            normalizedResponsesRequest = normalized.json || parseJsonLoose(body.toString("utf8"));
             if (previousResponseId && normalizedResponsesRequest && typeof normalizedResponsesRequest === "object") {
               previousResponseChainEntry = codexResponsesChain.lookup(previousResponseId);
               if (previousResponseChainEntry) {
@@ -419,6 +452,7 @@ export function createProxyRouteHandlers(context) {
                   previousResponseChainEntry
                 );
                 body = Buffer.from(JSON.stringify(normalizedResponsesRequest), "utf8");
+                upstreamAuditBody = normalizedResponsesRequest;
                 noteCompatibilityHint(res, "previous_response_id_emulated_locally");
               } else {
                 noteCompatibilityHint(res, "previous_response_id_chain_missing");
@@ -428,15 +462,19 @@ export function createProxyRouteHandlers(context) {
                 return;
               }
             }
+            upstreamAuditBody = normalized.json || upstreamAuditBody;
             headers.set("content-type", "application/json");
           } else if (target.endpointKind === "chat-completions") {
-            const normalized = normalizeChatCompletionsRequestBody(body);
+            const normalized = normalizeChatCompletionsRequestBody(body, {
+              parsedBody: parsedRequestBody
+            });
             body = normalized.body;
             streamChatCompletionsAsSse = normalized.wantsStream;
             collectCompletedResponseAsJson = !streamChatCompletionsAsSse;
             responseShape = "chat-completions";
             responseModel = normalized.model || responseModel;
             if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
+            upstreamAuditBody = normalized.json || body;
             headers.set("content-type", "application/json");
           }
         }
@@ -451,7 +489,7 @@ export function createProxyRouteHandlers(context) {
       init.body = body;
       noteUpstreamRequestAudit(
         res,
-        body,
+        upstreamAuditBody,
         headers.get("content-type") || req.headers?.["content-type"] || ""
       );
     }

@@ -1,6 +1,7 @@
 export function createGeminiLocalCompatHelpers(context) {
   const {
     config,
+    readJsonBody,
     resolveCodexCompatibleRoute,
     resolveCompatErrorStatusCode,
     parseOpenAIChatCompletionsLikeRequest,
@@ -28,15 +29,17 @@ export function createGeminiLocalCompatHelpers(context) {
     return texts.join("\n");
   }
 
-  function parseGeminiNativeBody(rawBody, fallbackModel) {
-    if (!rawBody || rawBody.length === 0) {
+  function parseGeminiNativeBody(rawBody, fallbackModel, parsedBody = undefined) {
+    if ((!rawBody || rawBody.length === 0) && parsedBody === undefined) {
       throw new Error("Gemini request body is required.");
     }
-    let parsed;
-    try {
-      parsed = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-      throw new Error("Invalid JSON body for Gemini endpoint.");
+    let parsed = parsedBody;
+    if (parsed === undefined) {
+      try {
+        parsed = JSON.parse(rawBody.toString("utf8"));
+      } catch {
+        throw new Error("Invalid JSON body for Gemini endpoint.");
+      }
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("Gemini request body must be a JSON object.");
@@ -159,7 +162,13 @@ export function createGeminiLocalCompatHelpers(context) {
     const action = generateMatch[2];
     let parsedReq;
     try {
-      parsedReq = parseGeminiNativeBody(req.rawBody, modelFromPath || config.gemini.defaultModel);
+      let parsedBody;
+      try {
+        parsedBody = await readJsonBody(req);
+      } catch {
+        parsedBody = undefined;
+      }
+      parsedReq = parseGeminiNativeBody(req.rawBody, modelFromPath || config.gemini.defaultModel, parsedBody);
     } catch (err) {
       res.status(400).json({
         error: {
@@ -217,7 +226,13 @@ export function createGeminiLocalCompatHelpers(context) {
   async function handleGeminiOpenAICompatWithCodex(req, res) {
     let chatReq;
     try {
-      chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.gemini.defaultModel);
+      let parsedBody;
+      try {
+        parsedBody = await readJsonBody(req);
+      } catch {
+        parsedBody = undefined;
+      }
+      chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.gemini.defaultModel, parsedBody);
     } catch (err) {
       res.status(400).json({ error: "invalid_request", message: err.message });
       return;

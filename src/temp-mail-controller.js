@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import fsSync from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 
@@ -19,6 +20,133 @@ function safeJsonParse(line) {
   } catch {
     return null;
   }
+}
+
+function resolveTempMailRunnerBinaryName(platform = process.platform) {
+  return platform === "win32" ? "temp-mail-runner.exe" : "temp-mail-runner";
+}
+
+function resolveTempMailRunnerTargetNames(platform = process.platform, arch = process.arch) {
+  if (platform === "win32" && arch === "x64") return ["win32-x64"];
+  if (platform === "linux" && arch === "x64") return ["linux-x64"];
+  if (platform === "darwin" && arch === "x64") return ["darwin-universal", "darwin-x64"];
+  if (platform === "darwin" && arch === "arm64") return ["darwin-universal", "darwin-arm64"];
+  return [];
+}
+
+function resolveTempMailRunnerSpec({
+  rootDir,
+  runnerBinaryPath,
+  runnerResourcesDir,
+  allowGoRun = true
+}) {
+  const explicitBinaryPath = String(runnerBinaryPath || "").trim();
+  if (explicitBinaryPath) {
+    const resolvedBinaryPath = path.resolve(explicitBinaryPath);
+    if (fsSync.existsSync(resolvedBinaryPath)) {
+      return {
+        mode: "binary",
+        command: resolvedBinaryPath,
+        args: [],
+        cwd: path.dirname(resolvedBinaryPath),
+        versionCommand: resolvedBinaryPath,
+        versionArgs: ["--version"]
+      };
+    }
+    return {
+      error: `Temp Mail runner binary not found: ${resolvedBinaryPath}`
+    };
+  }
+
+  const resourcesDir = String(runnerResourcesDir || "").trim();
+  if (resourcesDir) {
+    const binaryName = resolveTempMailRunnerBinaryName();
+    const candidates = resolveTempMailRunnerTargetNames().map((targetName) =>
+      path.join(path.resolve(resourcesDir), targetName, binaryName)
+    );
+    for (const candidate of candidates) {
+      if (fsSync.existsSync(candidate)) {
+        return {
+          mode: "binary",
+          command: candidate,
+          args: [],
+          cwd: path.dirname(candidate),
+          versionCommand: candidate,
+          versionArgs: ["--version"]
+        };
+      }
+    }
+    if (!allowGoRun) {
+      return {
+        error: `Bundled Temp Mail runner is missing for ${process.platform}-${process.arch}.`
+      };
+    }
+  }
+
+  if (!allowGoRun) {
+    return {
+      error: "Temp Mail runner is unavailable."
+    };
+  }
+
+  const runnerDir = path.join(rootDir, "tools", "temp-mail-runner");
+  return {
+    mode: "go-run",
+    command: "go",
+    args: ["run", "."],
+    cwd: runnerDir,
+    versionCommand: "go",
+    versionArgs: ["version"]
+  };
+}
+
+async function probeTempMailRunner({ runner, spawnImpl = spawn }) {
+  return await new Promise((resolve) => {
+    const child = spawnImpl(runner.versionCommand, runner.versionArgs, {
+      cwd: runner.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      finish({ ok: false, error: `${runner.mode === "go-run" ? "go version" : "runner"} probe timed out.` });
+    }, 5000);
+    timer.unref?.();
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk || "");
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk || "");
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      finish({ ok: false, error: String(err?.message || err || "runner unavailable") });
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        finish({
+          ok: true,
+          version: (stdout.trim() || stderr.trim() || runner.mode).trim()
+        });
+      } else {
+        finish({ ok: false, error: (stderr || stdout || `runner exited ${code}`).trim() });
+      }
+    });
+  });
 }
 
 export function normalizeTempMailConfig(input = {}) {
@@ -54,57 +182,15 @@ export function createTempMailLogBuffer(limit = DEFAULT_LOG_LIMIT) {
   };
 }
 
-async function probeGoToolchain() {
-  return await new Promise((resolve) => {
-    const child = spawn("go", ["version"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true
-    });
-    let stdout = "";
-    let stderr = "";
-    let done = false;
-    const finish = (result) => {
-      if (done) return;
-      done = true;
-      resolve(result);
-    };
-    const timer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // ignore
-      }
-      finish({ ok: false, error: "go version probe timed out." });
-    }, 5000);
-    timer.unref?.();
-
-    child.stdout.on("data", (chunk) => {
-      stdout += String(chunk || "");
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk || "");
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      finish({ ok: false, error: String(err?.message || err || "go not available") });
-    });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        finish({ ok: true, version: stdout.trim() || "go" });
-      } else {
-        finish({ ok: false, error: (stderr || stdout || `go exited ${code}`).trim() });
-      }
-    });
-  });
-}
-
 export function createTempMailController({
   rootDir,
   importTokens,
   isSupported = () => true,
   spawnImpl = spawn,
-  probeRunnerImpl = probeGoToolchain,
+  probeRunnerImpl = probeTempMailRunner,
+  runnerBinaryPath = "",
+  runnerResourcesDir = "",
+  allowGoRun = true,
   logLimit = DEFAULT_LOG_LIMIT
 }) {
   if (typeof importTokens !== "function") throw new Error("importTokens is required");
@@ -116,6 +202,7 @@ export function createTempMailController({
     runnerReady: false,
     runnerError: "",
     runnerVersion: "",
+    runnerMode: "",
     running: false,
     stopping: false,
     config: null,
@@ -136,6 +223,7 @@ export function createTempMailController({
   let runnerCheckedAt = 0;
   let stopTimer = null;
   let killTimer = null;
+  let runnerSpec = null;
 
   function snapshot() {
     return {
@@ -143,6 +231,7 @@ export function createTempMailController({
       runnerReady: state.runnerReady,
       runnerError: state.runnerError,
       runnerVersion: state.runnerVersion,
+      runnerMode: state.runnerMode || null,
       running: state.running,
       stopping: state.stopping,
       config: state.config
@@ -179,6 +268,8 @@ export function createTempMailController({
       state.runnerReady = false;
       state.runnerError = "Temp Mail requires AUTH_MODE=codex-oauth.";
       state.runnerVersion = "";
+      state.runnerMode = "";
+      runnerSpec = null;
       return snapshot();
     }
 
@@ -188,10 +279,30 @@ export function createTempMailController({
     }
 
     runnerCheckedAt = now;
-    const runnerDir = path.join(rootDir, "tools", "temp-mail-runner");
-    const result = await probeRunnerImpl({ runnerDir, rootDir });
+    const nextRunnerSpec = resolveTempMailRunnerSpec({
+      rootDir,
+      runnerBinaryPath,
+      runnerResourcesDir,
+      allowGoRun
+    });
+    if (nextRunnerSpec?.error) {
+      runnerSpec = null;
+      state.runnerReady = false;
+      state.runnerVersion = "";
+      state.runnerMode = "";
+      state.runnerError = String(nextRunnerSpec.error);
+      return snapshot();
+    }
+
+    const result = await probeRunnerImpl({
+      runner: nextRunnerSpec,
+      rootDir,
+      spawnImpl
+    });
+    runnerSpec = nextRunnerSpec;
     state.runnerReady = result?.ok === true;
     state.runnerVersion = result?.version || "";
+    state.runnerMode = nextRunnerSpec.mode || "";
     state.runnerError = result?.ok === true ? "" : String(result?.error || "Temp Mail runner is unavailable.");
     return snapshot();
   }
@@ -294,7 +405,7 @@ export function createTempMailController({
     }
 
     await refreshRunner(false);
-    if (!state.runnerReady) {
+    if (!state.runnerReady || !runnerSpec) {
       throw new Error(state.runnerError || "Temp Mail runner is unavailable.");
     }
 
@@ -318,10 +429,8 @@ export function createTempMailController({
       "controller"
     );
 
-    const runnerDir = path.join(rootDir, "tools", "temp-mail-runner");
-    const runnerArgs = ["run", "."];
-    child = spawnImpl("go", runnerArgs, {
-      cwd: runnerDir,
+    child = spawnImpl(runnerSpec.command, runnerSpec.args, {
+      cwd: runnerSpec.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true
     });

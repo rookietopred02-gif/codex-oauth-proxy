@@ -20,12 +20,13 @@ export function registerAdminCoreRoutes(app, context) {
     hashProxyApiKey,
     sanitizeProxyApiKeyLabel,
     saveProxyApiKeyStore,
-    parseJsonBody,
+    readJsonBody,
     startCloudflaredTunnel,
     stopCloudflaredTunnel,
     validCloudflaredModes,
     parseNumberEnv,
-    getOfficialModelCandidateIds
+    getOfficialModelCandidateIds,
+    getOfficialCodexModelCandidateIds
   } = context;
 
   app.get("/admin/state", async (_req, res) => {
@@ -74,7 +75,7 @@ export function registerAdminCoreRoutes(app, context) {
 
   app.post("/admin/api-keys/generate", async (req, res) => {
     try {
-      const body = parseJsonBody(req);
+      const body = await readJsonBody(req);
       const nowSec = Math.floor(Date.now() / 1000);
       const label = sanitizeProxyApiKeyLabel(body?.label);
       const expiresInDaysRaw = Number(body?.expiresInDays);
@@ -125,7 +126,7 @@ export function registerAdminCoreRoutes(app, context) {
 
   app.post("/admin/api-keys/revoke", async (req, res) => {
     try {
-      const body = parseJsonBody(req);
+      const body = await readJsonBody(req);
       const id = String(body?.id || "").trim();
       if (!id) {
         throw new Error("id is required.");
@@ -181,7 +182,7 @@ export function registerAdminCoreRoutes(app, context) {
 
   app.post("/admin/public-access/start", async (req, res) => {
     try {
-      const body = parseJsonBody(req);
+      const body = await readJsonBody(req);
       const modeRaw = String(body?.mode || "").trim().toLowerCase();
       const mode = validCloudflaredModes.has(modeRaw)
         ? modeRaw
@@ -240,10 +241,14 @@ export function registerAdminCoreRoutes(app, context) {
 
   app.get("/admin/model-candidates", async (req, res) => {
     const forceRefresh = String(req.query.refresh || "").trim() === "1";
-    const models = await getOfficialModelCandidateIds({ forceRefresh });
+    const [models, codexModels] = await Promise.all([
+      getOfficialModelCandidateIds({ forceRefresh }),
+      getOfficialCodexModelCandidateIds({ forceRefresh })
+    ]);
     res.json({
       ok: true,
       models,
+      codexModels,
       wildcardPresets: ["gpt-*", "gpt-4*", "gpt-5*", "claude-*", "gemini-*"]
     });
   });

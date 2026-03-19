@@ -13,7 +13,7 @@ export function registerAuthRoutes(app, context) {
     completeOAuthCallback,
     buildOAuthCallbackMessage,
     oauthCallbackSuccessHtml,
-    parseJsonBody,
+    readJsonBody,
     removeCodexPoolAccountFromStore,
     saveTokenStore,
     clearAuthContextCache,
@@ -156,7 +156,7 @@ export function registerAuthRoutes(app, context) {
     }
 
     if (config.authMode === "codex-oauth") {
-      const body = parseJsonBody(req);
+      const body = await readJsonBody(req);
       const accountRef = String(body.entryId || body.accountId || "").trim();
       const removed = removeCodexPoolAccountFromStore(oauthRuntime.store, accountRef);
       if (!removed.removed) {

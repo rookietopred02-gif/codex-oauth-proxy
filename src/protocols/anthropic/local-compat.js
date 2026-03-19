@@ -20,6 +20,8 @@ const ANTHROPIC_TOOL_USE_EMPTY_STRING_KEYS = {
 export function createAnthropicLocalCompatHelpers(context) {
   const {
     config,
+    readJsonBody,
+    readRawBody,
     parseJsonLoose,
     truncate,
     resolveReasoningEffort,
@@ -107,15 +109,17 @@ export function createAnthropicLocalCompatHelpers(context) {
     return "";
   }
 
-  function parseAnthropicJsonBody(rawBody) {
-    if (!rawBody || rawBody.length === 0) {
+  function parseAnthropicJsonBody(rawBody, parsedBody = undefined) {
+    if ((!rawBody || rawBody.length === 0) && parsedBody === undefined) {
       throw new Error("Anthropic request body is required.");
     }
-    let parsed;
-    try {
-      parsed = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-      throw new Error("Invalid JSON body for Anthropic endpoint.");
+    let parsed = parsedBody;
+    if (parsed === undefined) {
+      try {
+        parsed = JSON.parse(rawBody.toString("utf8"));
+      } catch {
+        throw new Error("Invalid JSON body for Anthropic endpoint.");
+      }
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("Anthropic request body must be a JSON object.");
@@ -617,8 +621,8 @@ export function createAnthropicLocalCompatHelpers(context) {
     return normalized;
   }
 
-  function parseAnthropicNativeBody(rawBody) {
-    const parsed = parseAnthropicJsonBody(rawBody);
+  function parseAnthropicNativeBody(rawBody, parsedBody = undefined) {
+    const parsed = parseAnthropicJsonBody(rawBody, parsedBody);
 
     const messages = [];
     const sourceMessages = Array.isArray(parsed.messages) ? parsed.messages : [];
@@ -917,8 +921,8 @@ export function createAnthropicLocalCompatHelpers(context) {
     return Math.max(1, Math.ceil(Buffer.byteLength(source, "utf8") / 4));
   }
 
-  function estimateAnthropicCountTokens(rawBody) {
-    const parsed = parseAnthropicJsonBody(rawBody);
+  function estimateAnthropicCountTokens(rawBody, parsedBody = undefined) {
+    const parsed = parseAnthropicJsonBody(rawBody, parsedBody);
     const segments = [];
     const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
 
@@ -1789,7 +1793,14 @@ export function createAnthropicLocalCompatHelpers(context) {
     if (incoming.pathname === "/v1/messages/count_tokens") {
       let inputTokens;
       try {
-        inputTokens = estimateAnthropicCountTokens(req.rawBody);
+        const rawBody = await readRawBody(req);
+        let parsedBody;
+        try {
+          parsedBody = await readJsonBody(req);
+        } catch {
+          parsedBody = undefined;
+        }
+        inputTokens = estimateAnthropicCountTokens(rawBody, parsedBody);
       } catch (err) {
         res.status(400).json({
           type: "error",
@@ -1815,7 +1826,14 @@ export function createAnthropicLocalCompatHelpers(context) {
 
     let parsedReq;
     try {
-      parsedReq = parseAnthropicNativeBody(req.rawBody);
+      const rawBody = await readRawBody(req);
+      let parsedBody;
+      try {
+        parsedBody = await readJsonBody(req);
+      } catch {
+        parsedBody = undefined;
+      }
+      parsedReq = parseAnthropicNativeBody(rawBody, parsedBody);
     } catch (err) {
       res.status(400).json({
         type: "error",

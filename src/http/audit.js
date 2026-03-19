@@ -36,6 +36,12 @@ export function formatPayloadForAudit(raw, contentType, maxChars = 0) {
   if (Buffer.isBuffer(raw)) {
     if (raw.length === 0) return "";
     text = raw.toString("utf8");
+  } else if (raw && typeof raw === "object") {
+    try {
+      text = JSON.stringify(raw, null, 2);
+    } catch {
+      text = String(raw);
+    }
   } else {
     text = String(raw || "");
   }

@@ -9,7 +9,7 @@ export function createRecentRequestsUi(deps) {
     showCopyError,
     readStoredBool,
     writeStoredString,
-    panelStorageKey,
+    recordingStorageKey,
     resolveProtocolLabel,
     resolveModelDisplay,
     resolveAccountDisplay,
@@ -19,6 +19,7 @@ export function createRecentRequestsUi(deps) {
   const requestDetailCopyResetTimers = new Map();
   let requestDetailMap = new Map();
   let activeRequestDetailId = "";
+  let recordingEnabled = readStoredBool(recordingStorageKey) !== false;
 
   function safeCodeText(value) {
     const text = String(value || "");
@@ -147,20 +148,22 @@ export function createRecentRequestsUi(deps) {
     document.body.style.overflow = "";
   }
 
-  function renderToggle() {
-    const button = $("requestsToggleBtn");
-    const body = $("requestsSectionBody");
-    if (!(button instanceof HTMLButtonElement) || !(body instanceof HTMLElement)) return;
-    const expanded = readStoredBool(panelStorageKey) !== false;
-    body.hidden = !expanded;
-    button.textContent = expanded ? t("recent_requests_toggle_hide") : t("recent_requests_toggle_show");
-    button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  function renderRecordingToggle() {
+    const button = $("ignoreReqBtn");
+    const label = $("ignoreReqBtnLabel");
+    if (!(button instanceof HTMLButtonElement) || !(label instanceof HTMLElement)) return;
+    recordingEnabled = readStoredBool(recordingStorageKey) !== false;
+    button.classList.toggle("is-recording", recordingEnabled);
+    button.classList.toggle("is-ignoring", !recordingEnabled);
+    button.setAttribute("aria-pressed", recordingEnabled ? "false" : "true");
+    label.textContent = recordingEnabled ? t("recent_requests_record") : t("recent_requests_ignore");
   }
 
-  function togglePanel() {
-    const expanded = readStoredBool(panelStorageKey) !== false;
-    writeStoredString(panelStorageKey, expanded ? "0" : "1");
-    renderToggle();
+  function toggleRecording() {
+    recordingEnabled = !recordingEnabled;
+    writeStoredString(recordingStorageKey, recordingEnabled ? "1" : "0");
+    renderRecordingToggle();
+    return recordingEnabled;
   }
 
   function renderRows(rows) {
@@ -191,11 +194,14 @@ export function createRecentRequestsUi(deps) {
 
   return {
     renderRows,
-    renderToggle,
-    togglePanel,
+    renderRecordingToggle,
+    toggleRecording,
     openRequestDetailModal,
     closeRequestDetailModal,
     copyRequestDetailLog,
+    isRecordingEnabled() {
+      return recordingEnabled;
+    },
     hasOpenDetail() {
       return activeRequestDetailId.length > 0;
     },

@@ -11,21 +11,6 @@ export function registerCommonMiddleware(app, context) {
     recordManagedProxyApiKeyUsage
   } = context;
 
-  app.use((req, _res, next) => {
-    if (req.method === "GET" || req.method === "HEAD") {
-      next();
-      return;
-    }
-
-    const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", () => {
-      req.rawBody = chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0);
-      next();
-    });
-    req.on("error", next);
-  });
-
   app.use((req, res, next) => {
     const pathName = String(req.path || req.url || "");
     if (!isProxyApiPath(pathName)) {

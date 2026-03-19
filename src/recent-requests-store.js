@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 const DEFAULT_MAX_ENTRIES = 120;
+const DEFAULT_PERSIST_DEBOUNCE_MS = 50;
 
 function clampMaxEntries(value) {
   const parsed = Number(value);
@@ -33,15 +34,68 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
   const limit = clampMaxEntries(maxEntries);
   let state = normalizeRecentRequestsStore([], limit);
   let persistChain = Promise.resolve();
+  let persistTimer = null;
+  let pendingFlushPromise = null;
+  let resolvePendingFlush = null;
+  let rejectPendingFlush = null;
 
   async function writeState() {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, JSON.stringify(state, null, 2), "utf8");
   }
 
-  function queuePersist() {
+  function ensurePendingFlush() {
+    if (!pendingFlushPromise) {
+      pendingFlushPromise = new Promise((resolve, reject) => {
+        resolvePendingFlush = resolve;
+        rejectPendingFlush = reject;
+      });
+    }
+    return pendingFlushPromise;
+  }
+
+  function settlePendingFlush(err = null) {
+    const resolve = resolvePendingFlush;
+    const reject = rejectPendingFlush;
+    pendingFlushPromise = null;
+    resolvePendingFlush = null;
+    rejectPendingFlush = null;
+    if (err) {
+      reject?.(err);
+      return;
+    }
+    resolve?.();
+  }
+
+  function persistNow() {
+    const pending = ensurePendingFlush();
     persistChain = persistChain.catch(() => {}).then(writeState);
-    return persistChain;
+    persistChain.then(() => settlePendingFlush()).catch((err) => settlePendingFlush(err));
+    return pending;
+  }
+
+  function queuePersist(delayMs = DEFAULT_PERSIST_DEBOUNCE_MS) {
+    const pending = ensurePendingFlush();
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      void persistNow();
+    }, delayMs);
+    return pending;
+  }
+
+  async function flush() {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+      await persistNow();
+      return;
+    }
+    if (pendingFlushPromise) {
+      await pendingFlushPromise;
+      return;
+    }
+    await persistChain;
   }
 
   async function load() {
@@ -51,7 +105,7 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
     } catch {
       state = normalizeRecentRequestsStore([], limit);
     }
-    await queuePersist();
+    await persistNow();
     return snapshot();
   }
 
@@ -78,7 +132,7 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
 
   function clear() {
     state = normalizeRecentRequestsStore([], limit);
-    void queuePersist();
+    void persistNow();
     return snapshot();
   }
 
@@ -86,6 +140,7 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
     append,
     clear,
     filePath,
+    flush,
     load,
     replace,
     snapshot

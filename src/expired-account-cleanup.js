@@ -18,22 +18,46 @@ function resolveAccountRef(account) {
   return accountId || "";
 }
 
-export function shouldAutoLogoutExpiredAccount(account, nowSec = Math.floor(Date.now() / 1000)) {
-  const expiresAt = Number(account?.token?.expires_at || account?.token?.expiresAt || 0);
-  if (!Number.isFinite(expiresAt) || expiresAt <= 0 || expiresAt > nowSec) return false;
-  const refreshToken = String(account?.token?.refresh_token || account?.token?.refreshToken || "").trim();
-  return refreshToken.length === 0;
+function isTokenInvalidatedFailure(statusCode, reason) {
+  if (Number(statusCode || 0) !== 401) return false;
+  const text = String(reason || "").toLowerCase();
+  return (
+    text.includes("token_invalidated") ||
+    text.includes("authentication token has been invalidated") ||
+    text.includes("please try signing in again")
+  );
 }
 
-export function findExpiredAccountCleanupCandidates(accounts, nowSec = Math.floor(Date.now() / 1000)) {
+export function shouldAutoRemoveInvalidatedAccount(account) {
+  const invalidatedAt = Number(account?.token_invalidated_at || account?.tokenInvalidatedAt || 0);
+  if (Number.isFinite(invalidatedAt) && invalidatedAt > 0) return true;
+  const statusCode = Number(account?.last_status_code || account?.lastStatusCode || 0);
+  const lastError = String(account?.last_error || account?.lastError || "");
+  return isTokenInvalidatedFailure(statusCode, lastError);
+}
+
+export function findInvalidatedAccountCleanupCandidates(accounts) {
   const list = Array.isArray(accounts) ? accounts : [];
   return list
-    .filter((account) => shouldAutoLogoutExpiredAccount(account, nowSec))
+    .filter((account) => shouldAutoRemoveInvalidatedAccount(account))
     .map((account) => ({
       ref: resolveAccountRef(account),
       entryId: String(account?.entry_id || account?.entryId || "").trim() || null,
       accountId: String(account?.account_id || account?.accountId || "").trim() || null,
-      expiresAt: Number(account?.token?.expires_at || account?.token?.expiresAt || 0) || 0
+      invalidatedAt: Number(account?.token_invalidated_at || account?.tokenInvalidatedAt || 0) || 0
+    }))
+    .filter((candidate) => candidate.ref);
+}
+
+export const shouldAutoLogoutExpiredAccount = shouldAutoRemoveInvalidatedAccount;
+export const findExpiredAccountCleanupCandidates = findInvalidatedAccountCleanupCandidates;
+
+function listAccountCleanupTargets(accounts) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  return list
+    .map((account) => ({
+      ref: resolveAccountRef(account),
+      account
     }))
     .filter((candidate) => candidate.ref);
 }
@@ -41,6 +65,7 @@ export function findExpiredAccountCleanupCandidates(accounts, nowSec = Math.floo
 export function createExpiredAccountCleanupController(options = {}) {
   const getStore = typeof options.getStore === "function" ? options.getStore : () => ({ accounts: [] });
   const getAccounts = typeof options.getAccounts === "function" ? options.getAccounts : (store) => store?.accounts || [];
+  const probeAccount = typeof options.probeAccount === "function" ? options.probeAccount : null;
   const removeAccount =
     typeof options.removeAccount === "function"
       ? options.removeAccount
@@ -140,19 +165,46 @@ export function createExpiredAccountCleanupController(options = {}) {
       }
 
       const store = await getStore();
-      const candidates = findExpiredAccountCleanupCandidates(getAccounts(store), startedAt);
+      const candidates = listAccountCleanupTargets(getAccounts(store));
       let nextStore = store;
       const removedRefs = [];
+      let probedCount = 0;
+      let touchedStore = false;
 
       for (const candidate of candidates) {
+        if (shouldAutoRemoveInvalidatedAccount(candidate.account)) {
+          const result = await removeAccount(nextStore, candidate.ref);
+          if (!result?.removed) continue;
+          nextStore = result.store ?? nextStore;
+          removedRefs.push(candidate.ref);
+          touchedStore = true;
+          continue;
+        }
+
+        if (probeAccount) {
+          const probe = await probeAccount(nextStore, candidate.ref, candidate.account, {
+            reason: state.lastReason
+          });
+          probedCount += 1;
+          if (probe?.store) nextStore = probe.store;
+          if (probe?.changed === true) touchedStore = true;
+          if (probe?.ok !== false) continue;
+        } else {
+          continue;
+        }
+
         const result = await removeAccount(nextStore, candidate.ref);
         if (!result?.removed) continue;
         nextStore = result.store ?? nextStore;
         removedRefs.push(candidate.ref);
+        touchedStore = true;
+      }
+
+      if (removedRefs.length > 0 || touchedStore) {
+        await saveStore(nextStore, removedRefs);
       }
 
       if (removedRefs.length > 0) {
-        await saveStore(nextStore, removedRefs);
         await onRemoved({
           reason: state.lastReason,
           removedRefs: [...removedRefs],
@@ -169,6 +221,7 @@ export function createExpiredAccountCleanupController(options = {}) {
         status: state.lastStatus,
         removedCount: removedRefs.length,
         candidates: candidates.length,
+        probedCount,
         removedRefs: [...removedRefs]
       };
     } catch (err) {

@@ -1,79 +1,214 @@
 # codex-pro-max
 
-Localhost OpenAI-compatible proxy for Codex/ChatGPT OAuth, with a built-in control dashboard.
+Local OpenAI-compatible proxy for Codex/ChatGPT OAuth with a built-in dashboard, multi-account pool management, temp-mail assisted account registration, public access tunneling, request audit, and an Electron desktop shell.
 
-This now defaults to `AUTH_MODE=codex-oauth`, so you can authenticate directly from this project.
+This project now defaults to `AUTH_MODE=codex-oauth`, so the built-in dashboard can drive ChatGPT/Codex OAuth directly without an external auth bootstrap.
 
-The dashboard style and control surface are inspired by the operational flow in [Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager): auth control, runtime config, health checks, and request monitoring in one UI combine with alt accounts auto generating which is inspired by [Ethan-W20/openai-auto-register](https://github.com/Ethan-W20/openai-auto-register)
+The dashboard and ops workflow take inspiration from:
 
-## 1. Install
+- [lbjlaq/Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)
+- [Ethan-W20/openai-auto-register](https://github.com/Ethan-W20/openai-auto-register)
+
+## Features
+
+- OpenAI-compatible proxy endpoints for `Codex/ChatGPT`, `Gemini`, and `Anthropic`
+- Built-in dashboard for auth, config, runtime health, pool operations, and request inspection
+- Multi-account Codex OAuth pool with usage probes and account switching
+- `Account Auto RM` background cleanup for invalidated or probe-failed accounts
+- Request audit with recent request history and detail modal
+- Temp Mail workflow with bundled runner support in desktop builds
+- Desktop Electron app with embedded backend and per-user writable data paths
+- Bundled `cloudflared` and Temp Mail runner binaries for packaged desktop builds
+- Windows NSIS installer with standard uninstall support
+
+## Requirements
+
+Runtime:
+
+- Node.js 20+
+- npm
+
+Build:
+
+- Go toolchain for Temp Mail runner builds
+- Windows host for `.exe` installer output
+- macOS host for `.dmg`
+- Linux host or compatible AppImage toolchain for final Linux package output
+
+## Quick Start
+
+Install dependencies:
 
 ```bash
 cd codex-pro-max
 npm install
 ```
 
-## 2. Configure
+Create local config:
 
 ```bash
 cp .env.example .env
 ```
 
-Default setup:
-
-```env
-AUTH_MODE=codex-oauth
-# Dashboard label: openai-v1 (internally codex-chatgpt)
-UPSTREAM_MODE=codex-chatgpt
-UPSTREAM_BASE_URL=https://chatgpt.com/backend-api
-CODEX_DEFAULT_MODEL=gpt-5.4
-CODEX_DEFAULT_SERVICE_TIER=default
-CODEX_DEFAULT_REASONING_EFFORT=adaptive
-CODEX_PREHEAT_BATCH_SIZE=2
-```
-
-Protocol quick switch examples:
-
-```env
-# Gemini
-UPSTREAM_MODE=gemini-v1beta
-# Optional:
-# - empty => local Gemini-compatible facade (no real Gemini key needed)
-# - set key => pass-through to official Gemini upstream
-GEMINI_API_KEY=
-
-# Anthropic
-UPSTREAM_MODE=anthropic-v1
-# Optional:
-# - empty => local Anthropic-compatible facade (no real Anthropic key needed)
-# - set key => pass-through to official Anthropic upstream
-ANTHROPIC_API_KEY=
-```
-
-## 3. Start
+Start the proxy server:
 
 ```bash
 npm start
 ```
 
-## 4. Open Dashboard
+Open the dashboard:
 
 ```text
 http://127.0.0.1:8787/dashboard/
 ```
 
-Use the dashboard to:
+## Default Configuration
 
-- trigger OAuth login/logout
-- edit runtime proxy settings
-- set OpenAI `Service Tier` from the dashboard (`Default` or `Priority`)
-- edit Model Router mappings (`exact` + `*` wildcard)
-- tune default reasoning effort (`adaptive|none|low|medium|high|xhigh`)
-- manually run account preheat from dashboard (`Run Preheat Now`)
-- run upstream self-tests (works for `codex-chatgpt`, `gemini-v1beta`, and `anthropic-v1`)
-- inspect recent proxy requests and latencies
+Minimal default setup:
 
-## 5. API Usage
+```env
+AUTH_MODE=codex-oauth
+UPSTREAM_MODE=codex-chatgpt
+UPSTREAM_BASE_URL=https://chatgpt.com/backend-api
+CODEX_DEFAULT_MODEL=gpt-5.4
+CODEX_DEFAULT_SERVICE_TIER=default
+CODEX_DEFAULT_REASONING_EFFORT=adaptive
+CODEX_MULTI_ACCOUNT_ENABLED=true
+CODEX_MULTI_ACCOUNT_STRATEGY=smart
+CODEX_AUTO_LOGOUT_EXPIRED_ACCOUNTS=false
+```
+
+Provider quick switch examples:
+
+```env
+# Gemini
+UPSTREAM_MODE=gemini-v1beta
+GEMINI_API_KEY=
+GEMINI_DEFAULT_MODEL=gemini-2.5-pro
+
+# Anthropic
+UPSTREAM_MODE=anthropic-v1
+ANTHROPIC_API_KEY=
+ANTHROPIC_DEFAULT_MODEL=claude-sonnet-4-20250514
+```
+
+See [.env.example](C:\Users\fi\source\codex-pro-max\.env.example) for the current env surface.
+
+## Dashboard Capabilities
+
+The dashboard can:
+
+- start OAuth login/logout and manage the active account
+- import/export account tokens in bulk
+- refresh usage and inspect the account pool
+- autosave `Proxy Config` into `.env`
+- edit Model Router mappings
+- change default `service_tier` and `reasoning effort`
+- run upstream self-test
+- run `Preheat` manually for the selected model or all supported Codex models
+- inspect recent proxy requests and clear request history
+- run or stop Temp Mail
+- configure and start public access through `cloudflared`
+
+## Temp Mail
+
+Temp Mail is available from the dashboard and from packaged desktop builds.
+
+Behavior notes:
+
+- Temp Mail requires `AUTH_MODE=codex-oauth`
+- a password is required before starting a run
+- if the password field is empty, the dashboard now writes a localized warning directly into the Temp Mail output instead of only showing a generic start failure
+- bundled desktop builds prefer the packaged Temp Mail runner; development mode can fall back to `go run`
+
+Relevant implementation:
+
+- [src/temp-mail-controller.js](C:\Users\fi\source\codex-pro-max\src\temp-mail-controller.js)
+- [public/index.html](C:\Users\fi\source\codex-pro-max\public\index.html)
+- [tools/temp-mail-runner/main.go](C:\Users\fi\source\codex-pro-max\tools\temp-mail-runner\main.go)
+
+## Desktop App
+
+Run the Electron shell in development:
+
+```bash
+npm run desktop:dev
+```
+
+The desktop shell:
+
+- starts the embedded backend automatically
+- opens the dashboard inside Electron
+- writes runtime state into Electron `userData`
+- keeps writable data out of the install directory
+
+Desktop-mode persistence:
+
+- proxy config autosave -> `userData/.env`
+- token stores / API keys / request history / preheat history -> `userData/data/`
+- cloudflared runtime downloads -> `userData/bin/`
+- bundled `cloudflared` -> app `extraResources/cloudflared/`
+- bundled Temp Mail runner -> app `extraResources/temp-mail-runner/`
+
+Relevant files:
+
+- [electron/main.mjs](C:\Users\fi\source\codex-pro-max\electron\main.mjs)
+- [electron/preload.mjs](C:\Users\fi\source\codex-pro-max\electron\preload.mjs)
+- [src/app-server.js](C:\Users\fi\source\codex-pro-max\src\app-server.js)
+- [src/server.js](C:\Users\fi\source\codex-pro-max\src\server.js)
+
+## Packaging
+
+Build packaged desktop resources first:
+
+```bash
+npm run build:desktop-resources
+```
+
+This builds:
+
+- Temp Mail runner binaries for `win32-x64`, `linux-x64`, `darwin-x64`, `darwin-arm64`
+- bundled `cloudflared` binaries for `win32-x64`, `linux-x64`, `darwin-x64`, `darwin-arm64`
+
+Platform packaging commands:
+
+```bash
+npm run dist:win
+npm run dist:mac
+npm run dist:linux
+```
+
+Artifacts are written to `dist-electron/`.
+
+### Windows
+
+- packaging target: NSIS
+- installer output: `dist-electron/codex-pro-max Setup <version>.exe`
+- standard uninstall entry is included
+- uninstall keeps Electron `userData` by default
+
+### Linux
+
+- current packaging target: `AppImage`
+- if `electron-builder` cannot finish `AppImage` on the current host, `dist-electron/linux-unpacked/` is still useful for validation
+- this project was validated on Kali using the unpacked Linux build plus bundled `cloudflared` and Temp Mail runner
+
+If you copy `linux-unpacked` from Windows to Linux via `scp` or similar, executable bits may be lost. Reapply them before running:
+
+```bash
+chmod +x dist-electron/linux-unpacked/codex-pro-max
+chmod +x dist-electron/linux-unpacked/chrome-sandbox
+chmod +x dist-electron/linux-unpacked/chrome_crashpad_handler
+chmod +x dist-electron/linux-unpacked/resources/cloudflared/linux-x64/cloudflared
+chmod +x dist-electron/linux-unpacked/resources/temp-mail-runner/linux-x64/temp-mail-runner
+```
+
+### macOS
+
+- `.dmg` output must be built on macOS
+- the packaged resources already include both `darwin-x64` and `darwin-arm64` binaries for `cloudflared` and Temp Mail runner
+
+## API Usage
 
 Base URL:
 
@@ -81,19 +216,17 @@ Base URL:
 http://127.0.0.1:8787/v1
 ```
 
-API key:
+Supported proxy endpoints:
 
-- if no proxy API keys are configured, requests can be sent without a proxy API key
-- once you generate dashboard API keys or set `LOCAL_API_KEY` / `PROXY_API_KEY`, callers must send one of those keys
-- in `gemini-v1beta` / `anthropic-v1`, API key can be left empty to use local protocol facade powered by Codex OAuth
-- with Model Router enabled, model IDs can be remapped across protocols (for example `gpt-5.4 -> gemini-2.5-pro`)
-- with `UPSTREAM_MODE=codex-chatgpt`, dashboard `Service Tier=Priority` or `CODEX_DEFAULT_SERVICE_TIER=priority` injects `service_tier: "priority"` into outbound `/v1/responses` and `/v1/chat/completions` requests only when the caller did not already provide `service_tier`
+- `codex-chatgpt`: `/v1/models`, `/v1/responses`, `/v1/chat/completions`
+- `gemini-v1beta`: `/v1/chat/completions`, native Gemini `/v1beta/*`
+- `anthropic-v1`: `/v1/chat/completions`, native Anthropic `/v1/messages`
 
-Supported endpoints:
+API key behavior:
 
-- `UPSTREAM_MODE=codex-chatgpt` (UI label `openai-v1`): `/v1/models`, `/v1/responses`, `/v1/chat/completions`
-- `UPSTREAM_MODE=gemini-v1beta`: `/v1/chat/completions`, native Gemini `/v1beta/*`
-- `UPSTREAM_MODE=anthropic-v1`: `/v1/chat/completions`, native Anthropic `/v1/messages`
+- if no proxy API keys are configured, calls can be sent without a proxy API key
+- after generating dashboard API keys, callers must send one of those keys
+- Gemini/Anthropic can run in local facade mode with empty upstream provider keys
 
 Example:
 
@@ -107,7 +240,9 @@ curl http://127.0.0.1:8787/v1/chat/completions \
   }'
 ```
 
-Model Router examples:
+## Model Router
+
+Model Router supports exact and wildcard mappings:
 
 ```json
 {
@@ -119,32 +254,59 @@ Model Router examples:
 
 Priority:
 
-- exact mapping (`gpt-5.4`) wins first
-- wildcard mapping (`gpt-4*`) wins second
-- system fallback mapping wins last
+- exact mapping first
+- wildcard mapping second
+- system fallback last
 
-## 6. Compatibility Notes
+## Auth Modes
 
-- tool calling is supported (request/stream/non-stream/follow-up tool outputs)
-- multi-account Responses follow-up requests are pinned by `previous_response_id` so tool outputs stay on the same upstream account
-- vision input is supported:
-  - Chat Completions `image_url` gets mapped to responses `input_image`
-- SSE stream is translated into OpenAI chat chunk format (`chat.completion.chunk`)
-- Recent Proxy Requests token columns auto-format to `k` units above 1000 (e.g. `1.2k`)
-- Gemini native:
-  - no key: handled by local Gemini-compatible facade (`/v1beta/models`, `:generateContent`, `:streamGenerateContent`)
-  - with key: pass-through to official Gemini upstream (`x-goog-api-key`, `?key=`, or bearer)
-- Anthropic native:
-  - no key: handled by local Anthropic-compatible facade (`/v1/messages`, supports stream)
-  - with key: pass-through to official Anthropic upstream (`x-api-key` or bearer, auto-adds `anthropic-version`)
-
-## 7. Auth Modes
-
-- `codex-oauth`:
-  - built-in ChatGPT OAuth (default)
+- `codex-oauth`
+  - built-in ChatGPT OAuth
+  - default mode
   - callback listener: `http://localhost:1455/auth/callback`
-  - token store at `CODEX_TOKEN_STORE_PATH`
-- `profile-store`:
-  - reuses a local/shared `auth-profiles.json` source
-- `custom-oauth`:
-  - bring-your-own OAuth provider config
+- `profile-store`
+  - reuses an existing `auth-profiles.json`
+- `custom-oauth`
+  - bring your own OAuth provider
+
+## Compatibility Notes
+
+- tool calling is supported
+- multi-account follow-up requests are pinned by `previous_response_id`
+- vision inputs are translated to the correct provider-compatible payloads
+- SSE responses are normalized into OpenAI-compatible stream shapes where needed
+- recent requests are stored in memory immediately and persisted in debounced batches
+- `Proxy Config` autosave persists into `.env`, including reasoning effort and service tier
+
+## Development and Validation
+
+Run tests:
+
+```bash
+npm test
+```
+
+Current validation focus includes:
+
+- request body caching
+- proxy audit serialization
+- debounced recent-request persistence
+- multi-account token import concurrency
+- account auto-remove behavior
+- Temp Mail bundled-runner detection
+- desktop lifecycle boot/shutdown
+
+## Release Workflow
+
+Typical release sequence:
+
+```bash
+npm test
+npm run dist:win
+git add .
+git commit -m "..."
+git push origin master
+gh release create <tag> <artifact...>
+```
+
+If Linux/macOS release artifacts are needed, build them on matching hosts before publishing the release.

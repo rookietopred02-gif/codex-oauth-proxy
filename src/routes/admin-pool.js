@@ -13,7 +13,7 @@ function sanitizeExportSegment(value, fallback) {
 export function registerAdminPoolRoutes(app, context) {
   const {
     config,
-    parseJsonBody,
+    readJsonBody,
     getCodexOAuthStore,
     setCodexOAuthStore,
     ensureCodexOAuthStoreShape,
@@ -87,7 +87,7 @@ export function registerAdminPoolRoutes(app, context) {
   app.post("/admin/auth-pool/toggle", async (req, res) => {
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = parseJsonBody(req);
+    const body = await readJsonBody(req);
     const accountRef = String(body.entryId || body.accountId || "").trim();
     const enabled = body.enabled !== false;
     if (!accountRef) {
@@ -115,7 +115,7 @@ export function registerAdminPoolRoutes(app, context) {
   app.post("/admin/auth-pool/activate", async (req, res) => {
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = parseJsonBody(req);
+    const body = await readJsonBody(req);
     const accountRef = String(body.entryId || body.accountId || "").trim();
     if (!accountRef) {
       res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
@@ -141,7 +141,7 @@ export function registerAdminPoolRoutes(app, context) {
   app.post("/admin/auth-pool/remove", async (req, res) => {
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = parseJsonBody(req);
+    const body = await readJsonBody(req);
     const accountRef = String(body.entryId || body.accountId || "").trim();
     if (!accountRef) {
       res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
@@ -169,7 +169,7 @@ export function registerAdminPoolRoutes(app, context) {
   app.post("/admin/auth-pool/import", async (req, res) => {
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = parseJsonBody(req);
+    const body = await readJsonBody(req);
     try {
       const result = await importIntoCodexAuthPool(Array.isArray(body.tokens) ? body.tokens : [], {
         replace: body.replace === true,
@@ -235,7 +235,7 @@ export function registerAdminPoolRoutes(app, context) {
   app.post("/admin/auth-pool/refresh-usage", async (req, res) => {
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = parseJsonBody(req);
+    const body = await readJsonBody(req);
     const accountRef = String(body.entryId || body.accountId || "").trim();
     const includeDisabled = body.includeDisabled === true;
 
@@ -316,9 +316,11 @@ export function registerAdminPoolRoutes(app, context) {
   app.post("/admin/preheat/run", async (req, res) => {
     if (!assertCodexOAuthMode(config, res, "Preheat")) return;
     try {
-      const body = parseJsonBody(req);
-      const force = body.force === true;
-      const summary = await runCodexPreheat("manual", { force });
+      const body = await readJsonBody(req);
+      const summary = await runCodexPreheat("manual", {
+        model: typeof body.model === "string" ? body.model : "",
+        allModels: body.allModels === true
+      });
       res.json({
         ok: true,
         summary,

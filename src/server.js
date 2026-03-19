@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import express from "express";
+import { persistProxyConfigEnv } from "./env-config-store.js";
 
 import { importCodexOAuthTokens } from "./codex-auth-pool-import.js";
 import { startConfiguredServer } from "./bootstrap/lifecycle.js";
@@ -40,6 +41,7 @@ import {
   sanitizeAuditPath,
   toChunkBuffer
 } from "./http/audit.js";
+import { getCachedJsonBody, readJsonBody, readRawBody } from "./http/request-body.js";
 import { createUpstreamRuntimeHelpers } from "./http/upstream-runtime.js";
 import { createAnthropicLocalCompatHelpers } from "./protocols/anthropic/local-compat.js";
 import { createAnthropicOpenAICompatHelpers } from "./protocols/anthropic/openai-compat.js";
@@ -53,7 +55,32 @@ import { registerCommonMiddleware, registerSystemRoutes } from "./routes/system.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
-const publicDir = path.join(rootDir, "public");
+const appDataDir = String(process.env.CODEX_PRO_MAX_APP_DATA_DIR || "").trim();
+const runtimeDataDir = path.resolve(
+  process.env.CODEX_PRO_MAX_DATA_DIR || (appDataDir ? path.join(appDataDir, "data") : path.join(rootDir, "data"))
+);
+const runtimeBinDir = path.resolve(
+  process.env.CODEX_PRO_MAX_RUNTIME_BIN_DIR || (appDataDir ? path.join(appDataDir, "bin") : path.join(rootDir, "bin"))
+);
+const bundledCloudflaredResourcesDir = String(process.env.CODEX_PRO_MAX_CLOUDFLARED_RESOURCES_DIR || "").trim();
+const publicDir = path.resolve(process.env.CODEX_PRO_MAX_PUBLIC_DIR || path.join(rootDir, "public"));
+const envFilePath = path.resolve(process.env.DOTENV_CONFIG_PATH || path.join(rootDir, ".env"));
+
+function resolveRuntimeDataPath(envName, fileName) {
+  return path.resolve(process.env[envName] || path.join(runtimeDataDir, fileName));
+}
+
+function resolveBundledCloudflaredTargetNames(platform = process.platform, arch = process.arch) {
+  if (platform === "win32" && arch === "x64") return ["win32-x64"];
+  if (platform === "linux" && arch === "x64") return ["linux-x64"];
+  if (platform === "darwin" && arch === "arm64") return ["darwin-arm64", "darwin-x64"];
+  if (platform === "darwin" && arch === "x64") return ["darwin-x64", "darwin-arm64"];
+  return [];
+}
+
+function resolveBundledCloudflaredBinaryName(platform = process.platform) {
+  return platform === "win32" ? "cloudflared.exe" : "cloudflared";
+}
 
 const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_CODEX_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
@@ -79,11 +106,19 @@ const VALID_CLOUDFLARED_MODES = new Set(["quick", "auth"]);
 const VALID_CODEX_SERVICE_TIERS = new Set(["default", "priority"]);
 const LOW_QUOTA_THRESHOLD_DUAL_WINDOW = 20;
 const LOW_QUOTA_THRESHOLD_SINGLE_WINDOW = 30;
-const OFFICIAL_OPENAI_MODELS = [
+const OFFICIAL_CODEX_MODELS = [
   "gpt-5.4",
-  "gpt-5.4-pro",
-  "gpt-5.3-codex",
   "gpt-5-codex",
+  "gpt-5.3-codex",
+  "gpt-5.2-codex",
+  "gpt-5.1-codex",
+  "gpt-5.1-codex-max",
+  "gpt-5.1-codex-mini",
+  "codex-mini-latest"
+];
+const OFFICIAL_OPENAI_MODELS = [
+  ...OFFICIAL_CODEX_MODELS,
+  "gpt-5.4-pro",
   "gpt-5",
   "gpt-5-mini",
   "gpt-4.1",
@@ -123,6 +158,8 @@ const OAUTH_CALLBACK_SUCCESS_HTML = `<!doctype html>
 const authMode = (process.env.AUTH_MODE || "codex-oauth").toLowerCase();
 const defaultUpstreamMode = "codex-chatgpt";
 const defaultUpstreamBaseUrl = DEFAULT_CODEX_UPSTREAM_BASE_URL;
+const hasExplicitCustomOAuthRedirectUri = String(process.env.OAUTH_REDIRECT_URI || "").trim().length > 0;
+const hasExplicitCloudflaredLocalPort = String(process.env.CLOUDFLARED_LOCAL_PORT || "").trim().length > 0;
 
 function normalizeUpstreamMode(value) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -224,7 +261,7 @@ const config = {
       .split(/[,\s]+/)
       .map((x) => x.trim())
       .filter(Boolean),
-    tokenStorePath: path.resolve(process.env.TOKEN_STORE_PATH || path.join(rootDir, "data", "auth-store.json"))
+    tokenStorePath: resolveRuntimeDataPath("TOKEN_STORE_PATH", "auth-store.json")
   },
   codexOAuth: {
     authorizeUrl: OPENAI_CODEX_AUTHORIZE_URL,
@@ -243,34 +280,10 @@ const config = {
     multiAccountStrategy: String(process.env.CODEX_MULTI_ACCOUNT_STRATEGY || "smart").trim().toLowerCase(),
     sharedApiKey: String(process.env.LOCAL_API_KEY || process.env.PROXY_API_KEY || "").trim(),
     usageBaseUrl: process.env.CODEX_USAGE_BASE_URL || DEFAULT_CODEX_UPSTREAM_BASE_URL,
-    tokenStorePath: path.resolve(
-      process.env.CODEX_TOKEN_STORE_PATH || path.join(rootDir, "data", "codex-oauth-store.json")
-    )
+    tokenStorePath: resolveRuntimeDataPath("CODEX_TOKEN_STORE_PATH", "codex-oauth-store.json")
   },
   codexPreheat: {
-    cooldownSeconds: parseNumberEnv(process.env.CODEX_PREHEAT_COOLDOWN_SECONDS, 1200, {
-      min: 30,
-      max: 86400,
-      integer: true
-    }),
-    batchSize: parseNumberEnv(process.env.CODEX_PREHEAT_BATCH_SIZE, 2, {
-      min: 1,
-      max: 32,
-      integer: true
-    }),
-    minPrimaryRemaining: parseNumberEnv(process.env.CODEX_PREHEAT_MIN_PRIMARY_REMAINING, 5, {
-      min: 0,
-      max: 100,
-      integer: true
-    }),
-    minSecondaryRemaining: parseNumberEnv(process.env.CODEX_PREHEAT_MIN_SECONDARY_REMAINING, 5, {
-      min: 0,
-      max: 100,
-      integer: true
-    }),
-    historyPath: path.resolve(
-      process.env.CODEX_PREHEAT_HISTORY_PATH || path.join(rootDir, "data", "codex-preheat-history.json")
-    )
+    historyPath: resolveRuntimeDataPath("CODEX_PREHEAT_HISTORY_PATH", "codex-preheat-history.json")
   },
   expiredAccountCleanup: {
     enabled: parseBooleanEnv(process.env.CODEX_AUTO_LOGOUT_EXPIRED_ACCOUNTS, false),
@@ -295,11 +308,11 @@ const config = {
     customMappings: parseModelMappingsEnv(process.env.MODEL_ROUTER_MAPPINGS || process.env.MODEL_MAPPINGS)
   },
   apiKeys: {
-    storePath: path.resolve(process.env.API_KEY_STORE_PATH || path.join(rootDir, "data", "api-keys.json")),
+    storePath: resolveRuntimeDataPath("API_KEY_STORE_PATH", "api-keys.json"),
     bootstrapLegacySharedKey: parseBooleanEnv(process.env.API_KEY_BOOTSTRAP_LEGACY, true)
   },
   requestAudit: {
-    historyPath: path.resolve(process.env.RECENT_REQUESTS_PATH || path.join(rootDir, "data", "recent-requests.json")),
+    historyPath: resolveRuntimeDataPath("RECENT_REQUESTS_PATH", "recent-requests.json"),
     maxEntries: parseNumberEnv(process.env.RECENT_REQUESTS_MAX_ENTRIES, 120, {
       min: 10,
       max: 1000,
@@ -442,7 +455,10 @@ async function importIntoCodexAuthPool(items, options = {}) {
 const tempMailController = createTempMailController({
   rootDir,
   importTokens: async (items, options = {}) => await importIntoCodexAuthPool(items, options),
-  isSupported: () => config.authMode === "codex-oauth"
+  isSupported: () => config.authMode === "codex-oauth",
+  runnerBinaryPath: process.env.CODEX_PRO_MAX_TEMP_MAIL_RUNNER_BIN || "",
+  runnerResourcesDir: process.env.CODEX_PRO_MAX_TEMP_MAIL_RESOURCES_DIR || "",
+  allowGoRun: !parseBooleanEnv(process.env.CODEX_PRO_MAX_DISABLE_TEMP_MAIL_GO_RUN, false)
 });
 
 const expiredAccountCleanupController = createExpiredAccountCleanupController({
@@ -450,6 +466,8 @@ const expiredAccountCleanupController = createExpiredAccountCleanupController({
   isSupported: () => config.authMode === "codex-oauth",
   getStore: () => codexOAuthStore,
   getAccounts: (store) => store?.accounts || [],
+  probeAccount: async (store, ref) =>
+    await refreshCodexUsageSnapshotInStore(store, ref, config.codexOAuth, { includeDisabled: true }),
   removeAccount: (store, ref) => removeCodexPoolAccountFromStore(store, ref),
   saveStore: async (store) => {
     codexOAuthStore = store;
@@ -458,7 +476,9 @@ const expiredAccountCleanupController = createExpiredAccountCleanupController({
   },
   onRemoved: async ({ reason, removedRefs }) => {
     if (!Array.isArray(removedRefs) || removedRefs.length === 0) return;
-    console.log(`[auth-pool] ${reason}: removed ${removedRefs.length} expired account(s): ${removedRefs.join(", ")}`);
+    console.log(
+      `[auth-pool] ${reason}: removed ${removedRefs.length} auto-rm account(s): ${removedRefs.join(", ")}`
+    );
   }
 });
 
@@ -513,7 +533,7 @@ const codexResponsesChain = createResponsesChainStore();
 
 let expiredAccountCleanupTimer = setInterval(() => {
   expiredAccountCleanupController.run("interval").catch((err) => {
-    console.warn(`[auth-pool] expired account cleanup failed: ${err?.message || err}`);
+    console.warn(`[auth-pool] account auto-rm failed: ${err?.message || err}`);
   });
 }, Math.max(10, Number(config.expiredAccountCleanup.intervalSeconds || 30)) * 1000);
 expiredAccountCleanupTimer.unref?.();
@@ -732,31 +752,44 @@ function resolveCloudflaredBin() {
   const configured = String(config.publicAccess.cloudflaredBinPath || "").trim();
   if (configured && fsSync.existsSync(configured)) return configured;
 
-  const binDir = path.join(rootDir, "bin");
-  const bundledDefault = path.join(binDir, DEFAULT_CLOUDFLARED_BIN);
-  if (fsSync.existsSync(bundledDefault)) return bundledDefault;
+  if (bundledCloudflaredResourcesDir) {
+    const binaryName = resolveBundledCloudflaredBinaryName();
+    const candidates = resolveBundledCloudflaredTargetNames().map((targetName) =>
+      path.join(path.resolve(bundledCloudflaredResourcesDir), targetName, binaryName)
+    );
+    for (const candidate of candidates) {
+      if (fsSync.existsSync(candidate)) return candidate;
+    }
+  }
 
-  try {
-    const entries = fsSync
-      .readdirSync(binDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile())
-      .map((entry) => entry.name)
-      .filter((name) => {
-        const lower = name.toLowerCase();
-        if (process.platform === "win32") {
-          return /^cloudflared(?:-\d+)?\.exe$/.test(lower);
-        }
-        return /^cloudflared(?:-\d+)?$/.test(lower);
-      })
-      .map((name) => {
-        const fullPath = path.join(binDir, name);
-        const stat = fsSync.statSync(fullPath);
-        return { fullPath, mtimeMs: Number(stat.mtimeMs || 0) };
-      })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    if (entries[0]?.fullPath) return entries[0].fullPath;
-  } catch {
-    // ignore local bin discovery failures and fall back to PATH resolution
+  const bundledBinDir = path.join(rootDir, "bin");
+  const binDirs = runtimeBinDir === bundledBinDir ? [runtimeBinDir] : [runtimeBinDir, bundledBinDir];
+  for (const binDir of binDirs) {
+    const bundledDefault = path.join(binDir, DEFAULT_CLOUDFLARED_BIN);
+    if (fsSync.existsSync(bundledDefault)) return bundledDefault;
+
+    try {
+      const entries = fsSync
+        .readdirSync(binDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .filter((name) => {
+          const lower = name.toLowerCase();
+          if (process.platform === "win32") {
+            return /^cloudflared(?:-\d+)?\.exe$/.test(lower);
+          }
+          return /^cloudflared(?:-\d+)?$/.test(lower);
+        })
+        .map((name) => {
+          const fullPath = path.join(binDir, name);
+          const stat = fsSync.statSync(fullPath);
+          return { fullPath, mtimeMs: Number(stat.mtimeMs || 0) };
+        })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      if (entries[0]?.fullPath) return entries[0].fullPath;
+    } catch {
+      // ignore local bin discovery failures and fall back to PATH resolution
+    }
   }
 
   return DEFAULT_CLOUDFLARED_BIN;
@@ -821,7 +854,7 @@ function isLikelyCloudflaredBinaryPayload(bytes) {
 }
 
 function resolveCloudflaredInstallPath(assetMeta) {
-  const installDir = path.join(rootDir, "bin");
+  const installDir = runtimeBinDir;
   const configuredPath = String(config.publicAccess.cloudflaredBinPath || "").trim();
   let installPath = configuredPath || path.join(installDir, assetMeta.binaryName);
 
@@ -1268,7 +1301,7 @@ registerAuthRoutes(app, {
   completeOAuthCallback,
   buildOAuthCallbackMessage,
   oauthCallbackSuccessHtml: OAUTH_CALLBACK_SUCCESS_HTML,
-  parseJsonBody,
+  readJsonBody,
   removeCodexPoolAccountFromStore,
   saveTokenStore,
   clearAuthContextCache,
@@ -1292,13 +1325,14 @@ registerAdminCoreRoutes(app, {
   hashProxyApiKey,
   sanitizeProxyApiKeyLabel,
   saveProxyApiKeyStore,
-  parseJsonBody,
+  readJsonBody,
   startCloudflaredTunnel,
   stopCloudflaredTunnel,
   installCloudflaredBinary,
   validCloudflaredModes: VALID_CLOUDFLARED_MODES,
   parseNumberEnv,
-  getOfficialModelCandidateIds
+  getOfficialModelCandidateIds,
+  getOfficialCodexModelCandidateIds
 });
 function getCodexOAuthStore() {
   return codexOAuthStore;
@@ -1310,7 +1344,7 @@ function setCodexOAuthStore(nextStore) {
 
 registerAdminPoolRoutes(app, {
   config,
-  parseJsonBody,
+  readJsonBody,
   getCodexOAuthStore,
   setCodexOAuthStore,
   ensureCodexOAuthStoreShape,
@@ -1333,7 +1367,8 @@ registerAdminSettingsRoutes(app, {
   cloudflaredRuntime,
   runtimeStats,
   recentRequestsStore,
-  parseJsonBody,
+  persistProxyConfigEnv: async (nextConfig) => await persistProxyConfigEnv(envFilePath, nextConfig),
+  readJsonBody,
   normalizeUpstreamMode,
   setActiveUpstreamBaseUrl,
   normalizeCodexServiceTier,
@@ -1419,6 +1454,8 @@ const {
 } = codexOAuthResponsesHelpers;
 const anthropicLocalCompatHelpers = createAnthropicLocalCompatHelpers({
   config,
+  readJsonBody,
+  readRawBody,
   parseJsonLoose,
   truncate,
   resolveReasoningEffort,
@@ -1431,6 +1468,7 @@ const anthropicLocalCompatHelpers = createAnthropicLocalCompatHelpers({
 });
 const geminiLocalCompatHelpers = createGeminiLocalCompatHelpers({
   config,
+  readJsonBody,
   resolveCodexCompatibleRoute,
   resolveCompatErrorStatusCode,
   parseOpenAIChatCompletionsLikeRequest,
@@ -1443,6 +1481,7 @@ const geminiLocalCompatHelpers = createGeminiLocalCompatHelpers({
 });
 const anthropicOpenAICompatHelpers = createAnthropicOpenAICompatHelpers({
   config,
+  readJsonBody,
   resolveCodexCompatibleRoute,
   resolveCompatErrorStatusCode,
   parseOpenAIChatCompletionsLikeRequest,
@@ -1458,6 +1497,9 @@ const proxyRouteHandlers = createProxyRouteHandlers({
   hopByHop,
   runtimeAuditMaxBodyBytes: RUNTIME_AUDIT_MAX_BODY_BYTES,
   runtimeAuditMaxTextChars: RUNTIME_AUDIT_MAX_TEXT_CHARS,
+  readJsonBody,
+  readRawBody,
+  getCachedJsonBody,
   extractPreviousResponseId,
   extractUpstreamTransportError,
   isPreviousResponseIdUnsupportedError,
@@ -1518,12 +1560,26 @@ const proxyRouteHandlers = createProxyRouteHandlers({
 
 registerProxyRoutes(app, { handlers: proxyRouteHandlers });
 
+function syncResolvedRuntimeAddress({ port, requestedPort }) {
+  if (!hasExplicitCustomOAuthRedirectUri) {
+    config.customOAuth.redirectUri = `http://${config.host}:${config.port}/auth/callback`;
+  }
+
+  const currentCloudflaredPort = Number(cloudflaredRuntime.localPort || 0) || 0;
+  if (!hasExplicitCloudflaredLocalPort || currentCloudflaredPort === 0 || currentCloudflaredPort === requestedPort) {
+    config.publicAccess.localPort = port;
+    cloudflaredRuntime.localPort = port;
+  }
+}
+
 const shouldAutostartServer = !parseBooleanEnv(process.env.CODEX_PRO_MAX_DISABLE_AUTOSTART, false);
-const { mainServer } = startConfiguredServer({
+const serverLifecycle = startConfiguredServer({
   app,
   config,
   shouldAutostart: shouldAutostartServer,
+  installSignalHandlers: shouldAutostartServer,
   getActiveUpstreamBaseUrl,
+  syncResolvedAddress: syncResolvedRuntimeAddress,
   onStartup: () => {
     if (config.authMode === "profile-store") {
       console.log(`source: ${config.profileStore.authStorePath}`);
@@ -1542,11 +1598,11 @@ const { mainServer } = startConfiguredServer({
     console.log(`proxy:           http://${config.host}:${config.port}/v1/*`);
     console.log(`preheat:         manual trigger only (dashboard button)`);
     console.log(
-      `expired-cleanup: ${config.expiredAccountCleanup.enabled ? "enabled" : "disabled"} (${config.expiredAccountCleanup.intervalSeconds}s)`
+      `account-auto-rm: ${config.expiredAccountCleanup.enabled ? "enabled" : "disabled"} (${config.expiredAccountCleanup.intervalSeconds}s)`
     );
     if (config.expiredAccountCleanup.enabled) {
       expiredAccountCleanupController.run("startup").catch((err) => {
-        console.warn(`[auth-pool] expired account cleanup failed on startup: ${err?.message || err}`);
+        console.warn(`[auth-pool] account auto-rm failed on startup: ${err?.message || err}`);
       });
     }
   },
@@ -1560,10 +1616,50 @@ const { mainServer } = startConfiguredServer({
       expiredAccountCleanupTimer = null;
     }
     await tempMailController.shutdown().catch(() => {});
+    await recentRequestsStore.flush().catch(() => {});
     await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore).catch(() => {});
     await stopCloudflaredTunnel().catch(() => {});
   }
 });
+let mainServer = serverLifecycle.mainServer;
+
+export async function startServer(options = {}) {
+  const started = await serverLifecycle.start(options);
+  mainServer = serverLifecycle.mainServer;
+  return {
+    app,
+    mainServer,
+    host: started?.host || config.host,
+    port: started?.port || config.port,
+    url: `http://${config.host}:${config.port}`
+  };
+}
+
+export async function stopServer(signal = "SIGTERM") {
+  await serverLifecycle.stop(signal);
+  mainServer = serverLifecycle.mainServer;
+  return {
+    app,
+    mainServer,
+    stopped: true
+  };
+}
+
+if (shouldAutostartServer) {
+  try {
+    await serverLifecycle.autostartPromise;
+    mainServer = serverLifecycle.mainServer;
+  } catch (err) {
+    if (err && err.code === "EADDRINUSE") {
+      console.error(
+        `[startup] Port ${config.host}:${config.port} is already in use. Stop the existing process or run with a different PORT.`
+      );
+    } else {
+      console.error(`[startup] Failed to start server: ${err?.message || err}`);
+    }
+    process.exit(1);
+  }
+}
 
 async function getAuthStatus() {
   if (config.authMode === "profile-store") {
@@ -1994,6 +2090,8 @@ function sanitizeCodexAccountEntry(raw) {
     failure_count: Number(raw.failure_count || raw.failureCount || 0),
     cooldown_until: Number(raw.cooldown_until || raw.cooldownUntil || 0),
     last_error: typeof raw.last_error === "string" ? raw.last_error : "",
+    last_status_code: Number(raw.last_status_code || raw.lastStatusCode || 0),
+    token_invalidated_at: Number(raw.token_invalidated_at || raw.tokenInvalidatedAt || 0),
     usage_snapshot:
       raw.usage_snapshot && typeof raw.usage_snapshot === "object" ? raw.usage_snapshot : null,
     usage_updated_at: Number(raw.usage_updated_at || raw.usageUpdatedAt || 0)
@@ -2080,6 +2178,8 @@ function ensureCodexOAuthStoreShape(store) {
         failure_count: 0,
         cooldown_until: 0,
         last_error: "",
+        last_status_code: 0,
+        token_invalidated_at: 0,
         usage_snapshot: null,
         usage_updated_at: 0
       });
@@ -2593,6 +2693,8 @@ function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
         ? currentSlot
         : resolvedIncomingSlot ?? store.accounts[targetIdx].slot ?? null,
       last_error: "",
+      last_status_code: 0,
+      token_invalidated_at: 0,
       cooldown_until: 0,
       usage_snapshot: usageSnapshot || store.accounts[targetIdx].usage_snapshot || null,
       usage_updated_at: usageSnapshot
@@ -2612,6 +2714,8 @@ function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
       failure_count: 0,
       cooldown_until: 0,
       last_error: "",
+      last_status_code: 0,
+      token_invalidated_at: 0,
       usage_snapshot: usageSnapshot,
       usage_updated_at: usageSnapshot ? Number(usageSnapshot.fetched_at || nowSec) || nowSec : 0
     });
@@ -2622,12 +2726,14 @@ function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
   store.rotation = store.rotation || { next_index: 0 };
   if (!Number.isFinite(store.rotation.next_index)) store.rotation.next_index = 0;
 
-  normalizeCodexAccountSlots(store.accounts);
+  if (options.skipSlotNormalization !== true) {
+    normalizeCodexAccountSlots(store.accounts);
+  }
 
   const resolvedAccount = store.accounts.find((x) => getCodexPoolEntryId(x) === entryId);
   const resolvedSlot = Number(resolvedAccount?.slot || 0) || null;
 
-  return { accountId, entryId, slot: resolvedSlot, action, email: tokenEmail || null, planType };
+  return { accountId, entryId, slot: resolvedSlot, action, email: tokenEmail || null, planType, account: resolvedAccount || null };
 }
 
 function shouldRotateCodexAccountForStatus(statusCode) {
@@ -2762,6 +2868,7 @@ async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
   if (!target) return;
   target.failure_count = Number(target.failure_count || 0) + 1;
   target.last_error = String(reason || "request_failed");
+  target.last_status_code = Number(statusCode || 0) || 0;
   const cooldownSeconds = getCodexPoolCooldownSeconds(statusCode, target.failure_count);
   const nowSec = Math.floor(Date.now() / 1000);
   const tokenInvalidated = isCodexTokenInvalidatedError(statusCode, target.last_error);
@@ -2770,8 +2877,10 @@ async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
     // Hard-disable invalidated identities to stop poisoning account rotation.
     target.enabled = false;
     target.cooldown_until = 0;
+    target.token_invalidated_at = nowSec;
   } else {
     target.cooldown_until = nowSec + cooldownSeconds;
+    target.token_invalidated_at = 0;
   }
   if (Number(statusCode || 0) === 429) {
     const fallbackSnapshot = extractCodexUsageSnapshotFromLimitError(
@@ -2801,6 +2910,11 @@ async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
   }
   await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
   clearAuthContextCache();
+  if (tokenInvalidated && config.expiredAccountCleanup.enabled) {
+    await expiredAccountCleanupController.run("token_invalidated").catch((err) => {
+      console.warn(`[auth-pool] account auto-rm failed after 401: ${err?.message || err}`);
+    });
+  }
 }
 
 async function markCodexPoolAccountSuccess(accountRef) {
@@ -2813,6 +2927,8 @@ async function markCodexPoolAccountSuccess(accountRef) {
   target.failure_count = 0;
   target.cooldown_until = 0;
   target.last_error = "";
+  target.last_status_code = 0;
+  target.token_invalidated_at = 0;
   if (config.codexOAuth.multiAccountStrategy === "sticky") {
     codexOAuthStore.active_account_id = getCodexPoolEntryId(target);
   }
@@ -3029,28 +3145,43 @@ async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, 
   }
 
   try {
-    const snapshot = await fetchCodexUsageSnapshotForAccount(target, oauthConfig);
+    const hadFailureMarkers =
+      Number(target.last_status_code || 0) !== 0 ||
+      Number(target.token_invalidated_at || 0) !== 0 ||
+      String(target.last_error || "").trim().length > 0;
+    const probeModel = String(options.model || "").trim() || config.codex.defaultModel;
+    const snapshot = await fetchCodexUsageSnapshotForAccount(target, oauthConfig, { model: probeModel });
     const applied = applyCodexUsageSnapshotToStore(store, entryId || accountId, snapshot);
-    if (applied) {
-      target.last_error = "";
-    }
+    target.last_error = "";
+    target.last_status_code = 0;
+    target.token_invalidated_at = 0;
     return {
       ok: true,
       entryId,
       accountId,
+      model: probeModel,
       snapshot,
       applied,
+      changed: applied || hadFailureMarkers,
       planType: String(snapshot?.plan_type || "").trim().toLowerCase() || null,
       usageUpdatedAt: Number(snapshot?.fetched_at || 0) || Math.floor(Date.now() / 1000)
     };
   } catch (err) {
     const message = String(err?.message || err || "usage_probe_failed");
+    const statusCode = Number(err?.statusCode || 0) || 0;
+    const tokenInvalidated = isCodexTokenInvalidatedError(statusCode, message);
     target.last_error = message;
+    target.last_status_code = statusCode;
+    target.token_invalidated_at = tokenInvalidated ? Math.floor(Date.now() / 1000) : 0;
     return {
       ok: false,
       entryId,
       accountId,
-      error: message
+      model: String(options.model || "").trim() || config.codex.defaultModel,
+      error: message,
+      statusCode,
+      tokenInvalidated,
+      changed: true
     };
   }
 }
@@ -3098,7 +3229,7 @@ async function maybeCaptureCodexUsageFromHeaders(authContext, headers, source = 
   await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
 }
 
-async function fetchCodexUsageSnapshotForAccount(account, oauthConfig) {
+async function fetchCodexUsageSnapshotForAccount(account, oauthConfig, options = {}) {
   if (!account || !account.token?.access_token) {
     throw new Error("Missing access token.");
   }
@@ -3125,8 +3256,9 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig) {
   account.account_id = accountIdFromToken;
 
   const url = `${getCodexUsageProbeBaseUrl().replace(/\/+$/, "")}/codex/responses`;
+  const probeModel = String(options.model || "").trim() || config.codex.defaultModel;
   const body = {
-    model: config.codex.defaultModel,
+    model: probeModel,
     stream: true,
     store: false,
     instructions: "Return one character.",
@@ -3137,7 +3269,7 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig) {
           input: [{ role: "user", content: [{ type: "input_text", text: "." }] }],
           instructions: "Return one character."
         },
-        config.codex.defaultModel
+        probeModel
       )
     },
     input: [
@@ -3168,7 +3300,11 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig) {
     if (fallback) {
       return fallback;
     }
-    throw new Error(`HTTP ${response.status}: ${truncate(raw, 180)}`);
+    const error = new Error(`HTTP ${response.status}: ${truncate(raw, 180)}`);
+    error.statusCode = Number(response.status || 0) || 0;
+    error.responseText = raw;
+    error.tokenInvalidated = isCodexTokenInvalidatedError(response.status, raw);
+    throw error;
   }
   if (response.body) {
     response.body.cancel().catch(() => {});
@@ -3193,7 +3329,6 @@ function getCodexPreheatAccountHistory(entryId) {
       last_run_at: 0,
       last_success_at: 0,
       last_failure_at: 0,
-      next_eligible_at: 0,
       last_error: ""
     };
   }
@@ -3203,10 +3338,6 @@ function getCodexPreheatAccountHistory(entryId) {
 function getCodexPreheatState() {
   return {
     running: codexPreheatRuntime.running,
-    cooldownSeconds: config.codexPreheat.cooldownSeconds,
-    batchSize: config.codexPreheat.batchSize,
-    minPrimaryRemaining: config.codexPreheat.minPrimaryRemaining,
-    minSecondaryRemaining: config.codexPreheat.minSecondaryRemaining,
     lastRunAt: codexPreheatRuntime.lastRunAt,
     lastCompletedAt: codexPreheatRuntime.lastCompletedAt,
     lastReason: codexPreheatRuntime.lastReason,
@@ -3217,63 +3348,40 @@ function getCodexPreheatState() {
   };
 }
 
-function shouldSkipCodexPreheatAccount(account, nowSec, force = false) {
-  if (!account || account.enabled === false) return "disabled";
-  if (!account.token?.access_token) return "missing_token";
-  if (!force && Number(account.cooldown_until || 0) > nowSec) return "account_cooldown";
+function getCodexPreheatTargets(store) {
+  const accounts = Array.isArray(store?.accounts) ? store.accounts : [];
+  const targets = [];
+  const skipped = [];
 
-  const entryId = getCodexPoolEntryId(account);
-  const history = getCodexPreheatAccountHistory(entryId);
-  if (!history) return "missing_identity";
-  if (!force && Number(history.next_eligible_at || 0) > nowSec) return "preheat_cooldown";
+  for (const account of accounts) {
+    if (!account) continue;
+    const entryId = getCodexPoolEntryId(account);
+    const accountId = account.account_id || null;
+    if (account.enabled === false) {
+      skipped.push({ entryId, accountId, reason: "disabled" });
+      continue;
+    }
+    if (!account.token?.access_token) {
+      skipped.push({ entryId, accountId, reason: "missing_token" });
+      continue;
+    }
+    targets.push({
+      entryId,
+      accountId,
+      account
+    });
+  }
 
-  const usage = getCodexUsageWindowStats(account);
-  if (
-    Number.isFinite(usage.primaryRemaining) &&
-    usage.primaryRemaining < Number(config.codexPreheat.minPrimaryRemaining || 0)
-  ) {
-    return "low_primary_remaining";
-  }
-  if (
-    Number.isFinite(usage.secondaryRemaining) &&
-    usage.secondaryRemaining < Number(config.codexPreheat.minSecondaryRemaining || 0)
-  ) {
-    return "low_secondary_remaining";
-  }
-  return "";
+  return { targets, skipped };
 }
 
-function pickCodexPreheatCandidates(store, options = {}) {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const force = options.force === true;
-  const accounts = Array.isArray(store?.accounts) ? store.accounts : [];
-  const enabled = accounts.filter((x) => x && x.enabled !== false);
-  const decorated = enabled
-    .map((account) => {
-      const entryId = getCodexPoolEntryId(account);
-      const usage = getCodexUsageWindowStats(account);
-      const health = classifyCodexPoolHealth(account, nowSec, usage);
-      const score = decorateCodexPoolAccount(account, store.active_account_id || "", nowSec).healthScore;
-      const skipReason = shouldSkipCodexPreheatAccount(account, nowSec, force);
-      return {
-        account,
-        entryId,
-        usage,
-        health,
-        score,
-        skipReason
-      };
-    })
-    .sort((a, b) => {
-      if (a.skipReason && !b.skipReason) return 1;
-      if (!a.skipReason && b.skipReason) return -1;
-      if (b.score !== a.score) return b.score - a.score;
-      const aUsed = Number(a.account?.last_used_at || 0);
-      const bUsed = Number(b.account?.last_used_at || 0);
-      if (aUsed !== bUsed) return aUsed - bUsed;
-      return String(a.entryId || "").localeCompare(String(b.entryId || ""));
-    });
-  return decorated;
+function resolveCodexPreheatModelSelection(requestedModel, allModels, availableModels, fallbackModel = config.codex.defaultModel) {
+  const requested = String(requestedModel || "").trim();
+  const catalog = buildOfficialCodexModelCandidateIds(availableModels, fallbackModel);
+  if (allModels === true) return catalog;
+  if (requested) return [requested];
+  if (fallbackModel) return [fallbackModel];
+  return catalog.slice(0, 1);
 }
 
 async function runCodexPreheat(reason = "manual", options = {}) {
@@ -3292,7 +3400,6 @@ async function runCodexPreheat(reason = "manual", options = {}) {
     };
   }
 
-  const force = options.force === true;
   const startedAt = Date.now();
   const nowSec = Math.floor(startedAt / 1000);
   codexPreheatRuntime.running = true;
@@ -3308,71 +3415,71 @@ async function runCodexPreheat(reason = "manual", options = {}) {
     codexOAuthStore = normalized.store;
     saveStore = saveStore || normalized.changed;
 
-    const candidates = pickCodexPreheatCandidates(codexOAuthStore, { force });
-    const targetCount = Math.max(1, Number(options.batchSize || config.codexPreheat.batchSize || 1));
-    const selected = candidates.filter((x) => !x.skipReason).slice(0, targetCount);
-    const skipped = candidates
-      .filter((x) => x.skipReason)
-      .slice(0, 20)
-      .map((x) => ({
-        entryId: x.entryId,
-        accountId: x.account.account_id || null,
-        reason: x.skipReason
-      }));
+    const availableModels = await getOfficialCodexModelCandidateIds();
+    const models = resolveCodexPreheatModelSelection(
+      options.model,
+      options.allModels === true,
+      availableModels,
+      config.codex.defaultModel
+    );
+    const { targets, skipped } = getCodexPreheatTargets(codexOAuthStore);
     const results = [];
 
-    for (let i = 0; i < selected.length; i += 1) {
-      const { account, entryId } = selected[i];
-      const accountId = String(account.account_id || "");
-      const history = getCodexPreheatAccountHistory(entryId);
-      if (!history) continue;
-      history.run_count = Number(history.run_count || 0) + 1;
-      history.last_run_at = nowSec;
-      saveHistory = true;
+    for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+      const model = models[modelIndex];
+      for (let accountIndex = 0; accountIndex < targets.length; accountIndex += 1) {
+        const { account, entryId, accountId } = targets[accountIndex];
+        const history = getCodexPreheatAccountHistory(entryId);
+        if (history) {
+          history.run_count = Number(history.run_count || 0) + 1;
+          history.last_run_at = nowSec;
+          saveHistory = true;
+        }
 
-      try {
-        const snapshot = await fetchCodexUsageSnapshotForAccount(account, config.codexOAuth);
-        const applied = applyCodexUsageSnapshotToStore(codexOAuthStore, entryId || accountId, snapshot);
-        if (applied) saveStore = true;
-        account.last_error = "";
-        account.failure_count = 0;
-        account.cooldown_until = 0;
-        history.success_count = Number(history.success_count || 0) + 1;
-        history.last_success_at = nowSec;
-        history.last_error = "";
-        history.next_eligible_at = nowSec + Number(config.codexPreheat.cooldownSeconds || 0);
-        results.push({
-          entryId,
-          accountId,
-          ok: true,
-          primaryRemaining: readUsageRemainingPercent(snapshot?.primary),
-          secondaryRemaining: readUsageRemainingPercent(snapshot?.secondary)
+        const result = await refreshCodexUsageSnapshotInStore(codexOAuthStore, entryId || accountId, config.codexOAuth, {
+          includeDisabled: true,
+          model
         });
-        saveStore = true;
-      } catch (err) {
-        const message = String(err?.message || err || "preheat_failed");
-        account.last_error = `preheat: ${message}`;
-        account.failure_count = Number(account.failure_count || 0) + 1;
-        account.cooldown_until = Math.max(
-          Number(account.cooldown_until || 0),
-          nowSec + Math.min(900, Math.max(30, Number(config.codexPreheat.cooldownSeconds || 1200) / 2))
-        );
-        history.failure_count = Number(history.failure_count || 0) + 1;
-        history.last_failure_at = nowSec;
-        history.last_error = message;
-        history.next_eligible_at = nowSec + Math.min(1800, Math.max(60, Number(config.codexPreheat.cooldownSeconds || 1200)));
-        results.push({
-          entryId,
-          accountId,
-          ok: false,
-          error: message
-        });
-        saveStore = true;
-        saveHistory = true;
-      }
 
-      if (i < selected.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 120));
+        if (result.changed) saveStore = true;
+        if (history) {
+          if (result.ok) {
+            history.success_count = Number(history.success_count || 0) + 1;
+            history.last_success_at = nowSec;
+            history.last_error = "";
+          } else {
+            history.failure_count = Number(history.failure_count || 0) + 1;
+            history.last_failure_at = nowSec;
+            history.last_error = String(result.error || "preheat_failed");
+          }
+          saveHistory = true;
+        }
+
+        if (result.ok) {
+          results.push({
+            entryId,
+            accountId,
+            model,
+            ok: true,
+            primaryRemaining: readUsageRemainingPercent(result.snapshot?.primary),
+            secondaryRemaining: readUsageRemainingPercent(result.snapshot?.secondary)
+          });
+        } else {
+          results.push({
+            entryId,
+            accountId,
+            model,
+            ok: false,
+            error: result.error,
+            statusCode: result.statusCode || 0,
+            tokenInvalidated: result.tokenInvalidated === true
+          });
+        }
+
+        const isLastAttempt = modelIndex === models.length - 1 && accountIndex === targets.length - 1;
+        if (!isLastAttempt) {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
       }
     }
 
@@ -3398,11 +3505,15 @@ async function runCodexPreheat(reason = "manual", options = {}) {
       startedAt: nowSec,
       completedAt: Math.floor(completedAt / 1000),
       durationMs,
-      totalCandidates: candidates.length,
-      selected: selected.length,
+      totalCandidates: targets.length,
+      selectedAccounts: targets.length,
+      modelCount: models.length,
+      models,
+      attempts: results.length,
+      selected: results.length,
       success: successCount,
       failed: failureCount,
-      skipped,
+      skipped: skipped.slice(0, 20),
       results
     };
 
@@ -3599,15 +3710,6 @@ async function refreshAccessToken(refreshToken, oauthConfig) {
   return JSON.parse(text);
 }
 
-function parseJsonBody(req) {
-  if (!req.rawBody || req.rawBody.length === 0) return {};
-  try {
-    return JSON.parse(req.rawBody.toString("utf8"));
-  } catch {
-    throw new Error("Body must be valid JSON.");
-  }
-}
-
 function getModeDefaultModel(mode) {
   if (mode === "gemini-v1beta") return config.gemini.defaultModel;
   if (mode === "anthropic-v1") return config.anthropic.defaultModel;
@@ -3791,22 +3893,35 @@ function resolveCodexCompatibleRoute(originalModel) {
   };
 }
 
-function extractRequestedModelFromOpenAICompatBody(rawBody, fallbackModel = config.codex.defaultModel) {
-  if (!rawBody || rawBody.length === 0) return fallbackModel;
-  try {
-    const parsed = JSON.parse(rawBody.toString("utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
-      if (model.length > 0) return model;
+function extractRequestedModelFromOpenAICompatBody(
+  rawBody,
+  fallbackModel = config.codex.defaultModel,
+  parsedBody = undefined
+) {
+  if ((!rawBody || rawBody.length === 0) && parsedBody === undefined) return fallbackModel;
+
+  let parsed = parsedBody;
+  if (parsed === undefined) {
+    try {
+      parsed = JSON.parse(rawBody.toString("utf8"));
+    } catch {
+      return fallbackModel;
     }
-  } catch {
-    return fallbackModel;
+  }
+
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
+    if (model.length > 0) return model;
   }
   return fallbackModel;
 }
 
 function chooseProtocolForV1ChatCompletions(req) {
-  const requestedModel = extractRequestedModelFromOpenAICompatBody(req.rawBody, getModeDefaultModel(config.upstreamMode));
+  const requestedModel = extractRequestedModelFromOpenAICompatBody(
+    req.rawBody,
+    getModeDefaultModel(config.upstreamMode),
+    getCachedJsonBody(req)
+  );
   const customRoute = resolveCustomModelRouteOnly(requestedModel);
   if (customRoute) {
     const customFamily = detectModelFamily(customRoute.mappedModel);
@@ -3866,9 +3981,14 @@ function getModelCandidateIds() {
   return uniqueNonEmptyModelIds(ids).sort();
 }
 
+function buildOfficialCodexModelCandidateIds(dynamicIds = [], defaultModel = config.codex.defaultModel) {
+  return uniqueNonEmptyModelIds([defaultModel, ...OFFICIAL_CODEX_MODELS, ...(Array.isArray(dynamicIds) ? dynamicIds : [])]).sort();
+}
+
 const officialModelCache = {
   expiresAt: 0,
-  ids: []
+  ids: [],
+  codexIds: []
 };
 
 async function withTimeout(promise, timeoutMs, errorMessage) {
@@ -3978,10 +4098,20 @@ async function getOfficialModelCandidateIds({ forceRefresh = false } = {}) {
     ...anthropicIds,
     ...getModelCandidateIds()
   ]).sort();
+  const codexMerged = buildOfficialCodexModelCandidateIds(codexIds, config.codex.defaultModel);
 
   officialModelCache.ids = merged;
+  officialModelCache.codexIds = codexMerged;
   officialModelCache.expiresAt = Date.now() + 5 * 60 * 1000;
   return merged;
+}
+
+async function getOfficialCodexModelCandidateIds({ forceRefresh = false } = {}) {
+  if (!forceRefresh && officialModelCache.expiresAt > Date.now() && officialModelCache.codexIds.length > 0) {
+    return officialModelCache.codexIds;
+  }
+  await getOfficialModelCandidateIds({ forceRefresh });
+  return officialModelCache.codexIds;
 }
 
 function readHeaderValue(req, name) {
@@ -4218,11 +4348,21 @@ async function handleGeminiNativeProxy(req, res) {
     redirect: "manual"
   };
   if (req.method !== "GET" && req.method !== "HEAD") {
-    init.body = req.rawBody || Buffer.alloc(0);
+    let parsedBody = getCachedJsonBody(req);
+    const contentType = headers.get("content-type") || req.headers?.["content-type"] || "";
+    if (parsedBody === undefined && String(contentType).toLowerCase().includes("json")) {
+      try {
+        parsedBody = await readJsonBody(req);
+      } catch {
+        parsedBody = undefined;
+      }
+    }
+    const rawBody = await readRawBody(req);
+    init.body = rawBody;
     noteUpstreamRequestAudit(
       res,
-      init.body,
-      headers.get("content-type") || req.headers?.["content-type"] || ""
+      parsedBody ?? rawBody,
+      contentType
     );
   }
 
@@ -4303,20 +4443,24 @@ async function handleAnthropicNativeProxy(req, res) {
     redirect: "manual"
   };
   if (req.method !== "GET" && req.method !== "HEAD") {
-    let requestBody = req.rawBody || Buffer.alloc(0);
+    const rawBody = await readRawBody(req);
+    let requestBody = rawBody;
     const incoming = new URL(req.originalUrl, "http://localhost");
+    let auditRequestBody = getCachedJsonBody(req) ?? rawBody;
     if (
       anthropicLocalCompatHelpers.isAnthropicNativeMessagesPath(incoming.pathname) &&
       requestBody.length > 0 &&
       readHeaderValue(req, "content-type").toLowerCase().includes("application/json")
     ) {
       try {
-        const parsed = JSON.parse(requestBody.toString("utf8"));
+        const parsed = await readJsonBody(req);
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-          const route = resolveModelRoute(parsed.model || config.anthropic.defaultModel, "anthropic-v1");
-          parsed.model = route.mappedModel;
+          const mappedRequest = { ...parsed };
+          const route = resolveModelRoute(mappedRequest.model || config.anthropic.defaultModel, "anthropic-v1");
+          mappedRequest.model = route.mappedModel;
           if (res && res.locals) res.locals.modelRoute = route;
-          requestBody = Buffer.from(JSON.stringify(parsed), "utf8");
+          requestBody = Buffer.from(JSON.stringify(mappedRequest), "utf8");
+          auditRequestBody = mappedRequest;
         }
       } catch {
         // keep original body when parse fails
@@ -4325,7 +4469,7 @@ async function handleAnthropicNativeProxy(req, res) {
     init.body = requestBody;
     noteUpstreamRequestAudit(
       res,
-      requestBody,
+      auditRequestBody,
       headers.get("content-type") || req.headers?.["content-type"] || ""
     );
   }
@@ -4417,7 +4561,16 @@ async function handleGeminiProtocol(req, res) {
 
   let chatReq;
   try {
-    chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.gemini.defaultModel);
+    const rawBody = await readRawBody(req);
+    let parsedBody = getCachedJsonBody(req);
+    if (parsedBody === undefined && rawBody.length > 0) {
+      try {
+        parsedBody = await readJsonBody(req);
+      } catch {
+        parsedBody = undefined;
+      }
+    }
+    chatReq = parseOpenAIChatCompletionsLikeRequest(rawBody, config.gemini.defaultModel, parsedBody);
   } catch (err) {
     sendGeminiError(res, {
       httpStatus: 400,
@@ -4459,7 +4612,7 @@ async function handleGeminiProtocol(req, res) {
   const upstreamModel = modelRoute.mappedModel;
   res.locals.modelRoute = modelRoute;
   const url = `${config.gemini.baseUrl.replace(/\/+$/, "")}/models/${encodeURIComponent(upstreamModel)}:generateContent`;
-  noteUpstreamRequestAudit(res, JSON.stringify(body), "application/json");
+  noteUpstreamRequestAudit(res, body, "application/json");
   let upstream;
   try {
     upstream = await fetchUpstreamWithRetry(
@@ -4576,7 +4729,16 @@ async function handleAnthropicProtocol(req, res) {
 
   let chatReq;
   try {
-    chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.anthropic.defaultModel);
+    const rawBody = await readRawBody(req);
+    let parsedBody = getCachedJsonBody(req);
+    if (parsedBody === undefined && rawBody.length > 0) {
+      try {
+        parsedBody = await readJsonBody(req);
+      } catch {
+        parsedBody = undefined;
+      }
+    }
+    chatReq = parseOpenAIChatCompletionsLikeRequest(rawBody, config.anthropic.defaultModel, parsedBody);
   } catch (err) {
     sendAnthropicError(res, {
       httpStatus: 400,
@@ -4612,7 +4774,7 @@ async function handleAnthropicProtocol(req, res) {
   else if (typeof chatReq.stop === "string" && chatReq.stop.length > 0) body.stop_sequences = [chatReq.stop];
 
   const url = `${config.anthropic.baseUrl.replace(/\/+$/, "")}/messages`;
-  noteUpstreamRequestAudit(res, JSON.stringify(body), "application/json");
+  noteUpstreamRequestAudit(res, body, "application/json");
   let upstream;
   try {
     upstream = await fetchUpstreamWithRetry(
@@ -4701,15 +4863,18 @@ async function handleAnthropicProtocol(req, res) {
   res.status(200).json(completion);
 }
 
-function parseOpenAIChatCompletionsLikeRequest(rawBody, defaultModel) {
-  if (!rawBody || rawBody.length === 0) {
+function parseOpenAIChatCompletionsLikeRequest(rawBody, defaultModel, parsedBody = undefined) {
+  if ((!rawBody || rawBody.length === 0) && parsedBody === undefined) {
     throw new Error("/v1/chat/completions requires a JSON body.");
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(rawBody.toString("utf8"));
-  } catch {
-    throw new Error("Invalid JSON body for /v1/chat/completions.");
+
+  let parsed = parsedBody;
+  if (parsed === undefined) {
+    try {
+      parsed = JSON.parse(rawBody.toString("utf8"));
+    } catch {
+      throw new Error("Invalid JSON body for /v1/chat/completions.");
+    }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Invalid JSON object body for /v1/chat/completions.");
@@ -4912,14 +5077,16 @@ function isUnsupportedMaxOutputTokensError(statusCode, rawText) {
   return text.includes("unsupported parameter") && text.includes("max_output_tokens");
 }
 
-function estimateOpenAIChatCompletionTokens(rawBody) {
-  if (!rawBody || rawBody.length === 0) return 0;
+function estimateOpenAIChatCompletionTokens(rawBody, parsedBody = undefined) {
+  if ((!rawBody || rawBody.length === 0) && parsedBody === undefined) return 0;
 
-  let parsed;
-  try {
-    parsed = JSON.parse(rawBody.toString("utf8"));
-  } catch {
-    return 0;
+  let parsed = parsedBody;
+  if (parsed === undefined) {
+    try {
+      parsed = JSON.parse(rawBody.toString("utf8"));
+    } catch {
+      return 0;
+    }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return 0;
 
@@ -5651,6 +5818,9 @@ export { app, mainServer };
 
 export const __testing = {
   config,
+  ensureCodexOAuthStoreShape,
+  buildOfficialCodexModelCandidateIds,
+  resolveCodexPreheatModelSelection,
   normalizeCodexServiceTier,
   normalizeCodexResponsesRequestBody,
   normalizeChatCompletionsRequestBody,

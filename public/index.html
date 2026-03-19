@@ -1078,7 +1078,7 @@
 
       .preheat-grid {
         display: grid;
-        grid-template-columns: repeat(4, minmax(96px, 1fr)) auto;
+        grid-template-columns: minmax(220px, 1fr) auto;
         gap: 6px;
         align-items: end;
       }
@@ -1087,7 +1087,8 @@
         margin-bottom: 0;
       }
 
-      .preheat-grid input {
+      .preheat-grid input,
+      .preheat-grid select {
         margin-bottom: 0;
       }
 
@@ -1119,23 +1120,55 @@
         margin: 0;
       }
 
-      .requests-toggle {
-        min-width: 132px;
-        border-color: rgba(150, 76, 99, 0.56);
-        background: linear-gradient(180deg, rgba(111, 30, 56, 0.96), rgba(73, 17, 35, 0.96));
-        color: #ffe7ee;
-        box-shadow: inset 0 0 0 1px rgba(255, 209, 220, 0.08);
+      .record-toggle {
+        min-width: 178px;
+        gap: 8px;
+        border-color: rgba(255, 104, 104, 0.58);
+        background: linear-gradient(180deg, rgba(191, 29, 45, 0.98), rgba(138, 18, 31, 0.98));
+        color: #fff5f5;
+        box-shadow:
+          inset 0 0 0 1px rgba(255, 220, 220, 0.12),
+          0 10px 24px rgba(122, 18, 31, 0.28);
       }
 
-      .requests-toggle:hover,
-      .requests-toggle:focus-visible {
-        border-color: rgba(205, 121, 146, 0.8);
-        background: linear-gradient(180deg, rgba(135, 39, 69, 0.98), rgba(87, 22, 42, 0.98));
-        color: #fff4f7;
+      .record-toggle:hover,
+      .record-toggle:focus-visible {
+        border-color: rgba(255, 146, 146, 0.86);
+        background: linear-gradient(180deg, rgba(214, 42, 59, 0.98), rgba(156, 24, 38, 0.98));
+        color: #fffdfd;
       }
 
-      .requests-section-body[hidden] {
-        display: none !important;
+      .record-toggle.is-ignoring {
+        border-color: rgba(117, 131, 167, 0.38);
+        background: linear-gradient(180deg, rgba(41, 55, 87, 0.94), rgba(28, 38, 61, 0.94));
+        color: #d6deef;
+        box-shadow: inset 0 0 0 1px rgba(195, 208, 236, 0.06);
+      }
+
+      .record-toggle.is-ignoring:hover,
+      .record-toggle.is-ignoring:focus-visible {
+        border-color: rgba(154, 171, 212, 0.58);
+        background: linear-gradient(180deg, rgba(55, 72, 111, 0.96), rgba(35, 47, 76, 0.96));
+      }
+
+      .record-toggle__glyph {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        background: currentColor;
+        flex: 0 0 auto;
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.14),
+          0 0 10px rgba(255, 120, 120, 0.42);
+      }
+
+      .record-toggle.is-ignoring .record-toggle__glyph {
+        opacity: 0.72;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+      }
+
+      .record-toggle__label {
+        white-space: nowrap;
       }
 
       .result {
@@ -1200,7 +1233,7 @@
 
       .self-test-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: auto minmax(0, 1fr);
         gap: 8px;
         align-items: start;
       }
@@ -1211,11 +1244,13 @@
 
       .self-test-grid .btns {
         margin: 0;
+        justify-self: start;
       }
 
       .self-test-grid .result {
         margin-top: 0;
         min-height: 34px;
+        min-width: 0;
         display: flex;
         align-items: center;
       }
@@ -1271,6 +1306,10 @@
 
       .temp-mail-summary.ok {
         color: var(--ok);
+      }
+
+      .temp-mail-summary.warn {
+        color: var(--warn);
       }
 
       .temp-mail-summary.bad {
@@ -2557,23 +2596,26 @@
           <div class="preheat-panel">
             <h4 data-i18n="preheat_title">Preheat</h4>
             <div class="preheat-grid">
-              <label for="preheatCooldownSeconds"><span data-i18n="preheat_cooldown">Cooldown(s)</span><input id="preheatCooldownSeconds" type="number" min="30" step="30" /></label>
-              <label for="preheatBatchSize"><span data-i18n="preheat_batch">Batch</span><input id="preheatBatchSize" type="number" min="1" max="32" step="1" /></label>
-              <label for="preheatMinPrimaryRemaining"><span data-i18n="preheat_min_5h">Min 5h%</span><input id="preheatMinPrimaryRemaining" type="number" min="0" max="100" step="1" /></label>
-              <label for="preheatMinSecondaryRemaining"><span data-i18n="preheat_min_w">Min W%</span><input id="preheatMinSecondaryRemaining" type="number" min="0" max="100" step="1" /></label>
-              <button id="runPreheatBtn" class="button-strong" data-i18n="preheat_run">Run Preheat Now</button>
+              <label for="preheatModelSelect">
+                <span data-i18n="preheat_target_model">Target Model</span>
+                <select id="preheatModelSelect"></select>
+              </label>
+              <button id="runPreheatBtn" class="button-strong" data-i18n="preheat_run">Preheat All Accounts</button>
             </div>
+            <p class="section-hint" data-i18n="preheat_hint">
+              Runs a minimal Codex probe across every enabled account for the selected model, or for every supported model.
+            </p>
             <div id="preheatStatus" class="preheat-status" data-i18n="preheat_none">No preheat run yet.</div>
           </div>
           <div class="preheat-panel">
-            <h4 data-i18n="expired_cleanup_title">Account Hygiene</h4>
+            <h4 data-i18n="expired_cleanup_title">Account Auto RM</h4>
             <label class="checkline"
               ><input id="autoLogoutExpiredAccounts" type="checkbox" /><span data-i18n="expired_cleanup_enable"
-                >Automatically logout expired accounts</span
+                >Probe every account and auto-remove failed or token-invalidated ones</span
               ></label
             >
             <div id="expiredAccountCleanupStatus" class="preheat-status" data-i18n="expired_cleanup_idle">
-              Automatic cleanup idle.
+              Background account auto-remove idle.
             </div>
           </div>
           <div class="pool-kpis">
@@ -2690,11 +2732,13 @@
         <section id="requestsSection" class="card span-12 card--requests">
           <div class="section-head">
             <h3 class="section-title" data-i18n="recent_requests_title">Recent Proxy Requests</h3>
-            <button id="requestsToggleBtn" class="requests-toggle" type="button" aria-controls="requestsSectionBody" aria-expanded="true">Hide Requests</button>
           </div>
           <div id="requestsSectionBody" class="requests-section-body">
             <div class="btns">
-              <button id="refreshReqBtn" data-i18n="recent_requests_refresh">Refresh Requests</button>
+              <button id="ignoreReqBtn" class="record-toggle" type="button" aria-pressed="false">
+                <span class="record-toggle__glyph" aria-hidden="true"></span>
+                <span id="ignoreReqBtnLabel" class="record-toggle__label" data-i18n="recent_requests_record">Record Requests</span>
+              </button>
               <button id="clearReqBtn" class="secondary" data-i18n="recent_requests_clear">Clear Records</button>
             </div>
             <div class="recent-req-kpis">
@@ -2781,6 +2825,7 @@
       const $ = (id) => document.getElementById(id);
       let currentMappings = {};
       let modelCandidates = [];
+      let codexModelCandidates = [];
       let wildcardPresets = [];
       let stateRefreshInFlight = false;
       let stateRefreshQueued = false;
@@ -2820,7 +2865,9 @@
       let tempMailRefreshTimerId = 0;
       const USAGE_AUTO_REFRESH_MIN_MS = 5 * 60 * 1000;
       const AUTO_SAVE_DEBOUNCE_MS = 500;
-      const REQUESTS_PANEL_EXPANDED_STORAGE_KEY = "codex_proxy_dashboard_requests_panel_expanded";
+      const REQUESTS_RECORDING_ENABLED_STORAGE_KEY = "codex_proxy_dashboard_requests_recording_enabled";
+      const PREHEAT_MODEL_STORAGE_KEY = "codex_proxy_dashboard_preheat_model";
+      const PREHEAT_ALL_MODELS_VALUE = "__all_supported_models__";
       const CONFIG_FIELD_IDS = [
         "upstreamMode",
         "defaultModel",
@@ -2833,10 +2880,6 @@
         "publicAccessLocalPort",
         "publicAccessHttp2",
         "autoLogoutExpiredAccounts",
-        "preheatCooldownSeconds",
-        "preheatBatchSize",
-        "preheatMinPrimaryRemaining",
-        "preheatMinSecondaryRemaining",
         "modelRouterEnabled"
       ];
       const FX_ENABLED_STORAGE_KEY = "codex_proxy_dashboard_fx_enabled";
@@ -2962,6 +3005,7 @@
           temp_mail_allow_parallel: "Enable Parallel",
           temp_mail_idle: "Idle.",
           temp_mail_console_empty: "No Temp Mail logs yet.",
+          temp_mail_password_missing_warning: "WARN: U havnt set up password yet.",
           temp_mail_runner_missing: "Temp Mail runner unavailable: {message}",
           temp_mail_running: "Running: {success}/{total} success · {fail} fail · threads={threads}",
           temp_mail_stopping: "Stopping Temp Mail...",
@@ -2976,11 +3020,10 @@
             "Dual-window accounts show 5h/W; single-window plans (for example free) auto-switch to one limit badge.",
           pool_refresh_usage: "Refresh Usage (All)",
           preheat_title: "Preheat",
-          preheat_cooldown: "Cooldown(s)",
-          preheat_batch: "Batch",
-          preheat_min_5h: "Min 5h%",
-          preheat_min_w: "Min W%",
-          preheat_run: "Run Preheat Now",
+          preheat_target_model: "Target Model",
+          preheat_all_models: "All supported models",
+          preheat_hint: "Runs a minimal Codex probe across every enabled account for the selected model, or for every supported model.",
+          preheat_run: "Preheat All Accounts",
           preheat_none: "No preheat run yet.",
           preheat_no_state: "No preheat state available.",
           preheat_running: "Running preheat...",
@@ -2991,10 +3034,10 @@
           preheat_running_state_running: "running",
           preheat_running_state_idle: "idle",
           preheat_summary_none: "last=none",
-          preheat_summary_fmt: "last={status} success={success} failed={failed} selected={selected}",
-          expired_cleanup_title: "Account Hygiene",
-          expired_cleanup_enable: "Automatically logout expired accounts",
-          expired_cleanup_idle: "Automatic cleanup idle.",
+          preheat_summary_fmt: "last={status} success={success} failed={failed} models={models} accounts={accounts} attempts={attempts}",
+          expired_cleanup_title: "Account Auto RM",
+          expired_cleanup_enable: "Probe every account and auto-remove failed or token-invalidated ones",
+          expired_cleanup_idle: "Background account auto-remove idle.",
           expired_cleanup_status_line: "status={status} ({running}) | removed={removed}",
           expired_cleanup_status_line_2: "run={run} complete={complete} reason={reason}{error}",
           expired_cleanup_error_segment: " error={error}",
@@ -3106,10 +3149,9 @@
           router_select_model: "Select model...",
           router_delete: "Delete",
           recent_requests_title: "Recent Proxy Requests",
-          recent_requests_refresh: "Refresh Requests",
+          recent_requests_record: "Record Requests",
+          recent_requests_ignore: "Ignore Requests",
           recent_requests_clear: "Clear Records",
-          recent_requests_toggle_show: "Show Requests",
-          recent_requests_toggle_hide: "Hide Requests",
           recent_requests_total_requests: "Total Requests",
           recent_requests_total_requests_sub: "shown rows",
           recent_requests_total_input: "Total Input",
@@ -3279,6 +3321,7 @@
           temp_mail_allow_parallel: "啟用平行",
           temp_mail_idle: "目前閒置。",
           temp_mail_console_empty: "尚無 Temp Mail 日誌。",
+          temp_mail_password_missing_warning: "警告：你還沒設定密碼。",
           temp_mail_runner_missing: "Temp Mail runner 不可用：{message}",
           temp_mail_running: "執行中：成功 {success}/{total} · 失敗 {fail} · threads={threads}",
           temp_mail_stopping: "正在停止 Temp Mail...",
@@ -3292,11 +3335,10 @@
           pool_hint: "雙視窗帳號會顯示 5h/W；單視窗方案（如 free）會自動切成單一額度標籤。",
           pool_refresh_usage: "刷新用量（全部）",
           preheat_title: "預熱",
-          preheat_cooldown: "冷卻秒數",
-          preheat_batch: "批次",
-          preheat_min_5h: "最低 5h%",
-          preheat_min_w: "最低 W%",
-          preheat_run: "立即預熱",
+          preheat_target_model: "目標模型",
+          preheat_all_models: "全部支援模型",
+          preheat_hint: "對所選模型的每個啟用帳號執行最小 Codex 探測；若選全部支援模型，則逐一預熱所有模型。",
+          preheat_run: "預熱全部帳號",
           preheat_none: "尚未執行預熱。",
           preheat_no_state: "尚無預熱狀態。",
           preheat_running: "預熱執行中...",
@@ -3307,10 +3349,10 @@
           preheat_running_state_running: "執行中",
           preheat_running_state_idle: "閒置",
           preheat_summary_none: "上次=無",
-          preheat_summary_fmt: "上次={status} 成功={success} 失敗={failed} 選取={selected}",
-          expired_cleanup_title: "帳號清理",
-          expired_cleanup_enable: "自動登出已過期帳號",
-          expired_cleanup_idle: "自動清理目前閒置。",
+          preheat_summary_fmt: "上次={status} 成功={success} 失敗={failed} 模型={models} 帳號={accounts} 嘗試={attempts}",
+          expired_cleanup_title: "帳號自動移除",
+          expired_cleanup_enable: "背景最小測試每個帳號，失敗或回傳 token_invalidated 就自動移除",
+          expired_cleanup_idle: "背景帳號自動移除目前閒置。",
           expired_cleanup_status_line: "狀態={status}（{running}）| 已移除={removed}",
           expired_cleanup_status_line_2: "執行={run} 完成={complete} 原因={reason}{error}",
           expired_cleanup_error_segment: " 錯誤={error}",
@@ -3422,10 +3464,9 @@
           router_select_model: "選擇模型...",
           router_delete: "刪除",
           recent_requests_title: "近期代理請求",
-          recent_requests_refresh: "刷新請求",
+          recent_requests_record: "記錄請求",
+          recent_requests_ignore: "忽略請求",
           recent_requests_clear: "清除紀錄",
-          recent_requests_toggle_show: "展開請求",
-          recent_requests_toggle_hide: "收合請求",
           recent_requests_total_requests: "請求總數",
           recent_requests_total_requests_sub: "目前顯示筆數",
           recent_requests_total_input: "輸入總計",
@@ -3849,6 +3890,18 @@
         }
       }
 
+      function isTempMailPasswordRequiredError(err) {
+        const message = String(err?.message || err || "").trim().toLowerCase();
+        return message === "temp mail password is required.";
+      }
+
+      function showTempMailInlineWarning(message) {
+        const summaryEl = $("tempMailSummary");
+        summaryEl.className = "result temp-mail-summary warn";
+        summaryEl.textContent = message;
+        renderTempMailConsole([{ level: "warning", text: message }]);
+      }
+
       function syncTempMailRefreshLoop() {
         const isActive = Boolean(lastTempMailState && (lastTempMailState.running || lastTempMailState.stopping));
         if (!isActive) {
@@ -4048,7 +4101,7 @@
         renderMappingsTable();
         syncServiceTierControl();
         syncAllCustomSelects();
-        recentRequestsUi.renderToggle();
+        recentRequestsUi.renderRecordingToggle();
         renderTempMailState(lastTempMailState);
         recentRequestsUi.reopenActiveDetail();
       }
@@ -4852,12 +4905,24 @@
         },
         readStoredBool,
         writeStoredString,
-        panelStorageKey: REQUESTS_PANEL_EXPANDED_STORAGE_KEY,
+        recordingStorageKey: REQUESTS_RECORDING_ENABLED_STORAGE_KEY,
         resolveProtocolLabel: getProtocolLabel,
         resolveModelDisplay: getModelDisplay,
         resolveAccountDisplay: getAccountDisplay,
         resolveCompatibilityHint: localizeCompatibilityHint
       });
+
+      function renderRecentRequestsPanel(rows, options = {}) {
+        const force = options.force === true;
+        if (!force && !recentRequestsUi.isRecordingEnabled()) return;
+        const safeRows = Array.isArray(rows) ? rows : [];
+        const requestTotals = sumRecentRequestTotals(safeRows);
+        setTextAndPulse("recentReqCount", String(requestTotals.count), false);
+        setTextAndPulse("recentReqInputTotal", fmtToken(requestTotals.input), false);
+        setTextAndPulse("recentReqOutputTotal", fmtToken(requestTotals.output), false);
+        setTextAndPulse("recentReqGrandTotal", fmtToken(requestTotals.total), false);
+        recentRequestsUi.renderRows(safeRows);
+      }
 
       function getAccountIdentity(account) {
         return String(account?.entryId || account?.accountId || "");
@@ -5235,6 +5300,10 @@
         return uniqueSortedModels(models);
       }
 
+      function collectPreheatModelOptions() {
+        return uniqueSortedModels([$("defaultModel").value, ...codexModelCandidates]);
+      }
+
       function renderModelOptions() {
         const fromSelect = $("mapFrom");
         const toSelect = $("mapTo");
@@ -5254,15 +5323,41 @@
         syncCustomSelect(toSelect);
       }
 
+      function renderPreheatModelOptions() {
+        const select = $("preheatModelSelect");
+        if (!select) return;
+        const options = collectPreheatModelOptions();
+        const storedValue = readStoredString(PREHEAT_MODEL_STORAGE_KEY);
+        const previous = select.value || storedValue || $("defaultModel").value || PREHEAT_ALL_MODELS_VALUE;
+        const html = [
+          `<option value="${escapeHtml(PREHEAT_ALL_MODELS_VALUE)}">${escapeHtml(t("preheat_all_models"))}</option>`
+        ]
+          .concat(options.map((id) => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`))
+          .join("");
+
+        select.innerHTML = html;
+        const nextValue =
+          previous === PREHEAT_ALL_MODELS_VALUE || options.includes(previous)
+            ? previous
+            : options.includes($("defaultModel").value)
+              ? $("defaultModel").value
+              : PREHEAT_ALL_MODELS_VALUE;
+        select.value = nextValue;
+        writeStoredString(PREHEAT_MODEL_STORAGE_KEY, nextValue);
+        syncCustomSelect(select);
+      }
+
       async function loadModelCandidates(forceRefresh = false) {
         try {
           const data = await api(`/admin/model-candidates${forceRefresh ? "?refresh=1" : ""}`);
           modelCandidates = uniqueSortedModels(data?.models);
+          codexModelCandidates = uniqueSortedModels(data?.codexModels);
           wildcardPresets = uniqueSortedModels(data?.wildcardPresets);
         } catch (err) {
           console.warn("Failed to load model candidates:", err.message);
         }
         renderModelOptions();
+        renderPreheatModelOptions();
       }
 
       function renderMappingsTable() {
@@ -5551,10 +5646,6 @@
           publicAccessLocalPort: Number($("publicAccessLocalPort").value || 0),
           publicAccessUseHttp2: $("publicAccessHttp2").checked,
           autoLogoutExpiredAccounts: $("autoLogoutExpiredAccounts").checked,
-          preheatCooldownSeconds: Number($("preheatCooldownSeconds").value || 0),
-          preheatBatchSize: Number($("preheatBatchSize").value || 0),
-          preheatMinPrimaryRemaining: Number($("preheatMinPrimaryRemaining").value || 0),
-          preheatMinSecondaryRemaining: Number($("preheatMinSecondaryRemaining").value || 0),
           modelRouterEnabled: $("modelRouterEnabled").checked,
           modelMappings: currentMappings
         };
@@ -5630,7 +5721,9 @@
               status: summary.status || "-",
               success: summary.success ?? 0,
               failed: summary.failed ?? 0,
-              selected: summary.selected ?? 0
+              models: summary.modelCount ?? 0,
+              accounts: summary.selectedAccounts ?? 0,
+              attempts: summary.attempts ?? summary.selected ?? 0
             })
           : t("preheat_summary_none");
         const runningText = preheat.running ? t("preheat_running_state_running") : t("preheat_running_state_idle");
@@ -5692,14 +5785,11 @@
         $("defaultServiceTier").value = state.config.defaultServiceTier || "default";
         $("multiAccountStrategy").value = state.config.multiAccountStrategy || "smart";
         $("autoLogoutExpiredAccounts").checked = state.config.autoLogoutExpiredAccounts === true;
-        $("preheatCooldownSeconds").value = Number(state.config.preheatCooldownSeconds || 1200);
-        $("preheatBatchSize").value = Number(state.config.preheatBatchSize || 2);
-        $("preheatMinPrimaryRemaining").value = Number(state.config.preheatMinPrimaryRemaining ?? 5);
-        $("preheatMinSecondaryRemaining").value = Number(state.config.preheatMinSecondaryRemaining ?? 5);
         $("modelRouterEnabled").checked = state.config.modelRouterEnabled !== false;
         currentMappings = { ...(state.config.modelMappings || {}) };
         renderMappingsTable();
         renderModelOptions();
+        renderPreheatModelOptions();
         applyPublicAccessConfigFromState(state);
         syncServiceTierControl();
         syncAllCustomSelects();
@@ -5858,12 +5948,7 @@
                 .join("");
 
         const rows = (state.stats?.recentRequests || []).slice(0, 80);
-        const requestTotals = sumRecentRequestTotals(rows);
-        setTextAndPulse("recentReqCount", String(requestTotals.count), false);
-        setTextAndPulse("recentReqInputTotal", fmtToken(requestTotals.input), false);
-        setTextAndPulse("recentReqOutputTotal", fmtToken(requestTotals.output), false);
-        setTextAndPulse("recentReqGrandTotal", fmtToken(requestTotals.total), false);
-        recentRequestsUi.renderRows(rows);
+        renderRecentRequestsPanel(rows);
       }
 
       async function refreshState(force = false) {
@@ -5940,6 +6025,14 @@
 
       async function toggleTempMailRun() {
         if (tempMailActionInFlight) return;
+        if (!(lastTempMailState?.running || lastTempMailState?.stopping)) {
+          const payload = buildTempMailPayload();
+          saveTempMailFormToStorage();
+          if (!payload.password) {
+            showTempMailInlineWarning(t("temp_mail_password_missing_warning"));
+            return;
+          }
+        }
         tempMailActionInFlight = true;
         renderTempMailState(lastTempMailState);
         try {
@@ -5956,6 +6049,10 @@
           }
           await refreshState(true);
         } catch (err) {
+          if (isTempMailPasswordRequiredError(err)) {
+            showTempMailInlineWarning(t("temp_mail_password_missing_warning"));
+            return;
+          }
           const summaryEl = $("tempMailSummary");
           summaryEl.className = "result temp-mail-summary bad";
           summaryEl.textContent = lastTempMailState?.running || lastTempMailState?.stopping
@@ -5967,15 +6064,21 @@
         }
       }
 
-      async function runPreheatNow(force = true) {
+      async function runPreheatNow() {
         const statusEl = $("preheatStatus");
+        const selectedModel = $("preheatModelSelect").value || $("defaultModel").value;
+        const allModels = selectedModel === PREHEAT_ALL_MODELS_VALUE;
+        writeStoredString(PREHEAT_MODEL_STORAGE_KEY, selectedModel);
         statusEl.className = "preheat-status";
         statusEl.textContent = t("preheat_running");
         try {
           const result = await api("/admin/preheat/run", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ force })
+            body: JSON.stringify({
+              model: allModels ? "" : selectedModel,
+              allModels
+            })
           });
           renderPreheatStatus(result.preheat || null);
           await refreshState(true);
@@ -6459,17 +6562,18 @@
         "defaultModel",
         "defaultInstructions",
         "publicAccessToken",
-        "publicAccessLocalPort",
-        "preheatCooldownSeconds",
-        "preheatBatchSize",
-        "preheatMinPrimaryRemaining",
-        "preheatMinSecondaryRemaining"
+        "publicAccessLocalPort"
       ];
       for (const id of debouncedSaveFields) {
         $(id).addEventListener("input", () => scheduleAutoSave());
         $(id).addEventListener("blur", () => triggerAutoSaveNow());
       }
 
+      $("defaultModel").addEventListener("input", () => renderPreheatModelOptions());
+      $("defaultModel").addEventListener("blur", () => renderPreheatModelOptions());
+      $("preheatModelSelect").addEventListener("change", () => {
+        writeStoredString(PREHEAT_MODEL_STORAGE_KEY, $("preheatModelSelect").value || PREHEAT_ALL_MODELS_VALUE);
+      });
       $("modelRouterEnabled").addEventListener("change", () => triggerAutoSaveNow());
 
       $("addMappingBtn").addEventListener("click", () => {
@@ -6505,18 +6609,20 @@
       $("reloadModelOptionsBtn").addEventListener("click", async () => {
         await loadModelCandidates(true);
       });
-      $("refreshReqBtn").addEventListener("click", async () => {
+      $("ignoreReqBtn").addEventListener("click", async () => {
+        const recordingEnabled = recentRequestsUi.toggleRecording();
+        if (!recordingEnabled) return;
         try {
-          await refreshState();
+          await refreshState(true);
         } catch (err) {
           alert(tt("alert_refresh_requests_failed", { message: err.message }));
         }
       });
-      $("requestsToggleBtn").addEventListener("click", () => recentRequestsUi.togglePanel());
       $("clearReqBtn").addEventListener("click", async () => {
         if (!confirm(t("confirm_clear_requests"))) return;
         try {
           await api("/admin/requests/clear", { method: "POST" });
+          renderRecentRequestsPanel([], { force: true });
           await refreshState();
         } catch (err) {
           alert(tt("alert_clear_requests_failed", { message: err.message }));
@@ -6576,7 +6682,7 @@
       });
       $("tempMailToggleBtn").addEventListener("click", toggleTempMailRun);
       $("runTestBtn").addEventListener("click", runTest);
-      $("runPreheatBtn").addEventListener("click", () => runPreheatNow(true));
+      $("runPreheatBtn").addEventListener("click", () => runPreheatNow());
 
       initCustomSelects();
       initLanguageControl();

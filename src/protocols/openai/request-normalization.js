@@ -8,11 +8,11 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     applyReasoningEffortDefaults
   } = context;
 
-  function normalizeCodexResponsesRequestBody(rawBody) {
+  function normalizeCodexResponsesRequestBody(rawBody, options = {}) {
     if (!rawBody || rawBody.length === 0) {
       const modelRoute = resolveCodexCompatibleRoute(config.codex.defaultModel);
       const fallbackInstructions = config.codex.defaultInstructions;
-      const fallback = {
+      const json = {
         model: modelRoute.mappedModel,
         stream: true,
         store: false,
@@ -26,29 +26,34 @@ export function createOpenAIRequestNormalizationHelpers(context) {
         input: [{ role: "user", content: [{ type: "input_text", text: "" }] }]
       };
       if (config.codex.defaultServiceTier === "priority") {
-        fallback.service_tier = "priority";
+        json.service_tier = "priority";
       }
       return {
-        body: Buffer.from(JSON.stringify(fallback), "utf8"),
+        body: Buffer.from(JSON.stringify(json), "utf8"),
         collectCompletedResponseAsJson: true,
         model: modelRoute.requestedModel,
-        modelRoute
+        modelRoute,
+        json
       };
     }
 
-    let parsed;
-    try {
-      parsed = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-      return {
-        body: rawBody,
-        collectCompletedResponseAsJson: false
-      };
+    let parsed = options.parsedBody;
+    if (parsed === undefined) {
+      try {
+        parsed = JSON.parse(rawBody.toString("utf8"));
+      } catch {
+        return {
+          body: rawBody,
+          json: null,
+          collectCompletedResponseAsJson: false
+        };
+      }
     }
 
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {
         body: rawBody,
+        json: null,
         collectCompletedResponseAsJson: false,
         model: config.codex.defaultModel,
         modelRoute: null
@@ -86,22 +91,25 @@ export function createOpenAIRequestNormalizationHelpers(context) {
 
     return {
       body: Buffer.from(JSON.stringify(normalized), "utf8"),
+      json: normalized,
       collectCompletedResponseAsJson: !wantsStream,
       model: modelRoute.requestedModel,
       modelRoute
     };
   }
 
-  function normalizeChatCompletionsRequestBody(rawBody) {
+  function normalizeChatCompletionsRequestBody(rawBody, options = {}) {
     if (!rawBody || rawBody.length === 0) {
       throw new Error("/v1/chat/completions requires a JSON body.");
     }
 
-    let parsed;
-    try {
-      parsed = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-      throw new Error("Invalid JSON body for /v1/chat/completions.");
+    let parsed = options.parsedBody;
+    if (parsed === undefined) {
+      try {
+        parsed = JSON.parse(rawBody.toString("utf8"));
+      } catch {
+        throw new Error("Invalid JSON body for /v1/chat/completions.");
+      }
     }
 
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -144,6 +152,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
 
     return {
       body: Buffer.from(JSON.stringify(upstreamBody), "utf8"),
+      json: upstreamBody,
       wantsStream,
       model: modelRoute.requestedModel,
       modelRoute

@@ -2,10 +2,8 @@ import { Readable, pipeline } from "node:stream";
 
 export function createUpstreamRuntimeHelpers(context) {
   const {
-    maxAuditTextChars,
     extractUpstreamTransportError,
     fetchWithUpstreamRetry,
-    formatPayloadForAudit,
     parseContentType
   } = context;
 
@@ -32,8 +30,7 @@ export function createUpstreamRuntimeHelpers(context) {
   function noteUpstreamRequestAudit(res, body, contentType = "") {
     if (!res?.locals) return;
     res.locals.upstreamRequestContentType = parseContentType(contentType) || null;
-    res.locals.upstreamRequestPacket =
-      formatPayloadForAudit(body, contentType, maxAuditTextChars) || "";
+    res.locals.upstreamRequestBody = body;
   }
 
   async function fetchUpstreamWithRetry(targetUrl, init, res) {

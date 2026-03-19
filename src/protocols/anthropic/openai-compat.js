@@ -1,6 +1,7 @@
 export function createAnthropicOpenAICompatHelpers(context) {
   const {
     config,
+    readJsonBody,
     resolveCodexCompatibleRoute,
     resolveCompatErrorStatusCode,
     parseOpenAIChatCompletionsLikeRequest,
@@ -13,7 +14,13 @@ export function createAnthropicOpenAICompatHelpers(context) {
   async function handleAnthropicOpenAICompatWithCodex(req, res) {
     let chatReq;
     try {
-      chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.anthropic.defaultModel);
+      let parsedBody;
+      try {
+        parsedBody = await readJsonBody(req);
+      } catch {
+        parsedBody = undefined;
+      }
+      chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.anthropic.defaultModel, parsedBody);
     } catch (err) {
       res.status(400).json({ error: "invalid_request", message: err.message });
       return;
