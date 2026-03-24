@@ -43,6 +43,88 @@ function normalizeMessage(err) {
   );
 }
 
+function createUpstreamRequestTimeoutError(timeoutMs) {
+  const err = new Error(`Upstream request timed out after ${timeoutMs}ms.`);
+  err.code = "ETIMEDOUT";
+  err.upstreamTransport = {
+    code: "UPSTREAM_REQUEST_TIMEOUT",
+    name: "TimeoutError",
+    message: err.message,
+    detail: err.message,
+    retryable: true
+  };
+  return err;
+}
+
+function combineAbortSignals(...signals) {
+  const activeSignals = signals.filter((signal) => signal && typeof signal.aborted === "boolean");
+  if (activeSignals.length === 0) return null;
+  if (activeSignals.length === 1) return activeSignals[0];
+  if (typeof AbortSignal?.any === "function") {
+    return AbortSignal.any(activeSignals);
+  }
+
+  const controller = new AbortController();
+  let detached = false;
+  const cleanupCallbacks = [];
+  const cleanup = () => {
+    if (detached) return;
+    detached = true;
+    for (const fn of cleanupCallbacks) {
+      try {
+        fn();
+      } catch {}
+    }
+  };
+
+  const forwardAbort = (signal) => {
+    if (controller.signal.aborted) return;
+    controller.abort(signal.reason);
+    cleanup();
+  };
+
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      forwardAbort(signal);
+      break;
+    }
+    const onAbort = () => forwardAbort(signal);
+    signal.addEventListener("abort", onAbort, { once: true });
+    cleanupCallbacks.push(() => signal.removeEventListener("abort", onAbort));
+  }
+
+  return controller.signal;
+}
+
+async function fetchWithRequestTimeout(fetchImpl, targetUrl, init, timeoutMs) {
+  if (!(timeoutMs > 0)) {
+    return await fetchImpl(targetUrl, init);
+  }
+
+  const timeoutController = new AbortController();
+  const mergedSignal = combineAbortSignals(init?.signal || null, timeoutController.signal);
+  const nextInit = mergedSignal ? { ...init, signal: mergedSignal } : init;
+  const timeoutError = createUpstreamRequestTimeoutError(timeoutMs);
+  let timedOut = false;
+  let timer = null;
+
+  try {
+    timer = setTimeout(() => {
+      timedOut = true;
+      timeoutController.abort(timeoutError);
+    }, timeoutMs);
+    timer.unref?.();
+    return await fetchImpl(targetUrl, nextInit);
+  } catch (err) {
+    if (timedOut) {
+      throw timeoutError;
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function discardResponseBody(response) {
   if (!response) return;
   try {
@@ -132,6 +214,7 @@ export async function fetchWithUpstreamRetry(targetUrl, init, options = {}) {
         .filter((value) => Number.isFinite(Number(value)) && Number(value) >= 0)
         .map((value) => Number(value))
     : DEFAULT_UPSTREAM_TRANSPORT_RETRY_DELAYS_MS;
+  const requestTimeoutMs = Math.max(0, Number(options.requestTimeoutMs || 0));
 
   let attempts = 0;
   let lastError = null;
@@ -139,7 +222,7 @@ export async function fetchWithUpstreamRetry(targetUrl, init, options = {}) {
   while (attempts < retryDelaysMs.length + 1) {
     attempts += 1;
     try {
-      const response = await fetchImpl(targetUrl, init);
+      const response = await fetchWithRequestTimeout(fetchImpl, targetUrl, init, requestTimeoutMs);
       const retryCount = Math.max(0, attempts - 1);
       const nextDelayMs = retryDelaysMs[retryCount];
       if (RETRYABLE_UPSTREAM_STATUS_CODES.has(Number(response?.status || 0))) {

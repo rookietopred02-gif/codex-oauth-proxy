@@ -6291,11 +6291,23 @@
         if (!(input instanceof HTMLInputElement)) return [];
         input.value = "";
         return new Promise((resolve) => {
+          let settled = false;
           const finalize = () => {
+            if (settled) return;
+            settled = true;
+            window.removeEventListener("focus", handleWindowFocus, true);
             const files = Array.from(input.files || []).filter((file) => file instanceof File);
             resolve(files);
           };
+          const handleWindowFocus = () => {
+            setTimeout(() => {
+              if (!settled && (!input.files || input.files.length === 0)) {
+                finalize();
+              }
+            }, 200);
+          };
           input.addEventListener("change", finalize, { once: true });
+          window.addEventListener("focus", handleWindowFocus, { once: true, capture: true });
           input.click();
         });
       }
@@ -6444,7 +6456,7 @@
         try {
           const value = String($("apiKeyGeneratedValue").textContent || "").trim();
           if (!value || value === "-") return;
-          await navigator.clipboard.writeText(value);
+          await copyTextToClipboard(value);
         } catch (err) {
           alert(tt("alert_api_key_copy_failed", { message: err.message }));
         }
@@ -6508,7 +6520,7 @@
         try {
           const url = String($("publicAccessUrl").textContent || "").trim();
           if (!url || url === "-") return;
-          await navigator.clipboard.writeText(url);
+          await copyTextToClipboard(url);
         } catch (err) {
           alert(tt("alert_public_access_copy_failed", { message: err.message }));
         }

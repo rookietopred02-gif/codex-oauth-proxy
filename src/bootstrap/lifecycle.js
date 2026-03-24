@@ -37,6 +37,7 @@ export function startConfiguredServer({
 
     startPromise = new Promise((resolve, reject) => {
       const server = app.listen(nextPort, nextHost);
+      server.timeout = 0;
       const cleanup = () => {
         server.off("error", handleError);
         server.off("listening", handleListening);

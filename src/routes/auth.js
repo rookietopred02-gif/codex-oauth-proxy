@@ -160,6 +160,15 @@ export function registerAuthRoutes(app, context) {
       const accountRef = String(body.entryId || body.accountId || "").trim();
       const removed = removeCodexPoolAccountFromStore(oauthRuntime.store, accountRef);
       if (!removed.removed) {
+        if (removed.blocked === "leased") {
+          res.status(409).json({
+            error: "account_in_use",
+            message: "Account is currently serving an in-flight request.",
+            entryId: removed.blockedEntryId || null,
+            accountId: removed.blockedAccountId || null
+          });
+          return;
+        }
         res.status(404).json({
           error: "not_found",
           message: "No removable OAuth account was found."

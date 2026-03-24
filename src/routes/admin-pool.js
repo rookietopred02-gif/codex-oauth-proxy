@@ -150,6 +150,15 @@ export function registerAdminPoolRoutes(app, context) {
 
     const result = removeCodexPoolAccountFromStore(getCodexOAuthStore(), accountRef);
     if (!result.removed) {
+      if (result.blocked === "leased") {
+        res.status(409).json({
+          error: "account_in_use",
+          message: "Account is currently serving an in-flight request.",
+          entryId: result.blockedEntryId || null,
+          accountId: result.blockedAccountId || null
+        });
+        return;
+      }
       res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
       return;
     }

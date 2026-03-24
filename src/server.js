@@ -14,6 +14,7 @@ import { persistProxyConfigEnv } from "./env-config-store.js";
 
 import { importCodexOAuthTokens } from "./codex-auth-pool-import.js";
 import { startConfiguredServer } from "./bootstrap/lifecycle.js";
+import { createCodexAccountLeaseRegistry } from "./codex-account-leases.js";
 import { createExpiredAccountCleanupController } from "./expired-account-cleanup.js";
 import { createResponseAffinityStore, extractPreviousResponseId } from "./response-affinity.js";
 import {
@@ -41,6 +42,11 @@ import {
   sanitizeAuditPath,
   toChunkBuffer
 } from "./http/audit.js";
+import {
+  pipeAnthropicSseAsOpenAIChatCompletions,
+  pipeGeminiSseAsOpenAIChatCompletions
+} from "./http/provider-stream-adapters.js";
+import { sendOpenAICompletionAsSse } from "./http/openai-chat-stream.js";
 import { getCachedJsonBody, readJsonBody, readRawBody } from "./http/request-body.js";
 import { createUpstreamRuntimeHelpers } from "./http/upstream-runtime.js";
 import { createAnthropicLocalCompatHelpers } from "./protocols/anthropic/local-compat.js";
@@ -51,6 +57,7 @@ import { createOpenAIRequestNormalizationHelpers } from "./protocols/openai/requ
 import { createOpenAIResponsesCompatHelpers } from "./protocols/openai/responses-compat.js";
 import { registerProxyRoutes } from "./routes/proxy.js";
 import { registerCommonMiddleware, registerSystemRoutes } from "./routes/system.js";
+import { DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS, MAX_UPSTREAM_STREAM_IDLE_TIMEOUT_MS } from "./upstream-timeouts.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -293,6 +300,15 @@ const config = {
       integer: true
     })
   },
+  upstreamStreamIdleTimeoutMs: parseNumberEnv(
+    process.env.UPSTREAM_STREAM_IDLE_TIMEOUT_MS,
+    DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS,
+    {
+    min: 0,
+    max: MAX_UPSTREAM_STREAM_IDLE_TIMEOUT_MS,
+    integer: true
+    }
+  ),
   codex: {
     defaultModel: process.env.CODEX_DEFAULT_MODEL || "gpt-5.4",
     defaultInstructions: process.env.CODEX_DEFAULT_INSTRUCTIONS || "You are a helpful assistant.",
@@ -363,7 +379,6 @@ if (!VALID_MULTI_ACCOUNT_STRATEGIES.has(config.codexOAuth.multiAccountStrategy))
 if (!VALID_CLOUDFLARED_MODES.has(config.publicAccess.defaultMode)) {
   config.publicAccess.defaultMode = "quick";
 }
-config.publicAccess.autoInstall = true;
 
 const pendingAuth = new Map();
 let codexCallbackServer = null;
@@ -468,6 +483,7 @@ const expiredAccountCleanupController = createExpiredAccountCleanupController({
   getAccounts: (store) => store?.accounts || [],
   probeAccount: async (store, ref) =>
     await refreshCodexUsageSnapshotInStore(store, ref, config.codexOAuth, { includeDisabled: true }),
+  isAccountLeased: (ref, account) => isCodexAccountLeased(ref, account),
   removeAccount: (store, ref) => removeCodexPoolAccountFromStore(store, ref),
   saveStore: async (store) => {
     codexOAuthStore = store;
@@ -526,22 +542,82 @@ const authContextCache = {
   mode: "",
   accessToken: "",
   accountId: null,
+  poolEntryId: null,
+  poolAccountId: null,
   expiresAt: 0
 };
 const codexResponseAffinity = createResponseAffinityStore();
 const codexResponsesChain = createResponsesChainStore();
+const codexAccountLeaseRegistry = createCodexAccountLeaseRegistry();
 
-let expiredAccountCleanupTimer = setInterval(() => {
-  expiredAccountCleanupController.run("interval").catch((err) => {
-    console.warn(`[auth-pool] account auto-rm failed: ${err?.message || err}`);
-  });
-}, Math.max(10, Number(config.expiredAccountCleanup.intervalSeconds || 30)) * 1000);
-expiredAccountCleanupTimer.unref?.();
+let expiredAccountCleanupTimer = null;
+
+function normalizeCodexAccountLeaseRefs(...refs) {
+  const unique = new Set();
+  for (const value of refs.flat()) {
+    const normalized = String(value || "").trim();
+    if (!normalized) continue;
+    unique.add(normalized);
+  }
+  return [...unique];
+}
+
+function acquireCodexAccountLease(authContext = null) {
+  const refs = normalizeCodexAccountLeaseRefs(
+    authContext?.poolEntryId,
+    authContext?.poolAccountId,
+    authContext?.accountId
+  );
+  if (refs.length === 0) {
+    return () => {};
+  }
+  const leases = refs.map((ref) => codexAccountLeaseRegistry.acquire(ref));
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    for (const lease of leases) {
+      lease?.release?.();
+    }
+  };
+}
+
+function isCodexAccountLeased(ref = "", account = null) {
+  const refs = normalizeCodexAccountLeaseRefs(
+    ref,
+    account?.identity_id,
+    account?.entry_id,
+    account?.entryId,
+    account?.account_id,
+    account?.accountId
+  );
+  return refs.some((candidate) => codexAccountLeaseRegistry.isLeased(candidate));
+}
+
+function startExpiredAccountCleanupTimer() {
+  if (expiredAccountCleanupTimer) return expiredAccountCleanupTimer;
+  expiredAccountCleanupTimer = setInterval(() => {
+    expiredAccountCleanupController.run("interval").catch((err) => {
+      console.warn(`[auth-pool] account auto-rm failed: ${err?.message || err}`);
+    });
+  }, Math.max(10, Number(config.expiredAccountCleanup.intervalSeconds || 30)) * 1000);
+  expiredAccountCleanupTimer.unref?.();
+  return expiredAccountCleanupTimer;
+}
+
+function stopExpiredAccountCleanupTimer() {
+  if (!expiredAccountCleanupTimer) return;
+  clearInterval(expiredAccountCleanupTimer);
+  expiredAccountCleanupTimer = null;
+}
 
 function clearAuthContextCache() {
   authContextCache.mode = "";
   authContextCache.accessToken = "";
   authContextCache.accountId = null;
+  authContextCache.poolEntryId = null;
+  authContextCache.poolAccountId = null;
   authContextCache.expiresAt = 0;
 }
 
@@ -1165,11 +1241,18 @@ async function stopCloudflaredTunnel() {
   const child = cloudflaredRuntime.process;
   if (child) {
     try {
+      const exitPromise =
+        child.exitCode !== null || child.signalCode !== null
+          ? Promise.resolve()
+          : new Promise((resolve) => {
+              child.once("exit", () => resolve());
+            });
       child.kill("SIGTERM");
       await new Promise((resolve) => setTimeout(resolve, 450));
-      if (!child.killed) {
+      if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");
       }
+      await exitPromise;
     } catch {
       // ignore process kill errors
     }
@@ -1182,13 +1265,29 @@ async function stopCloudflaredTunnel() {
   return getCloudflaredStatus();
 }
 
+async function stopCodexOAuthCallbackServer() {
+  const server = codexCallbackServer;
+  codexCallbackServer = null;
+  codexCallbackServerStartPromise = null;
+  if (!server) return;
+  await new Promise((resolve) => {
+    try {
+      server.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
 function getCachedAuthContext() {
   if (!authContextCache.accessToken) return null;
   if (authContextCache.mode !== config.authMode) return null;
   if (Date.now() >= authContextCache.expiresAt) return null;
   return {
     accessToken: authContextCache.accessToken,
-    accountId: authContextCache.accountId || null
+    accountId: authContextCache.accountId || null,
+    poolEntryId: authContextCache.poolEntryId || null,
+    poolAccountId: authContextCache.poolAccountId || null
   };
 }
 
@@ -1197,6 +1296,8 @@ function cacheAuthContext(context, ttlMs = 15000) {
   authContextCache.mode = config.authMode;
   authContextCache.accessToken = context.accessToken;
   authContextCache.accountId = context.accountId || null;
+  authContextCache.poolEntryId = context.poolEntryId || null;
+  authContextCache.poolAccountId = context.poolAccountId || null;
   authContextCache.expiresAt = Date.now() + Math.max(1000, Math.floor(ttlMs));
 }
 
@@ -1303,6 +1404,7 @@ registerAuthRoutes(app, {
   oauthCallbackSuccessHtml: OAUTH_CALLBACK_SUCCESS_HTML,
   readJsonBody,
   removeCodexPoolAccountFromStore,
+  isCodexAccountLeased,
   saveTokenStore,
   clearAuthContextCache,
   replaceActiveOAuthStore
@@ -1355,6 +1457,7 @@ registerAdminPoolRoutes(app, {
   getCodexPoolEntryId,
   findCodexPoolAccountByRef,
   removeCodexPoolAccountFromStore,
+  isCodexAccountLeased,
   importIntoCodexAuthPool,
   normalizeOpenAICodexPlanType,
   refreshCodexUsageSnapshotInStore,
@@ -1388,7 +1491,8 @@ const upstreamRuntimeHelpers = createUpstreamRuntimeHelpers({
   extractUpstreamTransportError,
   fetchWithUpstreamRetry,
   formatPayloadForAudit,
-  parseContentType
+  parseContentType,
+  upstreamStreamIdleTimeoutMs: config.upstreamStreamIdleTimeoutMs
 });
 const {
   noteUpstreamRetry,
@@ -1411,12 +1515,14 @@ const {
 } = openAIRequestNormalizationHelpers;
 const openAIResponsesCompatHelpers = createOpenAIResponsesCompatHelpers({
   config,
-  parseJsonLoose
+  parseJsonLoose,
+  upstreamStreamIdleTimeoutMs: () => config.upstreamStreamIdleTimeoutMs
 });
 const {
   parseResponsesResultFromSse,
   extractCompletedResponseFromSse,
   extractCompletedResponseFromJson,
+  pipeCodexSse,
   pipeSseAndCaptureTokenUsage,
   pipeCodexSseAsChatCompletions,
   normalizeTokenUsage,
@@ -1432,6 +1538,8 @@ const codexOAuthResponsesHelpers = createCodexOAuthResponsesHelpers({
   truncate,
   getValidAuthContext,
   getCodexOriginator,
+  fetchWithUpstreamRetry,
+  readUpstreamTextOrThrow,
   parseResponsesResultFromSse,
   extractCompletedResponseFromJson,
   normalizeTokenUsage,
@@ -1450,6 +1558,8 @@ const codexOAuthResponsesHelpers = createCodexOAuthResponsesHelpers({
 const {
   buildCodexResponsesRequestBody,
   executeCodexResponsesViaOAuth,
+  openCodexResponsesStreamViaOAuth,
+  openCodexConversationStreamViaOAuth,
   runCodexConversationViaOAuth
 } = codexOAuthResponsesHelpers;
 const anthropicLocalCompatHelpers = createAnthropicLocalCompatHelpers({
@@ -1461,6 +1571,8 @@ const anthropicLocalCompatHelpers = createAnthropicLocalCompatHelpers({
   resolveReasoningEffort,
   resolveCodexCompatibleRoute,
   executeCodexResponsesViaOAuth,
+  openCodexResponsesStreamViaOAuth,
+  pipeCodexSse,
   resolveCompatErrorStatusCode,
   mapHttpStatusToAnthropicErrorType,
   mapResponsesStatusToChatFinishReason,
@@ -1475,6 +1587,10 @@ const geminiLocalCompatHelpers = createGeminiLocalCompatHelpers({
   splitSystemAndConversation,
   buildOpenAIChatCompletion,
   sendOpenAICompletionAsSse,
+  pipeCodexSse,
+  pipeCodexSseAsChatCompletions,
+  openCodexConversationStreamViaOAuth,
+  mapResponsesStatusToChatFinishReason,
   mapOpenAIFinishReasonToGemini,
   runCodexConversationViaOAuth,
   getOpenAICompatibleModelIds
@@ -1488,6 +1604,8 @@ const anthropicOpenAICompatHelpers = createAnthropicOpenAICompatHelpers({
   splitSystemAndConversation,
   buildOpenAIChatCompletion,
   sendOpenAICompletionAsSse,
+  pipeCodexSseAsChatCompletions,
+  openCodexConversationStreamViaOAuth,
   runCodexConversationViaOAuth
 });
 const proxyRouteHandlers = createProxyRouteHandlers({
@@ -1551,6 +1669,7 @@ const proxyRouteHandlers = createProxyRouteHandlers({
   getOpenAICompatibleModelIds,
   isCodexTokenInvalidatedError,
   codexResponseAffinity,
+  acquireCodexAccountLease,
   nextRuntimeRequestSeq: () => (runtimeRequestSeq += 1),
   getAuthModeHint: () =>
     config.authMode === "profile-store"
@@ -1581,6 +1700,7 @@ const serverLifecycle = startConfiguredServer({
   getActiveUpstreamBaseUrl,
   syncResolvedAddress: syncResolvedRuntimeAddress,
   onStartup: () => {
+    startExpiredAccountCleanupTimer();
     if (config.authMode === "profile-store") {
       console.log(`source: ${config.profileStore.authStorePath}`);
       console.log(`profile:${config.profileStore.profileId}`);
@@ -1596,7 +1716,6 @@ const serverLifecycle = startConfiguredServer({
     console.log(`status:          http://${config.host}:${config.port}/auth/status`);
     console.log(`dashboard:       http://${config.host}:${config.port}/dashboard/`);
     console.log(`proxy:           http://${config.host}:${config.port}/v1/*`);
-    console.log(`preheat:         manual trigger only (dashboard button)`);
     console.log(
       `account-auto-rm: ${config.expiredAccountCleanup.enabled ? "enabled" : "disabled"} (${config.expiredAccountCleanup.intervalSeconds}s)`
     );
@@ -1611,10 +1730,8 @@ const serverLifecycle = startConfiguredServer({
       clearTimeout(proxyApiKeyStoreFlushTimer);
       proxyApiKeyStoreFlushTimer = null;
     }
-    if (expiredAccountCleanupTimer) {
-      clearInterval(expiredAccountCleanupTimer);
-      expiredAccountCleanupTimer = null;
-    }
+    stopExpiredAccountCleanupTimer();
+    await stopCodexOAuthCallbackServer().catch(() => {});
     await tempMailController.shutdown().catch(() => {});
     await recentRequestsStore.flush().catch(() => {});
     await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore).catch(() => {});
@@ -1746,13 +1863,22 @@ async function getAuthStatus() {
 async function getValidAuthContext(options = {}) {
   const preferredPoolEntryId =
     typeof options.preferredPoolEntryId === "string" ? options.preferredPoolEntryId.trim() : "";
+  const retainLease = options.retainLease === true;
   const allowCache = !(
     config.authMode === "codex-oauth" &&
     (isCodexMultiAccountEnabled() || preferredPoolEntryId.length > 0)
   );
   if (allowCache) {
     const cached = getCachedAuthContext();
-    if (cached) return cached;
+    if (cached) {
+      if (retainLease && config.authMode === "codex-oauth") {
+        return {
+          ...cached,
+          releaseLease: acquireCodexAccountLease(cached)
+        };
+      }
+      return cached;
+    }
   }
 
   let context;
@@ -1768,6 +1894,12 @@ async function getValidAuthContext(options = {}) {
 
   if (allowCache) {
     cacheAuthContext(context);
+  }
+  if (retainLease && config.authMode === "codex-oauth") {
+    return {
+      ...context,
+      releaseLease: acquireCodexAccountLease(context)
+    };
   }
   return context;
 }
@@ -2562,6 +2694,27 @@ function rotateListFromIndex(list, startIndex) {
   return list.slice(safeStart).concat(list.slice(0, safeStart));
 }
 
+function prioritizeUnleasedCodexAccounts(candidates, preferredPoolEntryId = "") {
+  const ordered = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
+  if (ordered.length <= 1) return ordered;
+
+  const preferredId = typeof preferredPoolEntryId === "string" ? preferredPoolEntryId.trim() : "";
+  const preferred = preferredId
+    ? ordered.find((account) => getCodexPoolEntryId(account) === preferredId) || null
+    : null;
+  const remaining = preferred
+    ? ordered.filter((account) => getCodexPoolEntryId(account) !== preferredId)
+    : ordered;
+
+  const unleased = remaining.filter((account) => !isCodexAccountLeased(getCodexPoolEntryId(account), account));
+  if (unleased.length === 0) {
+    return preferred ? [preferred, ...remaining] : remaining;
+  }
+
+  const leased = remaining.filter((account) => isCodexAccountLeased(getCodexPoolEntryId(account), account));
+  return preferred ? [preferred, ...unleased, ...leased] : [...unleased, ...leased];
+}
+
 function pickCodexAccountCandidates(store, options = {}) {
   const enabled = getCodexEnabledAccounts(store);
   if (enabled.length === 0) return [];
@@ -2614,14 +2767,19 @@ function pickCodexAccountCandidates(store, options = {}) {
     candidates = rotateListFromIndex(enabled, start);
   }
 
-  if (!preferredPoolEntryId) return candidates;
+  if (!preferredPoolEntryId) {
+    return prioritizeUnleasedCodexAccounts(candidates);
+  }
 
   const preferredPool = (Array.isArray(store?.accounts) ? store.accounts : []).filter((x) => x && x.enabled !== false);
   const preferred = preferredPool.find((x) => getCodexPoolEntryId(x) === preferredPoolEntryId);
-  if (!preferred) return candidates;
+  if (!preferred) return prioritizeUnleasedCodexAccounts(candidates);
 
   const preferredId = getCodexPoolEntryId(preferred);
-  return [preferred, ...candidates.filter((x) => getCodexPoolEntryId(x) !== preferredId)];
+  return prioritizeUnleasedCodexAccounts(
+    [preferred, ...candidates.filter((x) => getCodexPoolEntryId(x) !== preferredId)],
+    preferredId
+  );
 }
 
 function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
@@ -2795,7 +2953,7 @@ function selectCodexAccountForLogout(store, explicitRef = "") {
   return accounts.find((x) => x && x.enabled !== false) || accounts[0] || null;
 }
 
-function removeCodexPoolAccountFromStore(storeInput, accountRef = "") {
+function removeCodexPoolAccountFromStore(storeInput, accountRef = "", options = {}) {
   const normalized = ensureCodexOAuthStoreShape(storeInput);
   const store = normalized.store;
   const accounts = Array.isArray(store.accounts) ? store.accounts : [];
@@ -2813,6 +2971,19 @@ function removeCodexPoolAccountFromStore(storeInput, accountRef = "") {
 
   const removedEntryId = getCodexPoolEntryId(target);
   const removedAccountId = String(target.account_id || "").trim() || null;
+  const isAccountLeased =
+    typeof options.isAccountLeased === "function" ? options.isAccountLeased : isCodexAccountLeased;
+  if (isAccountLeased(removedEntryId || accountRef, target) === true) {
+    return {
+      removed: false,
+      blocked: "leased",
+      blockedEntryId: removedEntryId,
+      blockedAccountId: removedAccountId,
+      remainingAccounts: accounts.length,
+      activeEntryId: String(store.active_account_id || "").trim() || null,
+      store
+    };
+  }
   const nextAccounts = accounts.filter((x) => getCodexPoolEntryId(x) !== removedEntryId);
   const removed = nextAccounts.length !== accounts.length;
   if (!removed) {
@@ -4611,7 +4782,8 @@ async function handleGeminiProtocol(req, res) {
   const requestedModel = modelRoute.requestedModel;
   const upstreamModel = modelRoute.mappedModel;
   res.locals.modelRoute = modelRoute;
-  const url = `${config.gemini.baseUrl.replace(/\/+$/, "")}/models/${encodeURIComponent(upstreamModel)}:generateContent`;
+  const geminiAction = chatReq.stream === true ? ":streamGenerateContent" : ":generateContent";
+  const url = `${config.gemini.baseUrl.replace(/\/+$/, "")}/models/${encodeURIComponent(upstreamModel)}${geminiAction}`;
   noteUpstreamRequestAudit(res, body, "application/json");
   let upstream;
   try {
@@ -4634,6 +4806,44 @@ async function handleGeminiProtocol(req, res) {
       message: details.detail || details.message || err.message,
       status: "UNAVAILABLE"
     });
+    return;
+  }
+
+  if (chatReq.stream === true) {
+    if (!upstream.ok) {
+      const raw = await readUpstreamTextOrThrow(upstream).catch(() => "");
+      if (shouldFallbackGeminiUpstreamToCompat(req, upstream.status)) {
+        await geminiLocalCompatHelpers.handleGeminiOpenAICompatWithCodex(req, res);
+        return;
+      }
+      sendGeminiError(res, {
+        httpStatus: upstream.status,
+        message: parseGeminiErrorMessage(raw, `Gemini upstream request failed with HTTP ${upstream.status}.`)
+      });
+      return;
+    }
+
+    try {
+      const streamResult = await pipeGeminiSseAsOpenAIChatCompletions(upstream, res, {
+        model: requestedModel,
+        mapGeminiFinishReasonToOpenAI,
+        upstreamStreamIdleTimeoutMs: config.upstreamStreamIdleTimeoutMs
+      });
+      if (streamResult?.usage) {
+        res.locals.tokenUsage = streamResult.usage;
+      }
+    } catch (err) {
+      noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+      if (!res.headersSent) {
+        sendGeminiError(res, {
+          httpStatus: 502,
+          message: err.message,
+          status: "INTERNAL"
+        });
+      } else {
+        res.end();
+      }
+    }
     return;
   }
 
@@ -4692,11 +4902,6 @@ async function handleGeminiProtocol(req, res) {
     usage
   });
   res.locals.tokenUsage = completion.usage;
-
-  if (chatReq.stream === true) {
-    sendOpenAICompletionAsSse(res, completion);
-    return;
-  }
   res.status(200).json(completion);
 }
 
@@ -4765,7 +4970,7 @@ async function handleAnthropicProtocol(req, res) {
     model: modelRoute.mappedModel,
     max_tokens: Number(chatReq.max_tokens || 4096),
     messages: anthropicMessages,
-    stream: false
+    stream: chatReq.stream === true
   };
   if (systemText) body.system = systemText;
   if (chatReq.temperature !== undefined) body.temperature = chatReq.temperature;
@@ -4799,6 +5004,43 @@ async function handleAnthropicProtocol(req, res) {
       detail: details.detail || null,
       retry_count: Number(res.locals?.upstreamRetryCount || 0)
     });
+    return;
+  }
+
+  if (chatReq.stream === true) {
+    if (!upstream.ok) {
+      const raw = await readUpstreamTextOrThrow(upstream).catch(() => "");
+      sendAnthropicError(res, {
+        httpStatus: upstream.status,
+        message: parseAnthropicErrorMessage(
+          raw,
+          `Anthropic upstream request failed with HTTP ${upstream.status}.`
+        )
+      });
+      return;
+    }
+
+    try {
+      const streamResult = await pipeAnthropicSseAsOpenAIChatCompletions(upstream, res, {
+        model: modelRoute.requestedModel,
+        mapAnthropicStopReasonToOpenAI,
+        upstreamStreamIdleTimeoutMs: config.upstreamStreamIdleTimeoutMs
+      });
+      if (streamResult?.usage) {
+        res.locals.tokenUsage = streamResult.usage;
+      }
+    } catch (err) {
+      noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+      if (!res.headersSent) {
+        sendAnthropicError(res, {
+          httpStatus: 502,
+          message: err.message,
+          type: "api_error"
+        });
+      } else {
+        res.end();
+      }
+    }
     return;
   }
 
@@ -4855,11 +5097,6 @@ async function handleAnthropicProtocol(req, res) {
     usage
   });
   res.locals.tokenUsage = completion.usage;
-
-  if (chatReq.stream === true) {
-    sendOpenAICompletionAsSse(res, completion);
-    return;
-  }
   res.status(200).json(completion);
 }
 
@@ -4971,74 +5208,6 @@ function buildOpenAIChatCompletion({ model, text, finishReason, usage }) {
       total_tokens: 0
     }
   };
-}
-
-function sendOpenAICompletionAsSse(res, completion) {
-  const model = completion.model;
-  const id = completion.id;
-  const created = completion.created;
-  const content = completion?.choices?.[0]?.message?.content || "";
-  const finishReason = completion?.choices?.[0]?.finish_reason || "stop";
-
-  res.status(200);
-  res.setHeader("content-type", "text/event-stream; charset=utf-8");
-  res.setHeader("cache-control", "no-cache");
-  res.setHeader("connection", "keep-alive");
-  res.setHeader("x-accel-buffering", "no");
-
-  const writeChunk = (payload) => {
-    res.write(`data: ${JSON.stringify(payload)}\n\n`);
-  };
-
-  writeChunk({
-    id,
-    object: "chat.completion.chunk",
-    created,
-    model,
-    choices: [
-      {
-        index: 0,
-        delta: { role: "assistant" },
-        finish_reason: null
-      }
-    ]
-  });
-
-  if (content) {
-    writeChunk({
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [
-        {
-          index: 0,
-          delta: { content },
-          finish_reason: null
-        }
-      ]
-    });
-  }
-
-  const finalChunk = {
-    id,
-    object: "chat.completion.chunk",
-    created,
-    model,
-    choices: [
-      {
-        index: 0,
-        delta: {},
-        finish_reason: finishReason
-      }
-    ]
-  };
-  if (completion.usage) {
-    finalChunk.usage = completion.usage;
-  }
-  writeChunk(finalChunk);
-  res.write("data: [DONE]\n\n");
-  res.end();
 }
 
 function mapGeminiFinishReasonToOpenAI(reason) {
@@ -5818,6 +5987,17 @@ export { app, mainServer };
 
 export const __testing = {
   config,
+  acquireCodexAccountLease,
+  isCodexAccountLeased,
+  pickCodexAccountCandidates,
+  startExpiredAccountCleanupTimer,
+  stopExpiredAccountCleanupTimer,
+  getExpiredAccountCleanupTimer: () => expiredAccountCleanupTimer,
+  ensureCodexOAuthCallbackServer,
+  stopCodexOAuthCallbackServer,
+  getCodexOAuthCallbackServer: () => codexCallbackServer,
+  getCloudflaredRuntime: () => cloudflaredRuntime,
+  stopCloudflaredTunnel,
   ensureCodexOAuthStoreShape,
   buildOfficialCodexModelCandidateIds,
   resolveCodexPreheatModelSelection,

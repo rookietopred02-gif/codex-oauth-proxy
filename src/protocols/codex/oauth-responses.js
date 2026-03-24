@@ -4,6 +4,8 @@ export function createCodexOAuthResponsesHelpers(context) {
     truncate,
     getValidAuthContext,
     getCodexOriginator,
+    fetchWithUpstreamRetry,
+    readUpstreamTextOrThrow,
     parseResponsesResultFromSse,
     extractCompletedResponseFromJson,
     normalizeTokenUsage,
@@ -20,6 +22,47 @@ export function createCodexOAuthResponsesHelpers(context) {
     toResponsesInputFromChatMessages
   } = context;
 
+  function createMissingAccountIdError() {
+    const err = new Error("Could not extract chatgpt_account_id from OAuth token.");
+    err.statusCode = 401;
+    return err;
+  }
+
+  function getCodexResponsesUrl() {
+    return `${config.upstreamBaseUrl.replace(/\/+$/, "")}/codex/responses`;
+  }
+
+  function getCodexStreamRequestTimeoutMs() {
+    return Math.max(0, Number(config?.upstreamStreamIdleTimeoutMs || 0));
+  }
+
+  function buildCodexRequestError(response, raw) {
+    const err = new Error(
+      `Upstream request failed: HTTP ${response.status}: ${truncate(raw, 400)}`
+    );
+    err.statusCode = response.status;
+    return err;
+  }
+
+  async function sendCodexResponsesRequest(currentAuth, url, body, acceptHeader) {
+    const requestInit = {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${currentAuth.accessToken}`,
+        "chatgpt-account-id": currentAuth.accountId,
+        "openai-beta": "responses=experimental",
+        originator: getCodexOriginator(),
+        accept: acceptHeader,
+        "content-type": "application/json",
+        "user-agent": "codex-pro-max-local-compat"
+      },
+      body: JSON.stringify(body)
+    };
+    return await fetchWithUpstreamRetry(url, requestInit, {
+      requestTimeoutMs: getCodexStreamRequestTimeoutMs()
+    });
+  }
+
   function buildCodexResponsesRequestBody({
     model,
     requestedModel,
@@ -30,6 +73,9 @@ export function createCodexOAuthResponsesHelpers(context) {
     tools,
     toolChoice,
     include,
+    max_tokens,
+    temperature,
+    top_p,
     reasoningSummary,
     reasoningEffort,
     reasoningContext = null
@@ -84,6 +130,9 @@ export function createCodexOAuthResponsesHelpers(context) {
     if (Array.isArray(tools)) body.tools = tools;
     if (toolChoice !== undefined) body.tool_choice = toolChoice;
     if (Array.isArray(include) && include.length > 0) body.include = include;
+    if (max_tokens !== undefined) body.max_output_tokens = max_tokens;
+    if (temperature !== undefined) body.temperature = temperature;
+    if (top_p !== undefined) body.top_p = top_p;
 
     return {
       route: {
@@ -104,59 +153,55 @@ export function createCodexOAuthResponsesHelpers(context) {
     tools,
     toolChoice,
     include,
+    max_tokens,
+    temperature,
+    top_p,
     reasoningSummary,
     reasoningEffort,
     reasoningContext = null
   }) {
-    let auth = await getValidAuthContext();
-    if (!auth.accountId) {
-      throw new Error("Could not extract chatgpt_account_id from OAuth token.");
-    }
-
-    const { route, body: baseBody } = buildCodexResponsesRequestBody({
-      model,
-      requestedModel,
-      upstreamModel,
-      instructions,
-      input,
-      stop,
-      tools,
-      toolChoice,
-      include,
-      reasoningSummary,
-      reasoningEffort,
-      reasoningContext
-    });
-    const resolvedRequestedModel = route.requestedModel;
-    const url = `${config.upstreamBaseUrl.replace(/\/+$/, "")}/codex/responses`;
-
-    const executeOnce = async (currentAuth) => {
-      if (!currentAuth.accountId) {
-        const accountErr = new Error("Could not extract chatgpt_account_id from OAuth token.");
-        accountErr.statusCode = 401;
-        throw accountErr;
+    let auth = await getValidAuthContext({ retainLease: true });
+    let releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
+    try {
+      if (!auth.accountId) {
+        throw createMissingAccountIdError();
       }
 
-      const sendCodexRequest = async (body, acceptHeader) => {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${currentAuth.accessToken}`,
-            "chatgpt-account-id": currentAuth.accountId,
-            "openai-beta": "responses=experimental",
-            originator: getCodexOriginator(),
-            accept: acceptHeader,
-            "content-type": "application/json",
-            "user-agent": "codex-pro-max-local-compat"
-          },
-          body: JSON.stringify(body)
-        });
-        const raw = await response.text();
-        return { response, raw };
-      };
+      const { route, body: baseBody } = buildCodexResponsesRequestBody({
+        model,
+        requestedModel,
+        upstreamModel,
+        instructions,
+        input,
+        stop,
+        tools,
+        toolChoice,
+        include,
+        max_tokens,
+        temperature,
+        top_p,
+        reasoningSummary,
+        reasoningEffort,
+        reasoningContext
+      });
+      const resolvedRequestedModel = route.requestedModel;
+      const url = getCodexResponsesUrl();
 
-      const parseRequestResult = (result, expectSse = false) => {
-        if (expectSse) {
+      const executeOnce = async (currentAuth) => {
+        if (!currentAuth.accountId) {
+          throw createMissingAccountIdError();
+        }
+
+        const sendCodexRequest = async (body, acceptHeader) => {
+          const { response } = await sendCodexResponsesRequest(currentAuth, url, body, acceptHeader);
+          const raw = await readUpstreamTextOrThrow(response);
+          return { response, raw };
+        };
+
+        const parseRequestResult = (result, expectSse = false) => {
+          if (!expectSse) {
+            return extractCompletedResponseFromJson(result.raw);
+          }
           const parsedSse = parseResponsesResultFromSse(result.raw);
           if (parsedSse.failed) {
             const upstreamErr = new Error(parsedSse.failed.message);
@@ -164,111 +209,272 @@ export function createCodexOAuthResponsesHelpers(context) {
             throw upstreamErr;
           }
           return parsedSse.completed;
-        }
-        return extractCompletedResponseFromJson(result.raw);
-      };
+        };
 
-      let activeBody = { ...baseBody };
-      let requestResult = await sendCodexRequest(activeBody, "application/json");
-      if (!requestResult.response.ok && isUnsupportedMaxOutputTokensError(requestResult.response.status, requestResult.raw)) {
-        const fallbackBody = { ...baseBody };
-        delete fallbackBody.max_output_tokens;
-        activeBody = fallbackBody;
-        requestResult = await sendCodexRequest(activeBody, "application/json");
-      }
-      if (!requestResult.response.ok) {
-        const maybeStreamOnly =
-          requestResult.response.status === 400 &&
-          /(stream|event-stream|sse)/i.test(requestResult.raw || "");
-        if (maybeStreamOnly) {
-          activeBody = { ...baseBody, stream: true };
+        let activeBody = { ...baseBody, stream: true };
+        let requestResult = await sendCodexRequest(activeBody, "text/event-stream");
+
+        if (
+          !requestResult.response.ok &&
+          isUnsupportedMaxOutputTokensError(requestResult.response.status, requestResult.raw)
+        ) {
+          const fallbackBody = { ...activeBody };
+          delete fallbackBody.max_output_tokens;
+          activeBody = fallbackBody;
           requestResult = await sendCodexRequest(activeBody, "text/event-stream");
         }
-      }
-      if (!requestResult.response.ok) {
-        const requestErr = new Error(
-          `Upstream request failed: HTTP ${requestResult.response.status}: ${truncate(requestResult.raw, 400)}`
-        );
-        requestErr.statusCode = requestResult.response.status;
-        throw requestErr;
-      }
 
-      await maybeCaptureCodexUsageFromHeaders(currentAuth, requestResult.response.headers, "response").catch(() => {});
-
-      const contentType = requestResult.response.headers.get("content-type") || "";
-      let completed = parseRequestResult(
-        requestResult,
-        activeBody.stream === true || contentType.includes("text/event-stream")
-      );
-
-      if (!completed && activeBody.stream !== true) {
-        activeBody = { ...baseBody, stream: true };
-        requestResult = await sendCodexRequest(activeBody, "text/event-stream");
         if (!requestResult.response.ok) {
-          const streamErr = new Error(
-            `Upstream request failed: HTTP ${requestResult.response.status}: ${truncate(requestResult.raw, 400)}`
-          );
-          streamErr.statusCode = requestResult.response.status;
-          throw streamErr;
+          throw buildCodexRequestError(requestResult.response, requestResult.raw);
         }
-        completed = parseRequestResult(requestResult, true);
+
+        await maybeCaptureCodexUsageFromHeaders(currentAuth, requestResult.response.headers, "response").catch(
+          () => {}
+        );
+
+        const contentType = requestResult.response.headers.get("content-type") || "";
+        const looksLikeSse =
+          contentType.includes("text/event-stream") || /(^|\n)\s*(event:|data:)/.test(requestResult.raw);
+        let completed = parseRequestResult(requestResult, looksLikeSse);
+
+        if (!completed && activeBody.stream === true && !looksLikeSse) {
+          activeBody = { ...baseBody, stream: false };
+          requestResult = await sendCodexRequest(activeBody, "application/json");
+          if (!requestResult.response.ok) {
+            throw buildCodexRequestError(requestResult.response, requestResult.raw);
+          }
+          completed = parseRequestResult(requestResult, false);
+        }
+
+        if (!completed) {
+          const parseErr = new Error("Could not parse completed response from upstream.");
+          parseErr.statusCode = 502;
+          throw parseErr;
+        }
+
+        return completed;
+      };
+
+      const canRetryWithPool = isCodexPoolRetryEnabled();
+      const maxAttempts = canRetryWithPool ? 2 : 1;
+      let completed = null;
+      let lastError = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          completed = await executeOnce(auth);
+          await maybeMarkCodexPoolSuccess(auth).catch(() => {});
+          lastError = null;
+          break;
+        } catch (err) {
+          lastError = err;
+          const statusCode = Number(err?.statusCode || 0);
+          const canRotateNow =
+            canRetryWithPool &&
+            attempt < maxAttempts &&
+            Boolean(auth?.poolAccountId) &&
+            shouldRotateCodexAccountForStatus(statusCode);
+
+          if (!canRotateNow) {
+            if (canRetryWithPool && shouldRotateCodexAccountForStatus(statusCode)) {
+              await maybeMarkCodexPoolFailure(auth, err.message, statusCode).catch(() => {});
+            }
+            break;
+          }
+
+          await maybeMarkCodexPoolFailure(auth, err.message, statusCode).catch(() => {});
+          let nextAuth;
+          try {
+            nextAuth = await getValidAuthContext({ retainLease: true });
+          } catch (leaseErr) {
+            lastError = leaseErr;
+            break;
+          }
+          if (!nextAuth.accountId) {
+            nextAuth.releaseLease?.();
+            lastError = createMissingAccountIdError();
+            break;
+          }
+          releaseAuthLease();
+          auth = nextAuth;
+          releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
+        }
       }
 
       if (!completed) {
-        const parseErr = new Error("Could not parse completed response from upstream.");
-        parseErr.statusCode = 502;
-        throw parseErr;
+        throw lastError || new Error("Upstream request failed.");
       }
 
-      return completed;
+      return {
+        model: resolvedRequestedModel,
+        completed,
+        authAccountId: auth.poolAccountId || auth.accountId || null
+      };
+    } finally {
+      releaseAuthLease();
+    }
+  }
+
+  async function openCodexResponsesStreamViaOAuth({
+    model,
+    requestedModel,
+    upstreamModel,
+    instructions,
+    input,
+    stop,
+    tools,
+    toolChoice,
+    include,
+    max_tokens,
+    temperature,
+    top_p,
+    reasoningSummary,
+    reasoningEffort,
+    reasoningContext = null
+  }) {
+    let auth = await getValidAuthContext({ retainLease: true });
+    let releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
+    let shouldReleaseLease = true;
+
+    const release = () => {
+      if (!shouldReleaseLease) return;
+      shouldReleaseLease = false;
+      releaseAuthLease();
     };
 
-    const canRetryWithPool = isCodexPoolRetryEnabled();
-    const maxAttempts = canRetryWithPool ? 2 : 1;
-    let completed = null;
-    let lastError = null;
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try {
-        completed = await executeOnce(auth);
-        await maybeMarkCodexPoolSuccess(auth).catch(() => {});
-        lastError = null;
-        break;
-      } catch (err) {
-        lastError = err;
-        const statusCode = Number(err?.statusCode || 0);
-        const canRotateNow =
-          canRetryWithPool &&
-          attempt < maxAttempts &&
-          Boolean(auth?.poolAccountId) &&
-          shouldRotateCodexAccountForStatus(statusCode);
+    try {
+      if (!auth.accountId) {
+        throw createMissingAccountIdError();
+      }
 
-        if (!canRotateNow) {
-          if (canRetryWithPool && shouldRotateCodexAccountForStatus(statusCode)) {
-            await maybeMarkCodexPoolFailure(auth, err.message, statusCode).catch(() => {});
+      const { route, body: baseBody } = buildCodexResponsesRequestBody({
+        model,
+        requestedModel,
+        upstreamModel,
+        instructions,
+        input,
+        stop,
+        tools,
+        toolChoice,
+        include,
+        max_tokens,
+        temperature,
+        top_p,
+        reasoningSummary,
+        reasoningEffort,
+        reasoningContext
+      });
+      const resolvedRequestedModel = route.requestedModel;
+      const url = getCodexResponsesUrl();
+
+      const openOnce = async (currentAuth) => {
+        if (!currentAuth.accountId) {
+          throw createMissingAccountIdError();
+        }
+
+        let activeBody = { ...baseBody, stream: true };
+        let requestResult = await sendCodexResponsesRequest(currentAuth, url, activeBody, "text/event-stream");
+        let response = requestResult.response;
+
+        if (!response.ok) {
+          let raw = await readUpstreamTextOrThrow(response);
+          if (isUnsupportedMaxOutputTokensError(response.status, raw)) {
+            const fallbackBody = { ...activeBody };
+            delete fallbackBody.max_output_tokens;
+            activeBody = fallbackBody;
+            requestResult = await sendCodexResponsesRequest(currentAuth, url, activeBody, "text/event-stream");
+            response = requestResult.response;
+            if (!response.ok) {
+              raw = await readUpstreamTextOrThrow(response);
+              throw buildCodexRequestError(response, raw);
+            }
+          } else {
+            throw buildCodexRequestError(response, raw);
           }
-          break;
         }
 
-        await maybeMarkCodexPoolFailure(auth, err.message, statusCode).catch(() => {});
-        auth = await getValidAuthContext();
-        if (!auth.accountId) {
-          const accountErr = new Error("Could not extract chatgpt_account_id from OAuth token.");
-          accountErr.statusCode = 401;
-          lastError = accountErr;
+        await maybeCaptureCodexUsageFromHeaders(currentAuth, response.headers, "response").catch(() => {});
+
+        const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+        if (contentType.includes("text/event-stream")) {
+          return {
+            upstream: response,
+            bufferedCompletion: null
+          };
+        }
+
+        const raw = await readUpstreamTextOrThrow(response);
+        const unsupportedStreamErr = new Error(
+          `Upstream stream request returned non-SSE content-type: ${contentType || "unknown"}`
+        );
+        unsupportedStreamErr.statusCode = 502;
+        unsupportedStreamErr.upstreamBody = raw;
+        throw unsupportedStreamErr;
+      };
+
+      const canRetryWithPool = isCodexPoolRetryEnabled();
+      const maxAttempts = canRetryWithPool ? 2 : 1;
+      let opened = null;
+      let lastError = null;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          opened = await openOnce(auth);
+          lastError = null;
           break;
+        } catch (err) {
+          lastError = err;
+          const statusCode = Number(err?.statusCode || 0);
+          const canRotateNow =
+            canRetryWithPool &&
+            attempt < maxAttempts &&
+            Boolean(auth?.poolAccountId) &&
+            shouldRotateCodexAccountForStatus(statusCode);
+
+          if (!canRotateNow) {
+            break;
+          }
+
+          await maybeMarkCodexPoolFailure(auth, err.message, statusCode).catch(() => {});
+          let nextAuth;
+          try {
+            nextAuth = await getValidAuthContext({ retainLease: true });
+          } catch (leaseErr) {
+            lastError = leaseErr;
+            break;
+          }
+          if (!nextAuth.accountId) {
+            nextAuth.releaseLease?.();
+            lastError = createMissingAccountIdError();
+            break;
+          }
+          releaseAuthLease();
+          auth = nextAuth;
+          releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
         }
       }
-    }
 
-    if (!completed) {
-      throw lastError || new Error("Upstream request failed.");
-    }
+      if (!opened) {
+        throw lastError || new Error("Upstream request failed.");
+      }
 
-    return {
-      model: resolvedRequestedModel,
-      completed,
-      authAccountId: auth.poolAccountId || auth.accountId || null
-    };
+      return {
+        model: resolvedRequestedModel,
+        upstream: opened.upstream,
+        bufferedCompletion: opened.bufferedCompletion,
+        authAccountId: auth.poolAccountId || auth.accountId || null,
+        authContext: auth,
+        async markSuccess() {
+          await maybeMarkCodexPoolSuccess(auth).catch(() => {});
+        },
+        async markFailure(message, statusCode = 0) {
+          await maybeMarkCodexPoolFailure(auth, message, statusCode).catch(() => {});
+        },
+        release
+      };
+    } catch (err) {
+      release();
+      throw err;
+    }
   }
 
   async function runCodexConversationViaOAuth({
@@ -337,9 +543,59 @@ export function createCodexOAuthResponsesHelpers(context) {
     };
   }
 
+  async function openCodexConversationStreamViaOAuth({
+    model,
+    requestedModel,
+    upstreamModel,
+    systemText,
+    conversation,
+    max_tokens,
+    temperature,
+    top_p,
+    stop
+  }) {
+    const messages = [];
+    if (typeof systemText === "string" && systemText.trim().length > 0) {
+      messages.push({ role: "system", content: systemText });
+    }
+    for (const msg of Array.isArray(conversation) ? conversation : []) {
+      if (!msg || typeof msg !== "object") continue;
+      const role = msg.role === "assistant" ? "assistant" : "user";
+      const text = typeof msg.text === "string" && msg.text.length > 0 ? msg.text : " ";
+      messages.push({ role, content: text });
+    }
+    if (messages.length === 0) {
+      messages.push({ role: "user", content: " " });
+    }
+
+    const instructions =
+      typeof systemText === "string" && systemText.trim().length > 0
+        ? systemText
+        : config.codex.defaultInstructions;
+    const input = toResponsesInputFromChatMessages(messages);
+    return await openCodexResponsesStreamViaOAuth({
+      model,
+      requestedModel,
+      upstreamModel,
+      instructions,
+      input,
+      max_tokens,
+      temperature,
+      top_p,
+      stop,
+      reasoningContext: {
+        messages,
+        input,
+        instructions
+      }
+    });
+  }
+
   return {
     buildCodexResponsesRequestBody,
     executeCodexResponsesViaOAuth,
+    openCodexResponsesStreamViaOAuth,
+    openCodexConversationStreamViaOAuth,
     runCodexConversationViaOAuth
   };
 }

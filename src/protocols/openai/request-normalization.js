@@ -142,6 +142,8 @@ export function createOpenAIRequestNormalizationHelpers(context) {
 
     if (parsed.temperature !== undefined) upstreamBody.temperature = parsed.temperature;
     if (parsed.top_p !== undefined) upstreamBody.top_p = parsed.top_p;
+    if (parsed.max_completion_tokens !== undefined) upstreamBody.max_output_tokens = parsed.max_completion_tokens;
+    else if (parsed.max_tokens !== undefined) upstreamBody.max_output_tokens = parsed.max_tokens;
     if (parsed.tool_choice !== undefined) upstreamBody.tool_choice = normalizeChatToolChoice(parsed.tool_choice);
     if (parsed.tools !== undefined) upstreamBody.tools = normalizeChatTools(parsed.tools);
     if (Object.prototype.hasOwnProperty.call(parsed, "service_tier")) {

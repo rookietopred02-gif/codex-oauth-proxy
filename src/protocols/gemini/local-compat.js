@@ -1,3 +1,9 @@
+import {
+  consumeSseBlocks,
+  createSseSession,
+  parseSseJsonEventBlock
+} from "../../http/sse-runtime.js";
+
 export function createGeminiLocalCompatHelpers(context) {
   const {
     config,
@@ -7,9 +13,10 @@ export function createGeminiLocalCompatHelpers(context) {
     parseOpenAIChatCompletionsLikeRequest,
     splitSystemAndConversation,
     buildOpenAIChatCompletion,
-    sendOpenAICompletionAsSse,
+    openCodexConversationStreamViaOAuth,
     mapOpenAIFinishReasonToGemini,
     runCodexConversationViaOAuth,
+    pipeCodexSseAsChatCompletions,
     getOpenAICompatibleModelIds
   } = context;
 
@@ -115,14 +122,162 @@ export function createGeminiLocalCompatHelpers(context) {
     };
   }
 
-  function sendGeminiSseResponse(res, payload) {
-    res.status(200);
-    res.setHeader("content-type", "text/event-stream; charset=utf-8");
-    res.setHeader("cache-control", "no-cache");
-    res.setHeader("connection", "keep-alive");
-    res.setHeader("x-accel-buffering", "no");
-    res.write(`data: ${JSON.stringify(payload)}\n\n`);
-    res.end();
+  function extractBufferedAssistantText(response) {
+    const messageItem = Array.isArray(response?.output)
+      ? response.output.find((item) => item?.type === "message" && item.role === "assistant")
+      : null;
+    const textPart = Array.isArray(messageItem?.content)
+      ? messageItem.content.find((part) => part?.type === "output_text" && typeof part.text === "string")
+      : null;
+    return textPart?.text || "";
+  }
+
+  function toOpenAIUsage(usage) {
+    if (!usage || typeof usage !== "object") return null;
+    return {
+      prompt_tokens: Number(usage.input_tokens || 0),
+      completion_tokens: Number(usage.output_tokens || 0),
+      total_tokens: Number(usage.total_tokens || 0)
+    };
+  }
+
+  function mapResponsesStatusToGeminiFinishReason(status) {
+    return mapOpenAIFinishReasonToGemini(status === "incomplete" ? "length" : "stop");
+  }
+
+  async function pipeCodexSseAsGeminiSse(upstream, res, model) {
+    if (!upstream?.body) {
+      throw new Error("No upstream SSE body.");
+    }
+
+    const reader = upstream.body.getReader();
+    const idleTimeoutMs = Math.max(0, Number(config?.upstreamStreamIdleTimeoutMs || 0));
+    const seenTextItems = new Set();
+    let emittedAnyPayload = false;
+    let emittedTerminal = false;
+    let finalUsage = null;
+
+    const session = createSseSession(res, {
+      upstream,
+      heartbeatMs: 15000,
+      prepareResponse() {
+        res.status(200);
+        res.setHeader("content-type", "text/event-stream; charset=utf-8");
+        res.setHeader("cache-control", "no-cache");
+        res.setHeader("connection", "keep-alive");
+        res.setHeader("x-accel-buffering", "no");
+      }
+    });
+    session.attachReader(reader);
+    session.startHeartbeat();
+
+    const writePayload = (payload) => {
+      const wrote = session.write(`data: ${JSON.stringify(payload)}\n\n`);
+      if (wrote) emittedAnyPayload = true;
+      return wrote;
+    };
+
+    const emitTextDelta = (text) => {
+      if (typeof text !== "string" || text.length === 0) return;
+      writePayload({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [{ text }]
+            },
+            index: 0
+          }
+        ],
+        modelVersion: model
+      });
+    };
+
+    const emitCompleted = (response) => {
+      const usage = toOpenAIUsage(response?.usage);
+      finalUsage = usage;
+      writePayload({
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: []
+            },
+            finishReason: mapResponsesStatusToGeminiFinishReason(response?.status),
+            index: 0
+          }
+        ],
+        ...(usage
+          ? {
+              usageMetadata: {
+                promptTokenCount: Number(usage.prompt_tokens || 0),
+                candidatesTokenCount: Number(usage.completion_tokens || 0),
+                totalTokenCount: Number(usage.total_tokens || 0)
+              }
+            }
+          : {}),
+        modelVersion: model
+      });
+      emittedTerminal = true;
+    };
+
+    const handleSseBlock = (block) => {
+      const event = parseSseJsonEventBlock(block);
+      if (!event) return;
+
+      if (event.type === "response.failed") {
+        const err = new Error(event.response?.error?.message || "Codex response failed.");
+        err.statusCode = Number(event.response?.status_code || event.status_code || 502) || 502;
+        throw err;
+      }
+
+      if (event.type === "response.output_text.delta") {
+        const deltaText = typeof event.delta === "string" ? event.delta : "";
+        if (deltaText && typeof event.item_id === "string" && event.item_id.length > 0) {
+          seenTextItems.add(event.item_id);
+        }
+        emitTextDelta(deltaText);
+        return;
+      }
+
+      if (event.type === "response.output_text.done") {
+        const text = typeof event.text === "string" ? event.text : "";
+        const itemId = typeof event.item_id === "string" ? event.item_id : "";
+        if (text && (!itemId || !seenTextItems.has(itemId))) {
+          if (itemId) seenTextItems.add(itemId);
+          emitTextDelta(text);
+        }
+        return;
+      }
+
+      if (event.type === "response.completed" || event.type === "response.done") {
+        if (!emittedAnyPayload) {
+          emitTextDelta(extractBufferedAssistantText(event.response));
+        }
+        emitCompleted(event.response || {});
+      }
+    };
+
+    try {
+      await consumeSseBlocks(upstream, {
+        reader,
+        timeoutMs: idleTimeoutMs,
+        isClosed: () => session.isClosed(),
+        onBlock: handleSseBlock
+      });
+
+      if (!session.isClosed() && !emittedTerminal) {
+        throw new Error("Upstream SSE ended before response.completed event.");
+      }
+
+      if (!session.isClosed()) {
+        session.end();
+      }
+      return { usage: finalUsage };
+    } finally {
+      session.cleanup();
+      reader.releaseLock?.();
+    }
   }
 
   async function handleGeminiNativeCompat(req, res) {
@@ -183,6 +338,52 @@ export function createGeminiLocalCompatHelpers(context) {
     const codexRoute = resolveCodexCompatibleRoute(parsedReq.model);
     res.locals.modelRoute = codexRoute;
 
+    if (action === "streamGenerateContent" && String(incoming.searchParams.get("alt") || "").toLowerCase() === "sse") {
+      let streamSession;
+      try {
+        streamSession = await openCodexConversationStreamViaOAuth({
+          ...parsedReq,
+          requestedModel: codexRoute.requestedModel,
+          upstreamModel: codexRoute.mappedModel
+        });
+        res.locals.authAccountId = streamSession.authAccountId || null;
+
+        if (streamSession.upstream?.body) {
+          const streamResult = await pipeCodexSseAsGeminiSse(
+            streamSession.upstream,
+            res,
+            codexRoute.requestedModel
+          );
+          if (streamResult?.usage) {
+            res.locals.tokenUsage = streamResult.usage;
+          }
+          await streamSession.markSuccess();
+          return;
+        }
+        const missingSseErr = new Error("Upstream stream request did not return an SSE body.");
+        missingSseErr.statusCode = 502;
+        throw missingSseErr;
+      } catch (err) {
+        await streamSession?.markFailure?.(err.message, err?.statusCode || 502);
+        const statusCode = resolveCompatErrorStatusCode(err, 502);
+        if (!res.headersSent) {
+          res.status(statusCode).json({
+            error: {
+              code: statusCode,
+              message: err.message,
+              status: statusCode === 401 ? "UNAUTHENTICATED" : "INTERNAL"
+            }
+          });
+        } else {
+          res.end();
+        }
+        streamSession?.release?.();
+        return;
+      } finally {
+        streamSession?.release?.();
+      }
+    }
+
     let result;
     try {
       result = await runCodexConversationViaOAuth({
@@ -211,11 +412,6 @@ export function createGeminiLocalCompatHelpers(context) {
     res.locals.authAccountId = result.authAccountId || null;
 
     if (action === "streamGenerateContent") {
-      const wantsSse = String(incoming.searchParams.get("alt") || "").toLowerCase() === "sse";
-      if (wantsSse) {
-        sendGeminiSseResponse(res, payload);
-        return;
-      }
       res.status(200).json([payload]);
       return;
     }
@@ -241,6 +437,61 @@ export function createGeminiLocalCompatHelpers(context) {
     const { systemText, conversation } = splitSystemAndConversation(chatReq.messages);
     const modelRoute = resolveCodexCompatibleRoute(chatReq.model || config.gemini.defaultModel);
     res.locals.modelRoute = modelRoute;
+
+    if (chatReq.stream === true) {
+      let streamSession;
+      try {
+        streamSession = await openCodexConversationStreamViaOAuth({
+          requestedModel: modelRoute.requestedModel,
+          upstreamModel: modelRoute.mappedModel,
+          systemText,
+          conversation,
+          max_tokens: chatReq.max_tokens,
+          temperature: chatReq.temperature,
+          top_p: chatReq.top_p,
+          stop: chatReq.stop
+        });
+        res.locals.authAccountId = streamSession.authAccountId || null;
+
+        if (streamSession.upstream?.body) {
+          const streamResult = await pipeCodexSseAsChatCompletions(
+            streamSession.upstream,
+            res,
+            modelRoute.requestedModel
+          );
+          if (streamResult?.usage) {
+            res.locals.tokenUsage = streamResult.usage;
+          }
+          await streamSession.markSuccess();
+          return;
+        }
+        const missingSseErr = new Error("Upstream stream request did not return an SSE body.");
+        missingSseErr.statusCode = 502;
+        throw missingSseErr;
+      } catch (err) {
+        await streamSession?.markFailure?.(err.message, err?.statusCode || 502);
+        const statusCode = resolveCompatErrorStatusCode(err, 502);
+        if (!res.headersSent) {
+          res.status(statusCode).json({
+            error: statusCode === 429 ? "usage_limit_reached" : "unauthorized",
+            message: err.message,
+            hint:
+              statusCode === 401
+                ? config.authMode === "profile-store"
+                  ? "Run profile store login first."
+                  : "Open /auth/login first."
+                : null
+          });
+        } else {
+          res.end();
+        }
+        streamSession?.release?.();
+        return;
+      } finally {
+        streamSession?.release?.();
+      }
+    }
+
     let result;
     try {
       result = await runCodexConversationViaOAuth({
@@ -276,10 +527,6 @@ export function createGeminiLocalCompatHelpers(context) {
     });
     res.locals.authAccountId = result.authAccountId || null;
     res.locals.tokenUsage = completion.usage;
-    if (chatReq.stream === true) {
-      sendOpenAICompletionAsSse(res, completion);
-      return;
-    }
     res.status(200).json(completion);
   }
 

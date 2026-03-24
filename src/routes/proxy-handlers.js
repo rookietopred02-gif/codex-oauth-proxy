@@ -376,253 +376,196 @@ export function createProxyRouteHandlers(context) {
     const preferredPoolEntryId = resolvePinnedCodexPoolEntryId(req, target, requestBody);
 
     let auth;
+    let releaseAuthLease = () => {};
     try {
-      auth = await getValidAuthContext({ preferredPoolEntryId });
-      res.locals.authAccountId = auth.poolAccountId || auth.accountId || null;
-    } catch (err) {
-      res.status(401).json({
-        error: "unauthorized",
-        message: err.message,
-        hint: getAuthModeHint()
-      });
-      return;
-    }
-    const pinnedCodexRequest =
-      preferredPoolEntryId.length > 0 &&
-      (auth.poolEntryId === preferredPoolEntryId || auth.poolAccountId === preferredPoolEntryId);
-
-    const headers = new Headers();
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (!hopByHop.has(k.toLowerCase()) && typeof v === "string") {
-        headers.set(k, v);
-      }
-    }
-    const applyAuthHeaders = (ctx) => {
-      headers.set("authorization", `Bearer ${ctx.accessToken}`);
-      if (config.upstreamMode !== "codex-chatgpt") return true;
-      if (!ctx.accountId) return false;
-      headers.set("chatgpt-account-id", ctx.accountId);
-      if (!headers.has("openai-beta")) headers.set("openai-beta", "responses=experimental");
-      if (!headers.has("originator")) headers.set("originator", getCodexOriginator());
-      if (!headers.has("user-agent")) headers.set("user-agent", "codex-pro-max");
-      if (!headers.has("accept")) headers.set("accept", "text/event-stream");
-      return true;
-    };
-    if (!applyAuthHeaders(auth)) {
-      res.status(401).json({
-        error: "missing_account_id",
-        message: "Could not extract chatgpt_account_id from OAuth token."
-      });
-      return;
-    }
-
-    const init = {
-      method: req.method,
-      headers,
-      redirect: "manual"
-    };
-
-    let collectCompletedResponseAsJson = false;
-    let streamChatCompletionsAsSse = false;
-    let responseShape = "responses";
-    let responseModel = config.codex.defaultModel;
-    let normalizedResponsesRequest = null;
-    let previousResponseChainEntry = null;
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      let body = requestBody;
-      let upstreamAuditBody = parsedRequestBody ?? body;
-
       try {
-        if (config.upstreamMode === "codex-chatgpt") {
-          if (target.endpointKind === "responses") {
-            const normalized = normalizeCodexResponsesRequestBody(body, {
-              parsedBody: parsedRequestBody
-            });
-            body = normalized.body;
-            collectCompletedResponseAsJson = normalized.collectCompletedResponseAsJson;
-            responseShape = "responses";
-            responseModel = normalized.model || responseModel;
-            if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
-            normalizedResponsesRequest = normalized.json || parseJsonLoose(body.toString("utf8"));
-            if (previousResponseId && normalizedResponsesRequest && typeof normalizedResponsesRequest === "object") {
-              previousResponseChainEntry = codexResponsesChain.lookup(previousResponseId);
-              if (previousResponseChainEntry) {
-                normalizedResponsesRequest = expandResponsesRequestBodyFromChain(
-                  normalizedResponsesRequest,
-                  previousResponseChainEntry
-                );
-                body = Buffer.from(JSON.stringify(normalizedResponsesRequest), "utf8");
-                upstreamAuditBody = normalizedResponsesRequest;
-                noteCompatibilityHint(res, "previous_response_id_emulated_locally");
-              } else {
-                noteCompatibilityHint(res, "previous_response_id_chain_missing");
-                res.status(409).json({
-                  detail: "previous_response_id local chain missing"
-                });
-                return;
-              }
-            }
-            upstreamAuditBody = normalized.json || upstreamAuditBody;
-            headers.set("content-type", "application/json");
-          } else if (target.endpointKind === "chat-completions") {
-            const normalized = normalizeChatCompletionsRequestBody(body, {
-              parsedBody: parsedRequestBody
-            });
-            body = normalized.body;
-            streamChatCompletionsAsSse = normalized.wantsStream;
-            collectCompletedResponseAsJson = !streamChatCompletionsAsSse;
-            responseShape = "chat-completions";
-            responseModel = normalized.model || responseModel;
-            if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
-            upstreamAuditBody = normalized.json || body;
-            headers.set("content-type", "application/json");
-          }
-        }
+        auth = await getValidAuthContext({ preferredPoolEntryId, retainLease: true });
+        releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
+        res.locals.authAccountId = auth.poolAccountId || auth.accountId || null;
       } catch (err) {
-        res.status(400).json({
-          error: "invalid_request",
-          message: err.message
-        });
-        return;
-      }
-
-      init.body = body;
-      noteUpstreamRequestAudit(
-        res,
-        upstreamAuditBody,
-        headers.get("content-type") || req.headers?.["content-type"] || ""
-      );
-    }
-
-    const canRetryWithPool = isCodexPoolRetryEnabled() && !pinnedCodexRequest;
-    const maxAttempts = canRetryWithPool ? 2 : 1;
-    let upstream;
-    let attempt = 0;
-    while (attempt < maxAttempts) {
-      attempt += 1;
-      try {
-        upstream = await fetchUpstreamWithRetry(target.url, init, res);
-      } catch (err) {
-        const details = extractUpstreamTransportError(err);
-        res.status(502).json({
-          error: "upstream_unreachable",
-          message: details.message || err.message,
-          code: details.code || details.name || null,
-          detail: details.detail || null,
-          retry_count: Number(res.locals?.upstreamRetryCount || 0)
-        });
-        return;
-      }
-
-      const shouldRetry =
-        canRetryWithPool &&
-        attempt < maxAttempts &&
-        shouldRotateCodexAccountForStatus(upstream.status) &&
-        Boolean(auth?.poolAccountId);
-
-      if (!shouldRetry) {
-        break;
-      }
-
-      await maybeMarkCodexPoolFailure(
-        auth,
-        `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}`,
-        upstream.status
-      ).catch(() => {});
-
-      let nextAuth;
-      try {
-        nextAuth = await getValidAuthContext();
-      } catch {
-        break;
-      }
-      if (!applyAuthHeaders(nextAuth)) {
-        break;
-      }
-      auth = nextAuth;
-      res.locals.authAccountId = auth.poolAccountId || auth.accountId || null;
-    }
-
-    if (!upstream) {
-      res.status(502).json({
-        error: "upstream_unreachable",
-        message: "No upstream response received."
-      });
-      return;
-    }
-
-    await maybeCaptureCodexUsageFromHeaders(auth, upstream.headers, "response").catch(() => {});
-
-    if (upstream.ok) {
-      await maybeMarkCodexPoolSuccess(auth).catch(() => {});
-    }
-
-    if (collectCompletedResponseAsJson) {
-      let raw;
-      try {
-        raw = await readUpstreamTextOrThrow(upstream);
-      } catch (err) {
-        const details = extractUpstreamTransportError(err);
-        noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
-        await maybeMarkCodexPoolFailure(
-          auth,
-          `Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`,
-          502
-        ).catch(() => {});
-        res.status(502).json({
-          error: "upstream_body_read_failed",
+        res.status(401).json({
+          error: "unauthorized",
           message: err.message,
-          code: details.code || details.name || null,
-          detail: details.detail || null,
-          retry_count: Number(res.locals?.upstreamRetryCount || 0)
+          hint: getAuthModeHint()
         });
         return;
       }
-      if (!upstream.ok) {
-        if (isPreviousResponseIdUnsupportedError(upstream.status, raw)) {
-          noteCompatibilityHint(res, "previous_response_id_unsupported");
+      const pinnedCodexRequest =
+        preferredPoolEntryId.length > 0 &&
+        (auth.poolEntryId === preferredPoolEntryId || auth.poolAccountId === preferredPoolEntryId);
+
+      const headers = new Headers();
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (!hopByHop.has(k.toLowerCase()) && typeof v === "string") {
+          headers.set(k, v);
         }
+      }
+      const applyAuthHeaders = (ctx) => {
+        headers.set("authorization", `Bearer ${ctx.accessToken}`);
+        if (config.upstreamMode !== "codex-chatgpt") return true;
+        if (!ctx.accountId) return false;
+        headers.set("chatgpt-account-id", ctx.accountId);
+        if (!headers.has("openai-beta")) headers.set("openai-beta", "responses=experimental");
+        if (!headers.has("originator")) headers.set("originator", getCodexOriginator());
+        if (!headers.has("user-agent")) headers.set("user-agent", "codex-pro-max");
+        if (!headers.has("accept")) headers.set("accept", "text/event-stream");
+        return true;
+      };
+      if (!applyAuthHeaders(auth)) {
+        res.status(401).json({
+          error: "missing_account_id",
+          message: "Could not extract chatgpt_account_id from OAuth token."
+        });
+        return;
+      }
+
+      const init = {
+        method: req.method,
+        headers,
+        redirect: "manual"
+      };
+
+      let collectCompletedResponseAsJson = false;
+      let streamChatCompletionsAsSse = false;
+      let responseShape = "responses";
+      let responseModel = config.codex.defaultModel;
+      let normalizedResponsesRequest = null;
+      let previousResponseChainEntry = null;
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        let body = requestBody;
+        let upstreamAuditBody = parsedRequestBody ?? body;
+
+        try {
+          if (config.upstreamMode === "codex-chatgpt") {
+            if (target.endpointKind === "responses") {
+              const normalized = normalizeCodexResponsesRequestBody(body, {
+                parsedBody: parsedRequestBody
+              });
+              body = normalized.body;
+              collectCompletedResponseAsJson = normalized.collectCompletedResponseAsJson;
+              responseShape = "responses";
+              responseModel = normalized.model || responseModel;
+              if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
+              normalizedResponsesRequest = normalized.json || parseJsonLoose(body.toString("utf8"));
+              if (previousResponseId && normalizedResponsesRequest && typeof normalizedResponsesRequest === "object") {
+                previousResponseChainEntry = codexResponsesChain.lookup(previousResponseId);
+                if (previousResponseChainEntry) {
+                  normalizedResponsesRequest = expandResponsesRequestBodyFromChain(
+                    normalizedResponsesRequest,
+                    previousResponseChainEntry
+                  );
+                  body = Buffer.from(JSON.stringify(normalizedResponsesRequest), "utf8");
+                  upstreamAuditBody = normalizedResponsesRequest;
+                  noteCompatibilityHint(res, "previous_response_id_emulated_locally");
+                } else {
+                  noteCompatibilityHint(res, "previous_response_id_chain_missing");
+                  res.status(409).json({
+                    detail: "previous_response_id local chain missing"
+                  });
+                  return;
+                }
+              }
+              upstreamAuditBody = normalized.json || upstreamAuditBody;
+              headers.set("content-type", "application/json");
+            } else if (target.endpointKind === "chat-completions") {
+              const normalized = normalizeChatCompletionsRequestBody(body, {
+                parsedBody: parsedRequestBody
+              });
+              body = normalized.body;
+              streamChatCompletionsAsSse = normalized.wantsStream;
+              collectCompletedResponseAsJson = !streamChatCompletionsAsSse;
+              responseShape = "chat-completions";
+              responseModel = normalized.model || responseModel;
+              if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
+              upstreamAuditBody = normalized.json || body;
+              headers.set("content-type", "application/json");
+            }
+          }
+        } catch (err) {
+          res.status(400).json({
+            error: "invalid_request",
+            message: err.message
+          });
+          return;
+        }
+
+        init.body = body;
+        noteUpstreamRequestAudit(
+          res,
+          upstreamAuditBody,
+          headers.get("content-type") || req.headers?.["content-type"] || ""
+        );
+      }
+
+      const canRetryWithPool = isCodexPoolRetryEnabled() && !pinnedCodexRequest;
+      const maxAttempts = canRetryWithPool ? 2 : 1;
+      let upstream;
+      let attempt = 0;
+      while (attempt < maxAttempts) {
+        attempt += 1;
+        try {
+          upstream = await fetchUpstreamWithRetry(target.url, init, res);
+        } catch (err) {
+          const details = extractUpstreamTransportError(err);
+          res.status(502).json({
+            error: "upstream_unreachable",
+            message: details.message || err.message,
+            code: details.code || details.name || null,
+            detail: details.detail || null,
+            retry_count: Number(res.locals?.upstreamRetryCount || 0)
+          });
+          return;
+        }
+
+        const shouldRetry =
+          canRetryWithPool &&
+          attempt < maxAttempts &&
+          shouldRotateCodexAccountForStatus(upstream.status) &&
+          Boolean(auth?.poolAccountId);
+
+        if (!shouldRetry) {
+          break;
+        }
+
         await maybeMarkCodexPoolFailure(
           auth,
-          `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}: ${truncate(raw, 200)}`,
+          `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}`,
           upstream.status
         ).catch(() => {});
-        maybeForgetPinnedCodexResponseAffinity(previousResponseId, upstream.status, raw);
-        res.status(upstream.status);
-        upstream.headers.forEach((value, key) => {
-          if (!hopByHop.has(key.toLowerCase())) {
-            res.setHeader(key, value);
-          }
-        });
-        res.send(raw);
-        return;
+
+        let nextAuth;
+        let nextReleaseLease = () => {};
+        try {
+          nextAuth = await getValidAuthContext({ retainLease: true });
+          nextReleaseLease = typeof nextAuth?.releaseLease === "function" ? nextAuth.releaseLease : () => {};
+        } catch {
+          break;
+        }
+        if (!applyAuthHeaders(nextAuth)) {
+          nextReleaseLease();
+          break;
+        }
+        releaseAuthLease();
+        auth = nextAuth;
+        releaseAuthLease = nextReleaseLease;
+        res.locals.authAccountId = auth.poolAccountId || auth.accountId || null;
       }
 
-      const completed = context.extractCompletedResponseFromSse(raw);
-      if (!completed) {
+      if (!upstream) {
         res.status(502).json({
-          error: "invalid_upstream_sse",
-          message: "Could not parse completed response from codex SSE stream."
+          error: "upstream_unreachable",
+          message: "No upstream response received."
         });
         return;
       }
-      rememberCodexResponseAffinity(completed, auth);
-      rememberCodexResponseChain(completed, normalizedResponsesRequest);
-      if (responseShape === "chat-completions") {
-        const converted = convertResponsesToChatCompletion(completed);
-        converted.model = responseModel;
-        res.locals.tokenUsage = converted.usage;
-        res.status(200).json(converted);
-      } else {
-        completed.model = responseModel;
-        res.locals.tokenUsage = completed.usage || null;
-        res.status(200).json(completed);
-      }
-      return;
-    }
 
-    if (streamChatCompletionsAsSse) {
-      if (!upstream.ok) {
+      await maybeCaptureCodexUsageFromHeaders(auth, upstream.headers, "response").catch(() => {});
+
+      if (upstream.ok) {
+        await maybeMarkCodexPoolSuccess(auth).catch(() => {});
+      }
+
+      if (collectCompletedResponseAsJson) {
         let raw;
         try {
           raw = await readUpstreamTextOrThrow(upstream);
@@ -643,91 +586,163 @@ export function createProxyRouteHandlers(context) {
           });
           return;
         }
-        if (isPreviousResponseIdUnsupportedError(upstream.status, raw)) {
-          noteCompatibilityHint(res, "previous_response_id_unsupported");
-        }
-        await maybeMarkCodexPoolFailure(
-          auth,
-          `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}: ${truncate(raw, 200)}`,
-          upstream.status
-        ).catch(() => {});
-        maybeForgetPinnedCodexResponseAffinity(previousResponseId, upstream.status, raw);
-        res.status(upstream.status);
-        upstream.headers.forEach((value, key) => {
-          if (!hopByHop.has(key.toLowerCase())) {
-            res.setHeader(key, value);
+        if (!upstream.ok) {
+          if (isPreviousResponseIdUnsupportedError(upstream.status, raw)) {
+            noteCompatibilityHint(res, "previous_response_id_unsupported");
           }
-        });
-        res.send(raw);
+          await maybeMarkCodexPoolFailure(
+            auth,
+            `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}: ${truncate(raw, 200)}`,
+            upstream.status
+          ).catch(() => {});
+          maybeForgetPinnedCodexResponseAffinity(previousResponseId, upstream.status, raw);
+          res.status(upstream.status);
+          upstream.headers.forEach((value, key) => {
+            if (!hopByHop.has(key.toLowerCase())) {
+              res.setHeader(key, value);
+            }
+          });
+          res.send(raw);
+          return;
+        }
+
+        const completed = context.extractCompletedResponseFromSse(raw);
+        if (!completed) {
+          res.status(502).json({
+            error: "invalid_upstream_sse",
+            message: "Could not parse completed response from codex SSE stream."
+          });
+          return;
+        }
+        rememberCodexResponseAffinity(completed, auth);
+        rememberCodexResponseChain(completed, normalizedResponsesRequest);
+        if (responseShape === "chat-completions") {
+          const converted = convertResponsesToChatCompletion(completed);
+          converted.model = responseModel;
+          res.locals.tokenUsage = converted.usage;
+          res.status(200).json(converted);
+        } else {
+          completed.model = responseModel;
+          res.locals.tokenUsage = completed.usage || null;
+          res.status(200).json(completed);
+        }
         return;
       }
 
-      try {
-        const streamResult = await pipeCodexSseAsChatCompletions(upstream, res, responseModel);
-        if (streamResult?.usage) {
-          res.locals.tokenUsage = streamResult.usage;
-        }
-      } catch (err) {
-        noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
-        if (!res.headersSent) {
-          res.status(502).json({
-            error: "invalid_upstream_sse",
-            message: err.message,
-            code: err?.code || err?.cause?.code || null,
-            detail: extractUpstreamTransportError(err).detail || null,
-            retry_count: Number(res.locals?.upstreamRetryCount || 0)
+      if (streamChatCompletionsAsSse) {
+        if (!upstream.ok) {
+          let raw;
+          try {
+            raw = await readUpstreamTextOrThrow(upstream);
+          } catch (err) {
+            const details = extractUpstreamTransportError(err);
+            noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+            await maybeMarkCodexPoolFailure(
+              auth,
+              `Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`,
+              502
+            ).catch(() => {});
+            res.status(502).json({
+              error: "upstream_body_read_failed",
+              message: err.message,
+              code: details.code || details.name || null,
+              detail: details.detail || null,
+              retry_count: Number(res.locals?.upstreamRetryCount || 0)
+            });
+            return;
+          }
+          if (isPreviousResponseIdUnsupportedError(upstream.status, raw)) {
+            noteCompatibilityHint(res, "previous_response_id_unsupported");
+          }
+          await maybeMarkCodexPoolFailure(
+            auth,
+            `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}: ${truncate(raw, 200)}`,
+            upstream.status
+          ).catch(() => {});
+          maybeForgetPinnedCodexResponseAffinity(previousResponseId, upstream.status, raw);
+          res.status(upstream.status);
+          upstream.headers.forEach((value, key) => {
+            if (!hopByHop.has(key.toLowerCase())) {
+              res.setHeader(key, value);
+            }
           });
-        } else {
-          res.end();
+          res.send(raw);
+          return;
         }
-      }
-      return;
-    }
 
-    res.status(upstream.status);
-    if (!upstream.ok) {
-      await maybeMarkCodexPoolFailure(
-        auth,
-        `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}`,
-        upstream.status
-      ).catch(() => {});
-    }
-    upstream.headers.forEach((value, key) => {
-      if (!hopByHop.has(key.toLowerCase())) {
-        res.setHeader(key, value);
-      }
-    });
-
-    if (!upstream.body) {
-      res.end();
-      return;
-    }
-
-    const upstreamContentType = parseContentType(upstream.headers.get("content-type") || "");
-    if (upstream.ok && upstreamContentType.includes("event-stream")) {
-      try {
-        const streamResult = await pipeSseAndCaptureTokenUsage(upstream, res);
-        if (streamResult?.usage) {
-          res.locals.tokenUsage = streamResult.usage;
+        try {
+          const streamResult = await pipeCodexSseAsChatCompletions(upstream, res, responseModel);
+          if (streamResult?.usage) {
+            res.locals.tokenUsage = streamResult.usage;
+          }
+        } catch (err) {
+          noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          if (!res.headersSent) {
+            res.status(502).json({
+              error: "invalid_upstream_sse",
+              message: err.message,
+              code: err?.code || err?.cause?.code || null,
+              detail: extractUpstreamTransportError(err).detail || null,
+              retry_count: Number(res.locals?.upstreamRetryCount || 0)
+            });
+          } else {
+            res.end();
+          }
         }
-      } catch (err) {
-        noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
-        if (!res.headersSent) {
-          res.status(502).json({
-            error: "invalid_upstream_sse",
-            message: err.message,
-            code: err?.code || err?.cause?.code || null,
-            detail: extractUpstreamTransportError(err).detail || null,
-            retry_count: Number(res.locals?.upstreamRetryCount || 0)
-          });
-        } else {
-          res.end();
-        }
+        return;
       }
-      return;
-    }
 
-    await pipeUpstreamBodyToResponse(upstream, res);
+      res.status(upstream.status);
+      if (!upstream.ok) {
+        await maybeMarkCodexPoolFailure(
+          auth,
+          `Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}`,
+          upstream.status
+        ).catch(() => {});
+      }
+      upstream.headers.forEach((value, key) => {
+        if (!hopByHop.has(key.toLowerCase())) {
+          res.setHeader(key, value);
+        }
+      });
+
+      if (!upstream.body) {
+        res.end();
+        return;
+      }
+
+      const upstreamContentType = parseContentType(upstream.headers.get("content-type") || "");
+      if (upstream.ok && upstreamContentType.includes("event-stream")) {
+        try {
+          const streamResult = await pipeSseAndCaptureTokenUsage(upstream, res);
+          if (streamResult?.usage) {
+            res.locals.tokenUsage = streamResult.usage;
+          }
+          if (target.endpointKind === "responses" && streamResult?.completed) {
+            rememberCodexResponseAffinity(streamResult.completed, auth);
+            rememberCodexResponseChain(streamResult.completed, normalizedResponsesRequest);
+          }
+        } catch (err) {
+          noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          if (!res.headersSent) {
+            res.status(502).json({
+              error: "invalid_upstream_sse",
+              message: err.message,
+              code: err?.code || err?.cause?.code || null,
+              detail: extractUpstreamTransportError(err).detail || null,
+              retry_count: Number(res.locals?.upstreamRetryCount || 0)
+            });
+          } else {
+            res.end();
+          }
+        }
+        return;
+      }
+
+      await pipeUpstreamBodyToResponse(upstream, res);
+    } finally {
+      releaseAuthLease();
+    }
   }
 
   return {

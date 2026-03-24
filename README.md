@@ -76,6 +76,7 @@ CODEX_DEFAULT_REASONING_EFFORT=adaptive
 CODEX_MULTI_ACCOUNT_ENABLED=true
 CODEX_MULTI_ACCOUNT_STRATEGY=smart
 CODEX_AUTO_LOGOUT_EXPIRED_ACCOUNTS=false
+UPSTREAM_STREAM_IDLE_TIMEOUT_MS=900000
 ```
 
 Provider quick switch examples:
@@ -93,6 +94,8 @@ ANTHROPIC_DEFAULT_MODEL=claude-sonnet-4-20250514
 ```
 
 See [.env.example](C:\Users\fi\source\codex-pro-max\.env.example) for the current env surface.
+
+`UPSTREAM_STREAM_IDLE_TIMEOUT_MS` controls how long the proxy will tolerate a silent upstream SSE stream before aborting it. The default is `900000` (15 minutes), which is safer for long-running `gpt-5.4` `xhigh` or multi-step agent tasks than the previous 3-minute default.
 
 ## Dashboard Capabilities
 

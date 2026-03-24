@@ -66,6 +66,8 @@ export function createExpiredAccountCleanupController(options = {}) {
   const getStore = typeof options.getStore === "function" ? options.getStore : () => ({ accounts: [] });
   const getAccounts = typeof options.getAccounts === "function" ? options.getAccounts : (store) => store?.accounts || [];
   const probeAccount = typeof options.probeAccount === "function" ? options.probeAccount : null;
+  const isAccountLeased =
+    typeof options.isAccountLeased === "function" ? options.isAccountLeased : () => false;
   const removeAccount =
     typeof options.removeAccount === "function"
       ? options.removeAccount
@@ -172,6 +174,10 @@ export function createExpiredAccountCleanupController(options = {}) {
       let touchedStore = false;
 
       for (const candidate of candidates) {
+        if (isAccountLeased(candidate.ref, candidate.account) === true) {
+          continue;
+        }
+
         if (shouldAutoRemoveInvalidatedAccount(candidate.account)) {
           const result = await removeAccount(nextStore, candidate.ref);
           if (!result?.removed) continue;
@@ -188,7 +194,7 @@ export function createExpiredAccountCleanupController(options = {}) {
           probedCount += 1;
           if (probe?.store) nextStore = probe.store;
           if (probe?.changed === true) touchedStore = true;
-          if (probe?.ok !== false) continue;
+          if (probe?.ok !== false || probe?.tokenInvalidated !== true) continue;
         } else {
           continue;
         }

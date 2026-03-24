@@ -7,6 +7,7 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 
 let serverModulePromise = null;
+let serverModuleNonce = 0;
 
 function configureEmbeddedServerEnv({
   appDataDir,
@@ -50,7 +51,8 @@ function configureEmbeddedServerEnv({
 
 async function loadServerModule() {
   if (!serverModulePromise) {
-    serverModulePromise = import("./server.js");
+    serverModuleNonce += 1;
+    serverModulePromise = import(`./server.js?runtime=${serverModuleNonce}`);
   }
   return await serverModulePromise;
 }
@@ -67,6 +69,17 @@ export async function startAppServer(options = {}) {
 }
 
 export async function stopAppServer(signal = "SIGTERM") {
+  if (!serverModulePromise) {
+    return {
+      app: null,
+      mainServer: null,
+      stopped: true
+    };
+  }
   const serverModule = await loadServerModule();
-  return await serverModule.stopServer(signal);
+  try {
+    return await serverModule.stopServer(signal);
+  } finally {
+    serverModulePromise = null;
+  }
 }

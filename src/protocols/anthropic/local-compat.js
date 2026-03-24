@@ -1,6 +1,11 @@
 import crypto from "node:crypto";
 import fsSync from "node:fs";
 import path from "node:path";
+import {
+  consumeSseBlocks,
+  createSseSession,
+  parseSseJsonEventBlock
+} from "../../http/sse-runtime.js";
 
 const SUPPORTED_LOCAL_IMAGE_EXTENSIONS = new Map([
   [".png", "image/png"],
@@ -27,6 +32,7 @@ export function createAnthropicLocalCompatHelpers(context) {
     resolveReasoningEffort,
     resolveCodexCompatibleRoute,
     executeCodexResponsesViaOAuth,
+    openCodexResponsesStreamViaOAuth,
     resolveCompatErrorStatusCode,
     mapHttpStatusToAnthropicErrorType,
     mapResponsesStatusToChatFinishReason,
@@ -1752,17 +1758,509 @@ export function createAnthropicLocalCompatHelpers(context) {
   }
 
   function sendAnthropicMessageAsSse(res, message) {
-    res.status(200);
-    res.setHeader("content-type", "text/event-stream; charset=utf-8");
-    res.setHeader("cache-control", "no-cache");
-    res.setHeader("connection", "keep-alive");
-    res.setHeader("x-accel-buffering", "no");
+    const session = createAnthropicPendingSseSession(res, {
+      messageId: typeof message?.id === "string" && message.id.trim().length > 0 ? message.id : undefined,
+      model:
+        typeof message?.model === "string" && message.model.trim().length > 0
+          ? message.model
+          : config.anthropic.defaultModel,
+      heartbeatMs: 0
+    });
 
-    for (const frame of renderAnthropicMessageSseEvents(message)) {
-      res.write(`event: ${frame.event}\n`);
-      res.write(`data: ${JSON.stringify(frame.data)}\n\n`);
+    try {
+      session.finalize(message);
+    } finally {
+      session.cleanup();
     }
-    res.end();
+  }
+
+  function createAnthropicPendingSseSession(
+    res,
+    {
+      messageId = `msg_${crypto.randomUUID().replace(/-/g, "")}`,
+      model = config.anthropic.defaultModel,
+      heartbeatMs = 15000
+    } = {}
+  ) {
+    let started = false;
+    const messageStartPayload = {
+      type: "message_start",
+      message: {
+        id: messageId,
+        type: "message",
+        role: "assistant",
+        model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0
+        }
+      }
+    };
+    const session = createSseSession(res, {
+      heartbeatMs,
+      heartbeatChunk: `event: ping\ndata: ${JSON.stringify({ type: "ping" })}\n\n`,
+      prepareResponse() {
+        res.status(200);
+        res.setHeader("content-type", "text/event-stream; charset=utf-8");
+        res.setHeader("cache-control", "no-cache");
+        res.setHeader("connection", "keep-alive");
+        res.setHeader("x-accel-buffering", "no");
+      }
+    });
+    session.startHeartbeat();
+
+    const rawWriteEvent = (eventName, data) => {
+      return session.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const ensureStarted = () => {
+      if (started) return true;
+      const wrote = rawWriteEvent("message_start", messageStartPayload);
+      if (wrote) started = true;
+      return wrote;
+    };
+
+    const writeEvent = (eventName, data, { skipStart = false } = {}) => {
+      if (!skipStart && !ensureStarted()) return false;
+      return rawWriteEvent(eventName, data);
+    };
+
+    return {
+      attachStream(nextReader, nextUpstream) {
+        session.attachReader(nextReader);
+        session.setUpstream(nextUpstream);
+      },
+      hasStarted() {
+        return started;
+      },
+      isClosed() {
+        return session.isClosed();
+      },
+      writeEvent,
+      closeBlock(index) {
+        return writeEvent("content_block_stop", {
+          type: "content_block_stop",
+          index
+        });
+      },
+      finish({ stopReason = "end_turn", stopSequence = null, usage = null } = {}) {
+        writeEvent("message_delta", {
+          type: "message_delta",
+          delta: {
+            stop_reason: stopReason,
+            stop_sequence: stopSequence
+          },
+          usage: {
+            output_tokens: Number(usage?.output_tokens || 0),
+            ...(usage?.server_tool_use ? { server_tool_use: usage.server_tool_use } : {})
+          }
+        });
+        writeEvent("message_stop", { type: "message_stop" });
+        session.end();
+      },
+      finalize(message) {
+        const finalMessage =
+          message && typeof message === "object"
+            ? {
+                ...message,
+                id:
+                  typeof message.id === "string" && message.id.trim().length > 0
+                    ? message.id
+                    : messageId,
+                model:
+                  typeof message.model === "string" && message.model.trim().length > 0
+                    ? message.model
+                    : model
+              }
+            : {
+                id: messageId,
+                type: "message",
+                role: "assistant",
+                model,
+                content: [],
+                stop_reason: "end_turn",
+                stop_sequence: null,
+                usage: {
+                  input_tokens: 0,
+                  output_tokens: 0
+                }
+              };
+
+        for (const frame of renderAnthropicMessageSseEvents(finalMessage)) {
+          if (frame.event === "message_start") continue;
+          if (!writeEvent(frame.event, frame.data)) break;
+        }
+        session.end();
+      },
+      sendError(errorType, message) {
+        if (!ensureStarted()) {
+          session.end();
+          return;
+        }
+        rawWriteEvent("error", {
+          type: "error",
+          error: {
+            type:
+              typeof errorType === "string" && errorType.trim().length > 0
+                ? errorType.trim()
+                : "api_error",
+            message: String(message || "Anthropic stream failed.")
+          }
+        });
+        session.end();
+      },
+      cleanup() {
+        session.cleanup();
+      }
+    };
+  }
+
+  async function pipeCodexSseAsAnthropicMessages(upstream, res, { model = config.anthropic.defaultModel } = {}) {
+    if (!upstream?.body) throw new Error("No upstream SSE body.");
+
+    const reader = upstream.body.getReader();
+    const session = createAnthropicPendingSseSession(res, { model });
+    session.attachStream(reader, upstream);
+    const idleTimeoutMs = Math.max(0, Number(config?.upstreamStreamIdleTimeoutMs || 0));
+    let nextIndex = 0;
+    let finalResponse = null;
+    let webSearchRequestCount = 0;
+
+    const textBlocksByItemId = new Map();
+    const reasoningBlocksByKey = new Map();
+    const toolCallBlocksByItemId = new Map();
+    const openBlockIndices = new Set();
+
+    const allocateIndex = () => {
+      const index = nextIndex;
+      nextIndex += 1;
+      return index;
+    };
+
+    const startBlock = (index, contentBlock) => {
+      const wrote = session.writeEvent("content_block_start", {
+        type: "content_block_start",
+        index,
+        content_block: contentBlock
+      });
+      if (wrote) openBlockIndices.add(index);
+      return wrote;
+    };
+
+    const closeBlock = (index) => {
+      if (!openBlockIndices.has(index)) return;
+      openBlockIndices.delete(index);
+      session.closeBlock(index);
+    };
+
+    const closeAllOpenBlocks = () => {
+      for (const index of [...openBlockIndices].sort((a, b) => a - b)) {
+        closeBlock(index);
+      }
+    };
+
+    const ensureTextBlock = (itemId = "") => {
+      const key = itemId || `text_${textBlocksByItemId.size}`;
+      if (textBlocksByItemId.has(key)) return textBlocksByItemId.get(key);
+      const state = {
+        index: allocateIndex(),
+        emittedLength: 0
+      };
+      if (!startBlock(state.index, { type: "text", text: "" })) return null;
+      textBlocksByItemId.set(key, state);
+      return state;
+    };
+
+    const ensureReasoningBlock = (itemId = "", summaryIndex = 0) => {
+      const key = `${itemId}:${summaryIndex}`;
+      if (reasoningBlocksByKey.has(key)) return reasoningBlocksByKey.get(key);
+      const state = {
+        index: allocateIndex(),
+        emittedLength: 0
+      };
+      if (!startBlock(state.index, { type: "thinking", thinking: "" })) return null;
+      reasoningBlocksByKey.set(key, state);
+      return state;
+    };
+
+    const appendDeltaToBlock = (state, deltaType, nextText) => {
+      if (!state || typeof nextText !== "string" || nextText.length === 0) return;
+      const wrote = session.writeEvent("content_block_delta", {
+        type: "content_block_delta",
+        index: state.index,
+        delta: {
+          type: deltaType,
+          [deltaType === "text_delta" ? "text" : "thinking"]: nextText
+        }
+      });
+      if (wrote) {
+        state.emittedLength += nextText.length;
+      }
+    };
+
+    const appendTextDelta = (itemId, deltaText) => {
+      const state = ensureTextBlock(itemId);
+      appendDeltaToBlock(state, "text_delta", deltaText);
+    };
+
+    const finalizeTextBlock = (itemId, doneText) => {
+      const key = itemId || `text_${textBlocksByItemId.size}`;
+      const state = textBlocksByItemId.get(key) || ensureTextBlock(itemId);
+      if (!state) return;
+      if (typeof doneText === "string" && doneText.length > state.emittedLength) {
+        appendDeltaToBlock(state, "text_delta", doneText.slice(state.emittedLength));
+      }
+      closeBlock(state.index);
+    };
+
+    const appendReasoningDelta = (itemId, summaryIndex, deltaText) => {
+      const state = ensureReasoningBlock(itemId, summaryIndex);
+      appendDeltaToBlock(state, "thinking_delta", deltaText);
+    };
+
+    const finalizeReasoningBlock = (itemId, summaryIndex, doneText) => {
+      const key = `${itemId}:${summaryIndex}`;
+      const state = reasoningBlocksByKey.get(key) || ensureReasoningBlock(itemId, summaryIndex);
+      if (!state) return;
+      if (typeof doneText === "string" && doneText.length > state.emittedLength) {
+        appendDeltaToBlock(state, "thinking_delta", doneText.slice(state.emittedLength));
+      }
+      closeBlock(state.index);
+    };
+
+    const startToolUseBlock = (item) => {
+      const itemId = typeof item?.id === "string" && item.id.length > 0 ? item.id : `tool_${allocateIndex()}`;
+      if (toolCallBlocksByItemId.has(itemId)) return toolCallBlocksByItemId.get(itemId);
+
+      const callId =
+        typeof item?.call_id === "string" && item.call_id.length > 0
+          ? item.call_id
+          : `toolu_${crypto.randomUUID().replace(/-/g, "")}`;
+      const name = typeof item?.name === "string" ? item.name : "tool";
+      const state = {
+        itemId,
+        callId,
+        name,
+        index: allocateIndex(),
+        emittedLength: 0
+      };
+      if (
+        !startBlock(state.index, {
+          type: "tool_use",
+          id: state.callId,
+          name: state.name,
+          input: {}
+        })
+      ) {
+        return null;
+      }
+      toolCallBlocksByItemId.set(itemId, state);
+      return state;
+    };
+
+    const appendToolInputDelta = (itemId, deltaText) => {
+      const state = toolCallBlocksByItemId.get(itemId);
+      if (!state || typeof deltaText !== "string" || deltaText.length === 0) return;
+      const wrote = session.writeEvent("content_block_delta", {
+        type: "content_block_delta",
+        index: state.index,
+        delta: {
+          type: "input_json_delta",
+          partial_json: deltaText
+        }
+      });
+      if (wrote) {
+        state.emittedLength += deltaText.length;
+      }
+    };
+
+    const finalizeToolInput = (itemId, fullArguments) => {
+      const state = toolCallBlocksByItemId.get(itemId);
+      if (!state) return;
+      if (typeof fullArguments === "string" && fullArguments.length > state.emittedLength) {
+        appendToolInputDelta(itemId, fullArguments.slice(state.emittedLength));
+      }
+      closeBlock(state.index);
+    };
+
+    const emitWebSearchCall = (item) => {
+      const action = item?.action;
+      const query =
+        typeof action?.query === "string" && action.query.trim().length > 0
+          ? action.query.trim()
+          : Array.isArray(action?.queries) && typeof action.queries[0] === "string"
+            ? action.queries[0]
+            : "";
+      const blockId =
+        typeof item?.id === "string" && item.id.length > 0
+          ? item.id
+          : `srvtoolu_${crypto.randomUUID().replace(/-/g, "")}`;
+      const index = allocateIndex();
+      if (
+        !startBlock(index, {
+          type: "server_tool_use",
+          id: blockId,
+          name: "web_search"
+        })
+      ) {
+        return;
+      }
+      if (query) {
+        session.writeEvent("content_block_delta", {
+          type: "content_block_delta",
+          index,
+          delta: {
+            type: "input_json_delta",
+            partial_json: JSON.stringify({ query })
+          }
+        });
+      }
+      closeBlock(index);
+      webSearchRequestCount += 1;
+    };
+
+    const handleSseBlock = (block) => {
+      const event = parseSseJsonEventBlock(block);
+      if (!event) return;
+
+      if (event.type === "response.output_text.delta") {
+        appendTextDelta(typeof event.item_id === "string" ? event.item_id : "", typeof event.delta === "string" ? event.delta : "");
+        return;
+      }
+
+      if (event.type === "response.output_text.done") {
+        finalizeTextBlock(
+          typeof event.item_id === "string" ? event.item_id : "",
+          typeof event.text === "string" ? event.text : ""
+        );
+        return;
+      }
+
+      if (event.type === "response.reasoning_summary_text.delta") {
+        appendReasoningDelta(
+          typeof event.item_id === "string" ? event.item_id : "",
+          Number.isInteger(event.summary_index) ? event.summary_index : 0,
+          typeof event.delta === "string" ? event.delta : ""
+        );
+        return;
+      }
+
+      if (event.type === "response.reasoning_summary_part.added") {
+        appendReasoningDelta(
+          typeof event.item_id === "string" ? event.item_id : "",
+          Number.isInteger(event.summary_index) ? event.summary_index : 0,
+          typeof event.part?.text === "string" ? event.part.text : ""
+        );
+        return;
+      }
+
+      if (
+        event.type === "response.reasoning_summary_text.done" ||
+        event.type === "response.reasoning_summary_part.done"
+      ) {
+        finalizeReasoningBlock(
+          typeof event.item_id === "string" ? event.item_id : "",
+          Number.isInteger(event.summary_index) ? event.summary_index : 0,
+          typeof event.text === "string"
+            ? event.text
+            : typeof event.part?.text === "string"
+              ? event.part.text
+              : ""
+        );
+        return;
+      }
+
+      if (event.type === "response.output_item.added" && event.item?.type === "function_call") {
+        startToolUseBlock(event.item);
+        return;
+      }
+
+      if (event.type === "response.function_call_arguments.delta") {
+        appendToolInputDelta(
+          typeof event.item_id === "string" ? event.item_id : "",
+          typeof event.delta === "string" ? event.delta : ""
+        );
+        return;
+      }
+
+      if (event.type === "response.function_call_arguments.done") {
+        finalizeToolInput(
+          typeof event.item_id === "string" ? event.item_id : "",
+          typeof event.arguments === "string" ? event.arguments : ""
+        );
+        return;
+      }
+
+      if (event.type === "response.output_item.added" && event.item?.type === "web_search_call") {
+        emitWebSearchCall(event.item);
+        return;
+      }
+
+      if (event.type === "response.failed") {
+        const err = new Error(event.response?.error?.message || "Codex response failed.");
+        err.statusCode = Number(event.response?.status_code || event.status_code || 502) || 502;
+        throw err;
+      }
+
+      if (event.type === "response.completed" || event.type === "response.done") {
+        finalResponse = event.response && typeof event.response === "object" ? event.response : finalResponse;
+      }
+    };
+
+    try {
+      await consumeSseBlocks(upstream, {
+        reader,
+        timeoutMs: idleTimeoutMs,
+        isClosed: () => session.isClosed(),
+        onBlock: handleSseBlock
+      });
+
+      if (!session.isClosed() && !finalResponse) {
+        throw new Error("Upstream SSE ended before response.completed event.");
+      }
+
+      const allFunctionCalls = Array.isArray(finalResponse?.output)
+        ? finalResponse.output.filter(isResponsesFunctionCallItem).map((item) => ensureAnthropicQueuedFunctionCallId(item))
+        : [];
+      const emittedFunctionCallId = allFunctionCalls[0]?.call_id || "";
+      const pendingFunctionCalls = allFunctionCalls.slice(1);
+      const usage = finalResponse?.usage || {};
+      closeAllOpenBlocks();
+      session.finish({
+        stopReason: mapResponsesStatusToAnthropicStopReason(finalResponse),
+        usage: {
+          output_tokens: Number(usage.output_tokens || 0),
+          ...(webSearchRequestCount > 0
+            ? {
+                server_tool_use: {
+                  web_search_requests: webSearchRequestCount
+                }
+              }
+            : {})
+        }
+      });
+
+      return {
+        usage: {
+          prompt_tokens: Number(usage.input_tokens || 0),
+          completion_tokens: Number(usage.output_tokens || 0),
+          total_tokens: Number(usage.total_tokens || 0)
+        },
+        emittedFunctionCallId,
+        pendingFunctionCalls
+      };
+    } catch (err) {
+      if (session.hasStarted() && !session.isClosed()) {
+        session.sendError(mapHttpStatusToAnthropicErrorType(Number(err?.statusCode || 502) || 502), err.message);
+      }
+      throw err;
+    } finally {
+      session.cleanup();
+      reader.releaseLock?.();
+    }
   }
 
   async function handleAnthropicNativeCompat(req, res) {
@@ -1865,6 +2363,80 @@ export function createAnthropicLocalCompatHelpers(context) {
       return;
     }
 
+    if (parsedReq.stream === true) {
+      let streamSession;
+      try {
+        const input = toResponsesInputFromAnthropicMessages(parsedReq.messages);
+        const tools = normalizeAnthropicNativeTools(parsedReq.tools);
+        const toolChoice = normalizeAnthropicNativeToolChoice(parsedReq.tool_choice, tools);
+        const include = getAnthropicNativeResponsesInclude(tools);
+        const hasBuiltInWebSearch = Array.isArray(tools) && tools.some((tool) => tool?.type === "web_search");
+        const resolvedToolChoice = toolChoice === undefined && hasBuiltInWebSearch ? "auto" : toolChoice;
+        const resolvedInstructions =
+          typeof parsedReq.systemText === "string" && parsedReq.systemText.trim().length > 0
+            ? parsedReq.systemText
+            : config.codex.defaultInstructions;
+        const reasoningSummary = resolveAnthropicNativeReasoningSummary(parsedReq.thinking, codexRoute.mappedModel, {
+          input,
+          tools,
+          tool_choice: resolvedToolChoice,
+          instructions: resolvedInstructions
+        });
+
+        streamSession = await openCodexResponsesStreamViaOAuth({
+          model: parsedReq.model,
+          requestedModel: codexRoute.requestedModel,
+          upstreamModel: codexRoute.mappedModel,
+          instructions: resolvedInstructions,
+          input,
+          stop: parsedReq.stop,
+          tools,
+          toolChoice: resolvedToolChoice,
+          include,
+          reasoningSummary
+        });
+        res.locals.authAccountId = streamSession.authAccountId || null;
+
+        if (streamSession.upstream?.body) {
+          const streamResult = await pipeCodexSseAsAnthropicMessages(streamSession.upstream, res, {
+            model: codexRoute.requestedModel || parsedReq.model || config.anthropic.defaultModel
+          });
+          if (streamResult?.pendingFunctionCalls?.length > 0) {
+            rememberAnthropicPendingToolBatch(
+              streamResult.emittedFunctionCallId,
+              streamResult.pendingFunctionCalls,
+              codexRoute.requestedModel || parsedReq.model || config.anthropic.defaultModel
+            );
+          }
+          if (streamResult?.usage) {
+            res.locals.tokenUsage = streamResult.usage;
+          }
+          await streamSession.markSuccess();
+          return;
+        }
+        const missingSseErr = new Error("Upstream stream request did not return an SSE body.");
+        missingSseErr.statusCode = 502;
+        throw missingSseErr;
+      } catch (err) {
+        await streamSession?.markFailure?.(err.message, err?.statusCode || 502);
+        const statusCode = resolveCompatErrorStatusCode(err, 502);
+        if (!res.headersSent) {
+          res.status(statusCode).json({
+            type: "error",
+            error: {
+              type: mapHttpStatusToAnthropicErrorType(statusCode),
+              message: err.message
+            }
+          });
+        } else if (!res.writableEnded) {
+          res.end();
+        }
+        return;
+      } finally {
+        streamSession?.release?.();
+      }
+    }
+
     let result;
     try {
       const input = toResponsesInputFromAnthropicMessages(parsedReq.messages);
@@ -1924,11 +2496,6 @@ export function createAnthropicLocalCompatHelpers(context) {
       completion_tokens: Number(message?.usage?.output_tokens || 0),
       total_tokens: Number(message?.usage?.input_tokens || 0) + Number(message?.usage?.output_tokens || 0)
     };
-
-    if (parsedReq.stream === true) {
-      sendAnthropicMessageAsSse(res, message);
-      return;
-    }
     res.status(200).json(message);
   }
 

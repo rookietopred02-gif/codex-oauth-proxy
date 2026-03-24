@@ -33,6 +33,7 @@ export function buildProxyConfigEnvEntries(config) {
     MODEL_ROUTER_MAPPINGS: Object.keys(modelMappings).length > 0 ? JSON.stringify(modelMappings) : "",
     CLOUDFLARED_MODE: String(config?.publicAccess?.defaultMode || "quick").trim().toLowerCase(),
     CLOUDFLARED_USE_HTTP2: config?.publicAccess?.defaultUseHttp2 !== false,
+    CLOUDFLARED_AUTO_INSTALL: config?.publicAccess?.autoInstall !== false,
     CLOUDFLARED_TUNNEL_TOKEN: String(config?.publicAccess?.defaultTunnelToken || ""),
     CLOUDFLARED_LOCAL_PORT: Number(config?.publicAccess?.localPort || config?.port || 8787)
   };

@@ -16,8 +16,7 @@
     "dist:win": "npm run build:desktop-resources && electron-builder --win nsis --x64",
     "dist:mac": "npm run build:desktop-resources && electron-builder --mac dmg --universal",
     "dist:linux": "npm run build:desktop-resources && electron-builder --linux AppImage --x64",
-    "test": "node --test",
-    "verify:claude-agent-sdk": "node tools/verify-claude-agent-sdk-compat.mjs"
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20.0.0"

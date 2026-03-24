@@ -224,6 +224,8 @@ export function createTempMailController({
   let stopTimer = null;
   let killTimer = null;
   let runnerSpec = null;
+  let exitPromise = null;
+  let resolveExitPromise = null;
 
   function snapshot() {
     return {
@@ -434,6 +436,9 @@ export function createTempMailController({
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true
     });
+    exitPromise = new Promise((resolve) => {
+      resolveExitPromise = resolve;
+    });
 
     const stdoutRl = attachReadline(child.stdout, "runner");
     const stderrRl = attachReadline(child.stderr, "stderr");
@@ -460,6 +465,10 @@ export function createTempMailController({
             pushLog(`Temp Mail runner exited via signal ${signal}.`, "warning", "controller");
           }
           child = null;
+          const resolve = resolveExitPromise;
+          resolveExitPromise = null;
+          exitPromise = null;
+          resolve?.();
         });
     });
 
@@ -525,6 +534,9 @@ export function createTempMailController({
 
   async function shutdown() {
     await stop();
+    if (exitPromise) {
+      await exitPromise;
+    }
   }
 
   return {

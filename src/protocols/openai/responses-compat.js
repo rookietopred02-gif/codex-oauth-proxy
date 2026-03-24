@@ -1,68 +1,42 @@
-import crypto from "node:crypto";
+import { DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS } from "../../upstream-timeouts.js";
+import {
+  consumeSseBlocks,
+  createSseSession,
+  parseSseJsonEventBlock,
+  readUpstreamChunkWithIdleTimeout,
+  takeNextSseBlock
+} from "../../http/sse-runtime.js";
+import {
+  mapResponsesUsageToChatUsage,
+  mergeNormalizedTokenUsage,
+  normalizeTokenUsage,
+  toChatUsageFromNormalizedTokenUsage
+} from "../../http/token-usage.js";
+import { createOpenAIChatCompletionStreamEmitter } from "./chat-stream-emitter.js";
 
 function isRecordObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 export function createOpenAIResponsesCompatHelpers(context) {
-  const { config, parseJsonLoose } = context;
+  const {
+    config,
+    parseJsonLoose,
+    upstreamStreamIdleTimeoutMs:
+      upstreamStreamIdleTimeoutMsInput =
+        config?.upstreamStreamIdleTimeoutMs ?? DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS
+  } = context;
 
-  function normalizeTokenUsage(usage) {
-    if (!usage || typeof usage !== "object") return null;
-
-    const inputTokens = Number(
-      usage.input_tokens ?? usage.prompt_tokens ?? usage.inputTokens ?? usage.promptTokens
-    );
-    const outputTokens = Number(
-      usage.output_tokens ?? usage.completion_tokens ?? usage.outputTokens ?? usage.completionTokens
-    );
-    const totalTokens = Number(usage.total_tokens ?? usage.totalTokens);
-
-    const hasInput = Number.isFinite(inputTokens);
-    const hasOutput = Number.isFinite(outputTokens);
-    const hasTotal = Number.isFinite(totalTokens);
-
-    if (!hasInput && !hasOutput && !hasTotal) return null;
-    const resolvedTotalTokens =
-      hasTotal ? totalTokens : (hasInput ? inputTokens : 0) + (hasOutput ? outputTokens : 0);
-
-    return {
-      inputTokens: hasInput ? inputTokens : null,
-      outputTokens: hasOutput ? outputTokens : null,
-      totalTokens: Number.isFinite(resolvedTotalTokens) ? resolvedTotalTokens : null
-    };
-  }
-
-  function mergeNormalizedTokenUsage(current, next) {
-    const currentUsage = normalizeTokenUsage(current);
-    const nextUsage = normalizeTokenUsage(next);
-    if (!currentUsage) return nextUsage;
-    if (!nextUsage) return currentUsage;
-
-    return normalizeTokenUsage({
-      inputTokens: nextUsage.inputTokens ?? currentUsage.inputTokens,
-      outputTokens: nextUsage.outputTokens ?? currentUsage.outputTokens,
-      totalTokens: nextUsage.totalTokens ?? currentUsage.totalTokens
-    });
-  }
-
-  function toChatUsageFromNormalizedTokenUsage(usage) {
-    const normalized = normalizeTokenUsage(usage);
-    if (!normalized) return null;
-    return {
-      prompt_tokens: Number(normalized.inputTokens || 0),
-      completion_tokens: Number(normalized.outputTokens || 0),
-      total_tokens: Number(normalized.totalTokens || 0)
-    };
+  function getResolvedUpstreamStreamIdleTimeoutMs() {
+    const raw =
+      typeof upstreamStreamIdleTimeoutMsInput === "function"
+        ? upstreamStreamIdleTimeoutMsInput()
+        : upstreamStreamIdleTimeoutMsInput;
+    return Math.max(0, Number(raw || 0));
   }
 
   function mapCodexUsageToChatUsage(usage) {
-    if (!usage || typeof usage !== "object") return null;
-    return {
-      prompt_tokens: Number(usage.input_tokens || 0),
-      completion_tokens: Number(usage.output_tokens || 0),
-      total_tokens: Number(usage.total_tokens || 0)
-    };
+    return mapResponsesUsageToChatUsage(usage);
   }
 
   function normalizeResponsesUsageObject(usage) {
@@ -179,6 +153,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
     const state = {
       completed: null,
       failed: null,
+      sawTerminalEvent: false,
       usage: null,
       responseId: "",
       responseModel: "",
@@ -266,8 +241,11 @@ export function createOpenAIResponsesCompatHelpers(context) {
       if (typeof parsed?.response?.model === "string" && parsed.response.model.length > 0) state.responseModel = parsed.response.model;
       if (typeof parsed?.response?.status === "string" && parsed.response.status.length > 0) state.responseStatus = parsed.response.status;
 
-      if ((parsed.type === "response.completed" || parsed.type === "response.done") && parsed.response && typeof parsed.response === "object") {
-        state.completed = parsed.response;
+      if (parsed.type === "response.completed" || parsed.type === "response.done") {
+        state.sawTerminalEvent = true;
+        if (parsed.response && typeof parsed.response === "object") {
+          state.completed = parsed.response;
+        }
         continue;
       }
 
@@ -382,7 +360,8 @@ export function createOpenAIResponsesCompatHelpers(context) {
     }
 
     return {
-      completed: state.completed || buildSyntheticCompletedResponseFromSseState(state),
+      completed:
+        state.completed || (state.sawTerminalEvent ? buildSyntheticCompletedResponseFromSseState(state) : null),
       failed: state.failed || null
     };
   }
@@ -404,16 +383,113 @@ export function createOpenAIResponsesCompatHelpers(context) {
     return parsed;
   }
 
+  async function pipeCodexSse(upstream, res, options = {}) {
+    if (!upstream.body) throw new Error("No upstream SSE body.");
+
+    const onEvent = typeof options.onEvent === "function" ? options.onEvent : null;
+    const onCompleted = typeof options.onCompleted === "function" ? options.onCompleted : null;
+    const requireCompletion = options.requireCompletion !== false;
+    const reader = upstream.body.getReader();
+    const session = createSseSession(res, { upstream });
+    session.attachReader(reader);
+    session.startHeartbeat();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let rawSse = "";
+    let usage = null;
+    let sawTerminalEvent = false;
+    let completed = null;
+
+    const context = {
+      session,
+      write(chunk) {
+        return session.write(chunk);
+      }
+    };
+
+    const handleBlock = (block) => {
+      const event = parseSseJsonEventBlock(block);
+      if (!event) return;
+      rawSse += `${block}\n\n`;
+      usage = mergeNormalizedTokenUsage(
+        usage,
+        event?.response?.usage || event?.message?.usage || event?.usage || event?.usageMetadata || null
+      );
+      if (event.type === "response.failed") {
+        throw new Error(event.response?.error?.message || event.error?.message || event.message || "Codex response failed.");
+      }
+      if (event.type === "response.completed" || event.type === "response.done") {
+        sawTerminalEvent = true;
+        if (event.response && typeof event.response === "object") {
+          completed = event.response;
+        }
+      }
+      onEvent?.(event, context);
+    };
+
+    try {
+      while (!session.isClosed()) {
+        let chunkResult;
+        try {
+          chunkResult = await readUpstreamChunkWithIdleTimeout(reader, upstream);
+        } catch (err) {
+          if (session.isClosed()) break;
+          throw err;
+        }
+        const { done, value } = chunkResult;
+        if (done) break;
+        if (!value) continue;
+        buffer += decoder.decode(value, { stream: true });
+
+        while (true) {
+          const nextBlock = takeNextSseBlock(buffer);
+          if (!nextBlock) break;
+          buffer = nextBlock.rest;
+          handleBlock(nextBlock.block);
+        }
+      }
+
+      buffer += decoder.decode();
+      if (!session.isClosed() && buffer.trim().length > 0) handleBlock(buffer);
+
+      if (!session.isClosed() && requireCompletion && !sawTerminalEvent) {
+        throw new Error("Upstream SSE ended before response.completed event.");
+      }
+
+      if (!completed && sawTerminalEvent && rawSse) {
+        completed = parseResponsesResultFromSse(rawSse).completed;
+      }
+      if (!session.isClosed() && completed) {
+        onCompleted?.(completed, context);
+      }
+
+      session.end();
+      return {
+        completed,
+        usage: toChatUsageFromNormalizedTokenUsage(usage || completed?.usage || null)
+      };
+    } finally {
+      session.cleanup();
+    }
+  }
+
   async function pipeSseAndCaptureTokenUsage(upstream, res) {
     if (!upstream.body) throw new Error("No upstream SSE body.");
 
     const reader = upstream.body.getReader();
+    const session = createSseSession(res, { upstream });
+    session.attachReader(reader);
+    session.startHeartbeat();
     const decoder = new TextDecoder();
     let buffer = "";
+    let rawSse = "";
     let usage = null;
+    let completed = null;
+    let sawTerminalEvent = false;
 
     const handleSseBlock = (block) => {
       if (!block || typeof block !== "string") return;
+      rawSse += `${block}\n\n`;
       for (const line of block.split(/\r?\n/)) {
         if (!line.startsWith("data:")) continue;
         const payload = line.slice(5).trim();
@@ -428,211 +504,97 @@ export function createOpenAIResponsesCompatHelpers(context) {
           usage,
           parsed?.response?.usage || parsed?.message?.usage || parsed?.usage || parsed?.usageMetadata || null
         );
+        if (parsed.type === "response.completed" || parsed.type === "response.done") {
+          sawTerminalEvent = true;
+          if (parsed.response && typeof parsed.response === "object") {
+            completed = parsed.response;
+          }
+        }
       }
     };
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        res.write(Buffer.from(value));
+    try {
+      while (!session.isClosed()) {
+        let chunkResult;
+        try {
+          chunkResult = await readUpstreamChunkWithIdleTimeout(reader, upstream);
+        } catch (err) {
+          if (session.isClosed()) break;
+          throw err;
+        }
+        const { done, value } = chunkResult;
+        if (done) break;
+        if (!value) continue;
+        if (!session.write(value)) break;
         buffer += decoder.decode(value, { stream: true });
+
+        while (true) {
+          const nextBlock = takeNextSseBlock(buffer);
+          if (!nextBlock) break;
+          buffer = nextBlock.rest;
+          handleSseBlock(nextBlock.block);
+        }
       }
 
-      let separatorIndex = buffer.indexOf("\n\n");
-      while (separatorIndex !== -1) {
-        const block = buffer.slice(0, separatorIndex);
-        buffer = buffer.slice(separatorIndex + 2);
-        handleSseBlock(block);
-        separatorIndex = buffer.indexOf("\n\n");
+      buffer += decoder.decode();
+      if (!session.isClosed() && buffer.trim().length > 0) handleSseBlock(buffer);
+      if (!completed && sawTerminalEvent && rawSse) {
+        completed = parseResponsesResultFromSse(rawSse).completed;
       }
+      session.end();
+      return {
+        completed,
+        usage: toChatUsageFromNormalizedTokenUsage(usage || completed?.usage || null)
+      };
+    } finally {
+      session.cleanup();
     }
-
-    buffer += decoder.decode();
-    if (buffer.trim().length > 0) handleSseBlock(buffer);
-    res.end();
-    return { usage: toChatUsageFromNormalizedTokenUsage(usage) };
   }
 
   async function pipeCodexSseAsChatCompletions(upstream, res, model) {
     if (!upstream.body) throw new Error("No upstream SSE body.");
-
-    res.status(200);
-    res.setHeader("content-type", "text/event-stream; charset=utf-8");
-    res.setHeader("cache-control", "no-cache");
-    res.setHeader("connection", "keep-alive");
-    res.setHeader("x-accel-buffering", "no");
-
-    const completionId = `chatcmpl_${crypto.randomUUID().replace(/-/g, "")}`;
-    const created = Math.floor(Date.now() / 1000);
-    let emittedAssistantRole = false;
-    let emittedDone = false;
-    let emittedToolCalls = false;
-    let toolCallCounter = 0;
-    let finalUsage = null;
-    const functionCallsByItemId = new Map();
-    const decoder = new TextDecoder();
     const reader = upstream.body.getReader();
-    let buffer = "";
+    const emitter = createOpenAIChatCompletionStreamEmitter({
+      upstream,
+      res,
+      model,
+      mapResponsesStatusToChatFinishReason,
+      extractAssistantTextFromResponse,
+      extractAssistantToolCallsFromResponse,
+      usageMapper: mapCodexUsageToChatUsage
+    });
+    emitter.session.attachReader(reader);
 
-    const emit = (payload) => {
-      res.write(`data: ${JSON.stringify(payload)}\n\n`);
-    };
-
-    const emitAssistantRole = () => {
-      if (emittedAssistantRole) return;
-      emittedAssistantRole = true;
-      emit({
-        id: completionId,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }]
+    try {
+      await consumeSseBlocks(upstream, {
+        reader,
+        timeoutMs: getResolvedUpstreamStreamIdleTimeoutMs(),
+        isClosed: () => emitter.session.isClosed(),
+        onBlock(block) {
+          const event = parseSseJsonEventBlock(block);
+          if (!event) return;
+          if (event.type === "response.failed") {
+            throw new Error(
+              event.response?.error?.message ||
+                event.error?.message ||
+                event.message ||
+                "Codex response failed."
+            );
+          }
+          emitter.emitEvent(event);
+        }
       });
-    };
-
-    const emitToolCallChunk = (toolCallIndex, callId, name, argumentsDelta) => {
-      emitAssistantRole();
-      emittedToolCalls = true;
-      const functionPayload = {};
-      if (typeof name === "string" && name.length > 0) functionPayload.name = name;
-      if (typeof argumentsDelta === "string") functionPayload.arguments = argumentsDelta;
-      emit({
-        id: completionId,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [{
-          index: 0,
-          delta: {
-            tool_calls: [{
-              index: toolCallIndex,
-              ...(callId ? { id: callId } : {}),
-              type: "function",
-              function: functionPayload
-            }]
-          },
-          finish_reason: null
-        }]
-      });
-    };
-
-    const handleSseBlock = (block) => {
-      const dataLines = block
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trim());
-      if (dataLines.length === 0) return;
-      const payload = dataLines.join("\n").trim();
-      if (!payload || payload === "[DONE]") return;
-
-      let event;
-      try {
-        event = JSON.parse(payload);
-      } catch {
-        return;
+      if (!emitter.session.isClosed() && !emitter.getUsage() && !res.writableEnded) {
+        throw new Error("Upstream SSE ended before response.completed event.");
       }
-
-      if (event.type === "response.output_text.delta") {
-        const deltaText = typeof event.delta === "string" ? event.delta : "";
-        if (!deltaText) return;
-        emitAssistantRole();
-        emit({
-          id: completionId,
-          object: "chat.completion.chunk",
-          created,
-          model,
-          choices: [{ index: 0, delta: { content: deltaText }, finish_reason: null }]
-        });
-        return;
+      if (!emitter.session.isClosed()) {
+        emitter.session.end();
       }
-
-      if (event.type === "response.output_item.added" && event.item?.type === "function_call") {
-        const itemId = event.item.id;
-        const callId = typeof event.item.call_id === "string" ? event.item.call_id : "";
-        const name = typeof event.item.name === "string" ? event.item.name : "";
-        const toolCallIndex = toolCallCounter++;
-        if (itemId) {
-          functionCallsByItemId.set(itemId, { toolCallIndex, callId, name, arguments: "" });
-        }
-        emitToolCallChunk(toolCallIndex, callId, name, "");
-        return;
-      }
-
-      if (event.type === "response.function_call_arguments.delta") {
-        const tracked = event.item_id ? functionCallsByItemId.get(event.item_id) : null;
-        if (!tracked) return;
-        const deltaText = typeof event.delta === "string" ? event.delta : "";
-        if (!deltaText) return;
-        tracked.arguments += deltaText;
-        emitToolCallChunk(tracked.toolCallIndex, tracked.callId, undefined, deltaText);
-        return;
-      }
-
-      if (event.type === "response.function_call_arguments.done") {
-        const tracked = event.item_id ? functionCallsByItemId.get(event.item_id) : null;
-        if (!tracked) return;
-        if (!tracked.arguments && typeof event.arguments === "string") {
-          tracked.arguments = event.arguments;
-          emitToolCallChunk(tracked.toolCallIndex, tracked.callId, tracked.name, tracked.arguments);
-        }
-        return;
-      }
-
-      if (event.type === "response.failed") {
-        throw new Error(event.response?.error?.message || "Codex response failed.");
-      }
-
-      if (event.type === "response.completed" || event.type === "response.done") {
-        if (!emittedToolCalls) emitAssistantRole();
-        const finishReason = emittedToolCalls ? "tool_calls" : "stop";
-        const chunk = {
-          id: completionId,
-          object: "chat.completion.chunk",
-          created,
-          model,
-          choices: [{ index: 0, delta: {}, finish_reason: finishReason }]
-        };
-        const usage = mapCodexUsageToChatUsage(event.response?.usage);
-        if (usage) {
-          finalUsage = usage;
-          chunk.usage = usage;
-        }
-        emit(chunk);
-        res.write("data: [DONE]\n\n");
-        emittedDone = true;
-      }
-    };
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let separatorIndex = buffer.indexOf("\n\n");
-      while (separatorIndex !== -1) {
-        const block = buffer.slice(0, separatorIndex);
-        buffer = buffer.slice(separatorIndex + 2);
-        handleSseBlock(block);
-        separatorIndex = buffer.indexOf("\n\n");
-      }
+      return { usage: emitter.getUsage() || null };
+    } finally {
+      emitter.session.cleanup();
+      reader.releaseLock?.();
     }
-
-    if (buffer.trim().length > 0) handleSseBlock(buffer);
-
-    if (!emittedDone) {
-      if (!emittedToolCalls) emitAssistantRole();
-      emit({
-        id: completionId,
-        object: "chat.completion.chunk",
-        created,
-        model,
-        choices: [{ index: 0, delta: {}, finish_reason: emittedToolCalls ? "tool_calls" : "stop" }]
-      });
-      res.write("data: [DONE]\n\n");
-    }
-
-    res.end();
-    return { usage: finalUsage };
   }
 
   function parseSseUsageFromAuditPayload(packetText, options = {}) {
@@ -782,6 +744,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
     parseResponsesResultFromSse,
     extractCompletedResponseFromSse,
     extractCompletedResponseFromJson,
+    pipeCodexSse,
     pipeSseAndCaptureTokenUsage,
     pipeCodexSseAsChatCompletions,
     normalizeTokenUsage,

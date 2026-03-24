@@ -44,7 +44,11 @@ export function registerAdminSettingsRoutes(app, context) {
     try {
       const body = await readJsonBody(req);
       const nextConfig = structuredClone(config);
-      const nextCloudflaredRuntime = structuredClone(cloudflaredRuntime);
+      const nextCloudflaredRuntime = {
+        ...cloudflaredRuntime,
+        process: cloudflaredRuntime.process || null,
+        outputTail: Array.isArray(cloudflaredRuntime.outputTail) ? [...cloudflaredRuntime.outputTail] : []
+      };
       if (typeof body.upstreamMode === "string") {
         const value = normalizeUpstreamMode(body.upstreamMode);
         if (value !== "codex-chatgpt" && value !== "gemini-v1beta" && value !== "anthropic-v1") {
@@ -102,7 +106,7 @@ export function registerAdminSettingsRoutes(app, context) {
         nextCloudflaredRuntime.useHttp2 = useHttp2;
       }
       if (body.publicAccessAutoInstall !== undefined) {
-        nextConfig.publicAccess.autoInstall = true;
+        nextConfig.publicAccess.autoInstall = Boolean(body.publicAccessAutoInstall);
       }
       if (body.publicAccessLocalPort !== undefined) {
         const parsed = parseNumberEnv(body.publicAccessLocalPort, NaN, {
