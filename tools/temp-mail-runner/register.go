@@ -28,7 +28,8 @@ const (
 	oaiSentinelURL     = "https://sentinel.openai.com/backend-api/sentinel/req"
 	oaiSignupURL       = "https://auth.openai.com/api/accounts/authorize/continue"
 	oaiUserRegisterURL = "https://auth.openai.com/api/accounts/user/register"
-	oaiSendOTPURL      = "https://auth.openai.com/api/accounts/passwordless/send-otp"
+	oaiPasswordVerify  = "https://auth.openai.com/api/accounts/password/verify"
+	oaiEmailOTPSendURL = "https://auth.openai.com/api/accounts/email-otp/send"
 	oaiEmailOTPResend  = "https://auth.openai.com/api/accounts/email-otp/resend"
 	oaiVerifyURL       = "https://auth.openai.com/api/accounts/email-otp/validate"
 	oaiCreateURL       = "https://auth.openai.com/api/accounts/create_account"
@@ -37,6 +38,23 @@ const (
 	localRedirectURI = "http://localhost:1455/auth/callback"
 	maxRetry         = 2
 )
+
+type otpWaitMode int
+
+const (
+	otpWaitAllowClockSkew otpWaitMode = iota
+	otpWaitRequireFreshCode
+)
+
+func otpMinTime(otpSentAt time.Time, mode otpWaitMode) time.Time {
+	if otpSentAt.IsZero() {
+		return time.Time{}
+	}
+	if mode == otpWaitRequireFreshCode {
+		return otpSentAt
+	}
+	return otpSentAt.Add(-60 * time.Second)
+}
 
 type account struct {
 	Email    string `json:"email"`
@@ -176,8 +194,15 @@ func (h *httpClient) setPostHeaders(req *fhttp.Request, contentType string, extr
 }
 
 func (h *httpClient) Get(rawURL string) (int, string, error) {
+	return h.GetWithHeaders(rawURL, nil)
+}
+
+func (h *httpClient) GetWithHeaders(rawURL string, extraHeaders map[string]string) (int, string, error) {
 	req, _ := fhttp.NewRequest("GET", rawURL, nil)
 	h.setGetHeaders(req)
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
 	resp, err := h.client.Do(req)
 	if err != nil {
 		return 0, "", err
@@ -328,16 +353,7 @@ func normalizeWorkers(requested int, allowParallel bool) int {
 }
 
 func extractPageType(data map[string]interface{}) string {
-	page, ok := data["page"].(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	pageType, _ := page["type"].(string)
-	return pageType
-}
-
-func isPasswordlessUnavailable(status int, body string) bool {
-	return status == 401 && strings.Contains(strings.ToLower(body), "passwordless signup is unavailable")
+	return extractPageTypeDetailed(data, "", "")
 }
 
 func normalizeRegisterPassword(raw string) (string, error) {
@@ -451,69 +467,143 @@ func registerAccount(ctx context.Context, acc account, cfg tempMailConfig) (*reg
 		return nil, errStoppedRun
 	}
 
-	httpClient, err := newHTTPClient("")
+	password, err := normalizeRegisterPassword(acc.Password)
 	if err != nil {
-		return nil, fmt.Errorf("create http client failed: %w", err)
-	}
-	emitLog(fmt.Sprintf("  Browser fingerprint: %s", httpClient.profile), "dim")
-
-	authURL, state, verifier := createOAuthParams()
-	emitLog("  [1] OAuth bootstrap...", "info")
-	status, _, err := httpClient.Get(authURL)
-	if err != nil {
-		return nil, fmt.Errorf("oauth failed: %w", err)
-	}
-	emitLog(fmt.Sprintf("      status: %d", status), "dim")
-	if err := sleepRand(ctx, 800, 2000); err != nil {
 		return nil, err
 	}
 
-	deviceID := httpClient.GetCookie("oai-did")
-	emitLog("  [2] Fetching Sentinel token...", "info")
-	sentinelBody := map[string]interface{}{"p": "", "id": deviceID, "flow": "authorize_continue"}
-	sStatus, sBody, err := httpClient.PostJSON(oaiSentinelURL, sentinelBody, map[string]string{
-		"Origin":  "https://sentinel.openai.com",
-		"Referer": "https://sentinel.openai.com/backend-api/sentinel/frame.html",
-	})
-	if err != nil || sStatus < 200 || sStatus >= 300 {
-		return nil, fmt.Errorf("sentinel failed: %d %s", sStatus, truncate(sBody, 200))
+	newClient := func() (*httpClient, error) {
+		client, err := newHTTPClient("")
+		if err != nil {
+			return nil, fmt.Errorf("create http client failed: %w", err)
+		}
+		emitLog(fmt.Sprintf("  Browser fingerprint: %s", client.profile), "dim")
+		return client, nil
 	}
-	var sentinelResp map[string]interface{}
-	_ = json.Unmarshal([]byte(sBody), &sentinelResp)
-	sentinelToken, _ := sentinelResp["token"].(string)
-	sentinelHeader, _ := json.Marshal(map[string]interface{}{
-		"p": "", "t": "", "c": sentinelToken, "id": deviceID, "flow": "authorize_continue",
-	})
-	emitLog("      OK", "dim")
-	if err := sleepRand(ctx, 500, 1500); err != nil {
+
+	buildSentinelHeader := func(client *httpClient) (string, error) {
+		deviceID := client.GetCookie("oai-did")
+		emitLog("  [2] Fetching Sentinel token...", "info")
+		sentinelBody := map[string]interface{}{"p": "", "id": deviceID, "flow": "authorize_continue"}
+		sStatus, sBody, err := client.PostJSON(oaiSentinelURL, sentinelBody, map[string]string{
+			"Origin":  "https://sentinel.openai.com",
+			"Referer": "https://sentinel.openai.com/backend-api/sentinel/frame.html",
+		})
+		if err != nil || sStatus < 200 || sStatus >= 300 {
+			return "", fmt.Errorf("sentinel failed: %d %s", sStatus, truncate(sBody, 200))
+		}
+		var sentinelResp map[string]interface{}
+		_ = json.Unmarshal([]byte(sBody), &sentinelResp)
+		sentinelToken, _ := sentinelResp["token"].(string)
+		sentinelHeader, _ := json.Marshal(map[string]interface{}{
+			"p": "", "t": "", "c": sentinelToken, "id": deviceID, "flow": "authorize_continue",
+		})
+		emitLog("      OK", "dim")
+		if err := sleepRand(ctx, 200, 450); err != nil {
+			return "", err
+		}
+		return string(sentinelHeader), nil
+	}
+
+	startOAuthFlow := func(client *httpClient, label string) (string, string, string, error) {
+		authURL, state, verifier := createOAuthParams()
+		emitLog(fmt.Sprintf("  [1] OAuth bootstrap (%s)...", label), "info")
+		status, _, err := client.Get(authURL)
+		if err != nil {
+			return "", "", "", fmt.Errorf("oauth failed: %w", err)
+		}
+		emitLog(fmt.Sprintf("      status: %d", status), "dim")
+		if err := sleepRand(ctx, 400, 900); err != nil {
+			return "", "", "", err
+		}
+
+		sentinelHeader, err := buildSentinelHeader(client)
+		if err != nil {
+			return "", "", "", err
+		}
+		return state, verifier, sentinelHeader, nil
+	}
+
+	submitAuthStart := func(client *httpClient, sentinelHeader, screenHint, referer, label string) (map[string]interface{}, string, string, error) {
+		emitLog(fmt.Sprintf("  [3] %s: %s", label, email), "info")
+		payload := map[string]interface{}{
+			"username":    map[string]interface{}{"value": email, "kind": "email"},
+			"screen_hint": screenHint,
+		}
+		status, body, err := client.PostJSON(oaiSignupURL, payload, map[string]string{
+			"Referer":               referer,
+			"openai-sentinel-token": sentinelHeader,
+		})
+		if err != nil || status < 200 || status >= 300 {
+			return nil, "", "", fmt.Errorf("%s failed: %d %s", label, status, truncate(body, 300))
+		}
+		data := decodeJSONMapBody(body)
+		pageType := extractPageTypeDetailed(data, "", body)
+		continueURL := extractContinueURL(data)
+		emitLog("      OK", "dim")
+		emitLog(fmt.Sprintf("      page type: %s", pageType), "dim")
+		if err := sleepRand(ctx, 200, 450); err != nil {
+			return nil, "", "", err
+		}
+		return data, pageType, continueURL, nil
+	}
+
+	submitLoginPassword := func(client *httpClient, loginPassword string) (map[string]interface{}, string, error) {
+		emitLog("  [4] Submit login password...", "info")
+		status, body, err := client.PostJSON(oaiPasswordVerify, map[string]interface{}{
+			"password": loginPassword,
+		}, map[string]string{
+			"Referer": "https://auth.openai.com/log-in/password",
+		})
+		if err != nil || status < 200 || status >= 300 {
+			return nil, "", fmt.Errorf("submit login password failed: %d %s", status, truncate(body, 300))
+		}
+		data := decodeJSONMapBody(body)
+		pageType := extractPageTypeDetailed(data, "", body)
+		emitLog("      OK", "dim")
+		emitLog(fmt.Sprintf("      next page type: %s", pageType), "dim")
+		if err := sleepRand(ctx, 180, 320); err != nil {
+			return nil, "", err
+		}
+		return data, pageType, nil
+	}
+
+	sendEmailOTP := func(client *httpClient, referer string) error {
+		emitLog("  [4] Sending OTP...", "info")
+		status, body, err := client.GetWithHeaders(oaiEmailOTPSendURL, map[string]string{
+			"Referer": referer,
+			"Accept":  "application/json",
+		})
+		if err != nil || status < 200 || status >= 300 {
+			return fmt.Errorf("send otp failed: %d %s", status, truncate(body, 300))
+		}
+		emitLog(fmt.Sprintf("      OK, verification code sent to %s", email), "dim")
+		return nil
+	}
+
+	httpClient, err := newClient()
+	if err != nil {
+		return nil, err
+	}
+
+	state, verifier, sentinelHeader, err := startOAuthFlow(httpClient, "register")
+	if err != nil {
 		return nil, err
 	}
 
 	otpSentAt := time.Now()
-	emitLog(fmt.Sprintf("  [3] Submit email: %s", email), "info")
-	signupBody := map[string]interface{}{
-		"username":    map[string]interface{}{"value": email, "kind": "email"},
-		"screen_hint": "signup",
-	}
-	s3Status, s3Body, err := httpClient.PostJSON(oaiSignupURL, signupBody, map[string]string{
-		"Referer":               "https://auth.openai.com/create-account",
-		"openai-sentinel-token": string(sentinelHeader),
-	})
-	if err != nil || s3Status < 200 || s3Status >= 300 {
-		return nil, fmt.Errorf("submit email failed: %d %s", s3Status, truncate(s3Body, 300))
-	}
-
-	var step3Data map[string]interface{}
-	_ = json.Unmarshal([]byte(s3Body), &step3Data)
-	pageType := extractPageType(step3Data)
-	step3ContinueURL, _ := step3Data["continue_url"].(string)
-	isExisting := pageType == "email_otp_verification"
-	emitLog(fmt.Sprintf("      page type: %s", pageType), "dim")
-	if err := sleepRand(ctx, 500, 1500); err != nil {
+	_, pageType, step3ContinueURL, err := submitAuthStart(
+		httpClient,
+		sentinelHeader,
+		"signup",
+		"https://auth.openai.com/create-account",
+		"Submit email",
+	)
+	if err != nil {
 		return nil, err
 	}
+	isExisting := pageType == "email_otp_verification"
 
-	otpResendMode := ""
 	switch pageType {
 	case "create_account_password":
 		if step3ContinueURL != "" {
@@ -524,14 +614,9 @@ func registerAccount(ctx context.Context, acc account, cfg tempMailConfig) (*reg
 			if status < 200 || status >= 400 {
 				return nil, fmt.Errorf("open password page failed: %d", status)
 			}
-			if err := sleepRand(ctx, 300, 900); err != nil {
+			if err := sleepRand(ctx, 80, 180); err != nil {
 				return nil, err
 			}
-		}
-
-		password, err := normalizeRegisterPassword(acc.Password)
-		if err != nil {
-			return nil, err
 		}
 
 		emitLog("  [4] Submit register password...", "info")
@@ -564,60 +649,31 @@ func registerAccount(ctx context.Context, acc account, cfg tempMailConfig) (*reg
 			}
 		}
 
-		if pageType == "email_otp_send" || pageType == "email_otp_verification" {
-			otpResendMode = "email_otp"
-			otpSentAt = time.Now()
+		if err := sendEmailOTP(httpClient, "https://auth.openai.com/create-account/password"); err != nil {
+			return nil, err
 		}
-		if err := sleepRand(ctx, 500, 1200); err != nil {
+		otpSentAt = time.Now()
+		if err := sleepRand(ctx, 180, 320); err != nil {
 			return nil, err
 		}
 	case "email_otp_verification":
 		emitLog("  [4] Skip OTP send (already sent by server)", "info")
-		otpResendMode = "email_otp"
 	default:
-		emitLog("  [4] Sending OTP...", "info")
-		o4Status, o4Body, err := httpClient.PostJSON(oaiSendOTPURL, map[string]interface{}{}, map[string]string{
-			"Referer": "https://auth.openai.com/create-account/password",
-		})
-		if err != nil {
-			return nil, fmt.Errorf("send otp failed: %w", err)
-		}
-		if isPasswordlessUnavailable(o4Status, o4Body) {
-			return nil, fmt.Errorf("send otp failed: passwordless flow is unavailable for page type %s", pageType)
-		}
-		if o4Status < 200 || o4Status >= 300 {
-			return nil, fmt.Errorf("send otp failed: %d %s", o4Status, truncate(o4Body, 300))
-		}
-		otpSentAt = time.Now()
-		otpResendMode = "passwordless"
-	}
-
-	if !isExisting && otpResendMode == "" {
 		return nil, fmt.Errorf("registration flow did not reach an email verification page: %s", pageType)
 	}
 
 	emitLog(fmt.Sprintf("    Waiting for verification code (%s, Temp Mail)...", email), "info")
 	resendFn := func() bool {
-		switch otpResendMode {
-		case "email_otp":
-			s, _, _ := httpClient.PostJSON(oaiEmailOTPResend, map[string]interface{}{}, map[string]string{
-				"Referer": "https://auth.openai.com/email-verification",
-			})
-			return s >= 200 && s < 300
-		case "passwordless":
-			s, _, _ := httpClient.PostJSON(oaiSendOTPURL, map[string]interface{}{}, map[string]string{
-				"Referer": "https://auth.openai.com/email-verification",
-			})
-			return s >= 200 && s < 300
-		default:
-			return false
-		}
+		s, _, _ := httpClient.PostJSON(oaiEmailOTPResend, map[string]interface{}{}, map[string]string{
+			"Referer": "https://auth.openai.com/email-verification",
+		})
+		return s >= 200 && s < 300
 	}
-	code, err := waitForTempMailCode(ctx, email, otpSentAt, resendFn)
+	code, err := waitForTempMailCode(ctx, email, otpSentAt, resendFn, otpWaitAllowClockSkew)
 	if err != nil {
 		return nil, err
 	}
-	if err := sleepRand(ctx, 300, 1000); err != nil {
+	if err := sleepRand(ctx, 100, 220); err != nil {
 		return nil, err
 	}
 
@@ -628,7 +684,7 @@ func registerAccount(ctx context.Context, acc account, cfg tempMailConfig) (*reg
 	if err != nil || v6Status < 200 || v6Status >= 300 {
 		return nil, fmt.Errorf("otp verify failed: %d %s", v6Status, truncate(v6Body, 300))
 	}
-	if err := sleepRand(ctx, 500, 1500); err != nil {
+	if err := sleepRand(ctx, 180, 360); err != nil {
 		return nil, err
 	}
 
@@ -645,37 +701,91 @@ func registerAccount(ctx context.Context, acc account, cfg tempMailConfig) (*reg
 		if err != nil || c7Status < 200 || c7Status >= 300 {
 			return nil, fmt.Errorf("create account failed: %d %s", c7Status, truncate(c7Body, 300))
 		}
-		if err := sleepRand(ctx, 500, 1500); err != nil {
+		if err := sleepRand(ctx, 180, 360); err != nil {
 			return nil, err
+		}
+
+		emitLog("  [8] Re-login after account creation to obtain workspace/token...", "info")
+		httpClient, err = newClient()
+		if err != nil {
+			return nil, err
+		}
+
+		state, verifier, sentinelHeader, err = startOAuthFlow(httpClient, "relogin")
+		if err != nil {
+			return nil, err
+		}
+
+		_, loginPageType, loginContinueURL, err := submitAuthStart(
+			httpClient,
+			sentinelHeader,
+			"login",
+			"https://auth.openai.com/log-in",
+			"Submit login entry",
+		)
+		if err != nil {
+			return nil, fmt.Errorf("relogin submit email failed: %w", err)
+		}
+		if loginContinueURL != "" {
+			status, _, getErr := httpClient.Get(loginContinueURL)
+			if getErr != nil {
+				return nil, fmt.Errorf("open relogin password page failed: %w", getErr)
+			}
+			if status < 200 || status >= 400 {
+				return nil, fmt.Errorf("open relogin password page failed: %d", status)
+			}
+		}
+		if loginPageType != "login_password" {
+			return nil, fmt.Errorf("relogin did not reach login_password page: %s", loginPageType)
+		}
+
+		loginPasswordData, loginPasswordPageType, err := submitLoginPassword(httpClient, password)
+		if err != nil {
+			return nil, fmt.Errorf("relogin submit password failed: %w", err)
+		}
+		if nextURL := extractContinueURL(loginPasswordData); nextURL != "" {
+			status, _, getErr := httpClient.Get(nextURL)
+			if getErr != nil {
+				return nil, fmt.Errorf("open relogin otp page failed: %w", getErr)
+			}
+			if status < 200 || status >= 400 {
+				return nil, fmt.Errorf("open relogin otp page failed: %d", status)
+			}
+		}
+		if loginPasswordPageType != "email_otp_verification" {
+			return nil, fmt.Errorf("relogin did not reach email_otp_verification page: %s", loginPasswordPageType)
+		}
+
+		otpSentAt = time.Now()
+		reloginResendFn := func() bool {
+			s, _, _ := httpClient.PostJSON(oaiEmailOTPResend, map[string]interface{}{}, map[string]string{
+				"Referer": "https://auth.openai.com/email-verification",
+			})
+			return s >= 200 && s < 300
+		}
+		emitLog(fmt.Sprintf("    Waiting for relogin verification code (%s, Temp Mail)...", email), "info")
+		code, err = waitForTempMailCode(ctx, email, otpSentAt, reloginResendFn, otpWaitRequireFreshCode)
+		if err != nil {
+			return nil, fmt.Errorf("relogin get code failed: %w", err)
+		}
+		emitLog(fmt.Sprintf("  [8.1] Verify relogin OTP: %s", code), "info")
+		vStatus, vBody, verifyErr := httpClient.PostJSON(oaiVerifyURL, map[string]interface{}{"code": code}, map[string]string{
+			"Referer": "https://auth.openai.com/email-verification",
+		})
+		if verifyErr != nil || vStatus < 200 || vStatus >= 300 {
+			return nil, fmt.Errorf("relogin otp verify failed: %d %s", vStatus, truncate(vBody, 300))
 		}
 	}
 
-	authCookie := httpClient.GetCookie("oai-client-auth-session")
-	if authCookie == "" {
-		return nil, fmt.Errorf("missing oai-client-auth-session cookie")
-	}
-	parts := strings.Split(authCookie, ".")
-	cookieB64 := parts[0]
-	for len(cookieB64)%4 != 0 {
-		cookieB64 += "="
-	}
-	cookieRaw, err := base64.StdEncoding.DecodeString(cookieB64)
+	workspaceID, _, err := resolveWorkspaceID(httpClient.GetCookie("oai-client-auth-session"))
 	if err != nil {
-		return nil, fmt.Errorf("decode cookie failed: %w", err)
+		return nil, err
 	}
-	var cookieData map[string]interface{}
-	_ = json.Unmarshal(cookieRaw, &cookieData)
-	workspaces, _ := cookieData["workspaces"].([]interface{})
-	if len(workspaces) == 0 {
-		return nil, fmt.Errorf("no workspace found")
-	}
-	ws0, _ := workspaces[0].(map[string]interface{})
-	workspaceID, _ := ws0["id"].(string)
 	if workspaceID == "" {
 		return nil, fmt.Errorf("workspace_id is empty")
 	}
 
-	emitLog(fmt.Sprintf("  [8] Selecting workspace: %s...", truncate(workspaceID, 20)), "info")
+	emitLog(fmt.Sprintf("  [9] Selecting workspace: %s...", truncate(workspaceID, 20)), "info")
 	w8Status, w8Body, err := httpClient.PostJSON(oaiWorkURL, map[string]interface{}{
 		"workspace_id": workspaceID,
 	}, map[string]string{"Referer": "https://auth.openai.com/sign-in-with-chatgpt/codex/consent"})
@@ -689,7 +799,7 @@ func registerAccount(ctx context.Context, acc account, cfg tempMailConfig) (*reg
 		return nil, fmt.Errorf("missing continue_url")
 	}
 
-	emitLog("  [9] Following redirects to get token...", "info")
+	emitLog("  [10] Following redirects to get token...", "info")
 	callbackURL, err := httpClient.FollowRedirects(continueURL, 12)
 	if err != nil {
 		return nil, fmt.Errorf("redirect flow failed: %w", err)
@@ -736,6 +846,9 @@ func registerAccount(ctx context.Context, acc account, cfg tempMailConfig) (*reg
 }
 
 func sleepRand(ctx context.Context, minMs, maxMs int) error {
+	if maxMs <= minMs {
+		return sleepWithContext(ctx, time.Duration(minMs)*time.Millisecond)
+	}
 	return sleepWithContext(ctx, time.Duration(minMs+rand.Intn(maxMs-minMs))*time.Millisecond)
 }
 
@@ -783,4 +896,177 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+func decodeSessionCookiePayload(segment string) ([]byte, error) {
+	segment = strings.TrimSpace(segment)
+	if segment == "" {
+		return nil, fmt.Errorf("empty cookie payload")
+	}
+
+	padded := segment
+	for len(padded)%4 != 0 {
+		padded += "="
+	}
+
+	decoders := []struct {
+		enc *base64.Encoding
+		src string
+	}{
+		{enc: base64.RawURLEncoding, src: segment},
+		{enc: base64.URLEncoding, src: padded},
+		{enc: base64.RawStdEncoding, src: segment},
+		{enc: base64.StdEncoding, src: padded},
+	}
+
+	var lastErr error
+	for _, decoder := range decoders {
+		raw, err := decoder.enc.DecodeString(decoder.src)
+		if err == nil {
+			return raw, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no base64 decoder matched")
+	}
+	return nil, lastErr
+}
+
+func extractPageTypeDetailed(data map[string]interface{}, responseURL, bodyText string) string {
+	if page, ok := data["page"].(map[string]interface{}); ok {
+		if pageType := strings.TrimSpace(strFromMap(page, "type")); pageType != "" {
+			return pageType
+		}
+		if pageType := strings.TrimSpace(strFromMap(page, "page_type")); pageType != "" {
+			return pageType
+		}
+	}
+	if pageType := strings.TrimSpace(strFromMap(data, "page_type")); pageType != "" {
+		return pageType
+	}
+	if pageType := strings.TrimSpace(strFromMap(data, "type")); pageType != "" {
+		return pageType
+	}
+	loweredURL := strings.ToLower(responseURL)
+	loweredBody := strings.ToLower(bodyText)
+	if strings.Contains(loweredURL, "add-phone") {
+		return "add_phone"
+	}
+	if strings.Contains(loweredBody, "registration_disallowed") ||
+		strings.Contains(loweredBody, "cannot create your account with the given information") {
+		return "registration_disallowed"
+	}
+	return ""
+}
+
+func extractContinueURL(data map[string]interface{}) string {
+	if data == nil {
+		return ""
+	}
+	for _, key := range []string{"continue_url", "continueUrl", "redirect_url", "redirectUrl"} {
+		if value := strFromMap(data, key); value != "" {
+			return value
+		}
+	}
+	for _, key := range []string{"page", "session", "data", "result"} {
+		if nested, ok := data[key].(map[string]interface{}); ok {
+			if value := extractContinueURL(nested); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func decodeJSONMapBody(body string) map[string]interface{} {
+	body = strings.TrimSpace(body)
+	if body == "" || !strings.HasPrefix(body, "{") {
+		return nil
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &data); err != nil {
+		return nil
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	return data
+}
+
+func resolveWorkspaceID(authCookie string) (string, map[string]interface{}, error) {
+	cookieData, err := decodeWorkspaceCookieData(authCookie)
+	if err != nil {
+		return "", nil, err
+	}
+	workspaceID := extractWorkspaceID(cookieData)
+	return workspaceID, cookieData, nil
+}
+
+func decodeWorkspaceCookieData(authCookie string) (map[string]interface{}, error) {
+	authCookie = strings.TrimSpace(authCookie)
+	if authCookie == "" {
+		return nil, fmt.Errorf("missing oai-client-auth-session cookie")
+	}
+	parts := strings.Split(authCookie, ".")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return nil, fmt.Errorf("oai-client-auth-session cookie format is invalid")
+	}
+	cookieRaw, err := decodeSessionCookiePayload(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("decode cookie failed: %w", err)
+	}
+	var cookieData map[string]interface{}
+	if err := json.Unmarshal(cookieRaw, &cookieData); err != nil {
+		return nil, fmt.Errorf("decode cookie json failed: %w", err)
+	}
+	return cookieData, nil
+}
+
+func extractWorkspaceID(data map[string]interface{}) string {
+	if data == nil {
+		return ""
+	}
+	for _, key := range []string{"workspace_id", "default_workspace_id", "selected_workspace_id"} {
+		if value := strFromMap(data, key); value != "" {
+			return value
+		}
+	}
+	for _, key := range []string{"workspace", "default_workspace", "selected_workspace"} {
+		if nested, ok := data[key].(map[string]interface{}); ok {
+			if value := extractWorkspaceObjectID(nested); value != "" {
+				return value
+			}
+		}
+	}
+	if workspaces, ok := data["workspaces"].([]interface{}); ok {
+		for _, item := range workspaces {
+			if ws, ok := item.(map[string]interface{}); ok {
+				if value := extractWorkspaceObjectID(ws); value != "" {
+					return value
+				}
+			}
+		}
+	}
+	for _, outerKey := range []string{"session", "user", "organization"} {
+		if nested, ok := data[outerKey].(map[string]interface{}); ok {
+			if value := extractWorkspaceID(nested); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func extractWorkspaceObjectID(data map[string]interface{}) string {
+	if data == nil {
+		return ""
+	}
+	if value := strFromMap(data, "id"); value != "" {
+		return value
+	}
+	if value := extractWorkspaceID(data); value != "" {
+		return value
+	}
+	return ""
 }

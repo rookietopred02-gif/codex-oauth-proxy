@@ -616,8 +616,8 @@ func (s *tempMailRuntime) FindCode(ctx context.Context, expectedEmail string, mi
 	return findBestTempMailCode(rows, minTime, seen), nil
 }
 
-func waitForTempMailCode(ctx context.Context, email string, otpSentAt time.Time, resendFn func() bool) (string, error) {
-	minTime := otpSentAt.Add(-60 * time.Second)
+func waitForTempMailCode(ctx context.Context, email string, otpSentAt time.Time, resendFn func() bool, waitMode otpWaitMode) (string, error) {
+	minTime := otpMinTime(otpSentAt, waitMode)
 	done := make(chan struct{})
 	defer close(done)
 
