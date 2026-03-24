@@ -9,98 +9,75 @@ function cloneJson(value) {
   return value === undefined ? undefined : structuredClone(value);
 }
 
-function pruneContentBlocks(content, allowedTypes) {
-  if (!Array.isArray(content)) return [];
-  const normalized = [];
-  for (const block of content) {
-    if (!block || typeof block !== "object") continue;
-    const blockType = normalizeId(block.type);
-    if (!allowedTypes.has(blockType)) continue;
-    if (blockType === "output_text" || blockType === "input_text") {
-      normalized.push({
-        type: blockType,
-        text: typeof block.text === "string" ? block.text : ""
-      });
-    }
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
   }
-  return normalized;
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
 }
 
-function normalizeReplayableOutputItem(item) {
-  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-  const itemType = normalizeId(item.type);
-
-  if (itemType === "message") {
-    const content = pruneContentBlocks(item.content, new Set(["output_text"]));
-    if (content.length === 0) return null;
+function normalizeReplayableItem(item) {
+  if (typeof item === "string") {
     return {
-      role: "assistant",
-      content
+      role: "user",
+      content: [{ type: "input_text", text: item }]
     };
   }
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
 
-  if (itemType === "function_call") {
-    const callId = normalizeId(item.call_id);
-    const name = normalizeId(item.name);
-    if (!callId || !name) return null;
-    return {
-      type: "function_call",
-      call_id: callId,
-      name,
-      arguments: typeof item.arguments === "string" ? item.arguments : "{}"
-    };
+  const itemType = normalizeId(item.type);
+  if (itemType) {
+    return cloneJson(item);
+  }
+
+  const role = normalizeId(item.role);
+  if (role) {
+    return cloneJson(item);
   }
 
   return null;
 }
 
-function normalizeReplayableInputItem(item) {
-  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-
-  const itemType = normalizeId(item.type);
-  if (itemType === "function_call" || itemType === "function_call_output") {
-    return cloneJson(item);
+function normalizeReplayableItems(items) {
+  if (typeof items === "string") {
+    const normalized = normalizeReplayableItem(items);
+    return normalized ? [normalized] : [];
   }
-
-  const role = item.role === "assistant" ? "assistant" : item.role === "user" ? "user" : "";
-  if (!role) return null;
-  const allowedTypes = new Set([role === "assistant" ? "output_text" : "input_text"]);
-  const content = pruneContentBlocks(item.content, allowedTypes);
-  if (content.length === 0) return null;
-  return { role, content };
-}
-
-function normalizeReplayableItems(items, mapper) {
   if (!Array.isArray(items)) return [];
-  return items.map((item) => mapper(item)).filter(Boolean);
+  return items.map((item) => normalizeReplayableItem(item)).filter(Boolean);
 }
 
-function buildRequestDefaults(requestBody) {
-  const defaults = {};
-  for (const key of [
-    "model",
-    "instructions",
-    "tools",
-    "tool_choice",
-    "temperature",
-    "top_p",
-    "stop",
-    "reasoning",
-    "truncation",
-    "metadata",
-    "text",
-    "parallel_tool_calls",
-    "max_output_tokens"
-  ]) {
-    if (requestBody?.[key] !== undefined) {
-      defaults[key] = cloneJson(requestBody[key]);
+function areReplayItemsEqual(left, right) {
+  return stableStringify(left) === stableStringify(right);
+}
+
+function findReplayOverlap(priorHistory, currentInput) {
+  const maxOverlap = Math.min(priorHistory.length, currentInput.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    let matches = true;
+    for (let index = 0; index < overlap; index += 1) {
+      if (!areReplayItemsEqual(priorHistory[priorHistory.length - overlap + index], currentInput[index])) {
+        matches = false;
+        break;
+      }
     }
+    if (matches) return overlap;
   }
-  return defaults;
+  return 0;
 }
 
-function mergeExactHistoryForReplay(history, currentInput) {
-  return normalizeReplayableItems([...(Array.isArray(history) ? history : []), ...(Array.isArray(currentInput) ? currentInput : [])], normalizeReplayableInputItem);
+function mergeReplayHistory(priorHistory, currentInput) {
+  const normalizedHistory = normalizeReplayableItems(priorHistory);
+  const normalizedInput = normalizeReplayableItems(currentInput);
+  if (normalizedHistory.length === 0) return normalizedInput;
+  if (normalizedInput.length === 0) return normalizedHistory;
+
+  const overlap = findReplayOverlap(normalizedHistory, normalizedInput);
+  return [...normalizedHistory, ...normalizedInput.slice(overlap)];
 }
 
 function normalizeChainEntry(entry) {
@@ -109,8 +86,7 @@ function normalizeChainEntry(entry) {
   if (!responseId) return null;
   return {
     responseId,
-    requestDefaults: entry.requestDefaults && typeof entry.requestDefaults === "object" ? cloneJson(entry.requestDefaults) : {},
-    inputHistory: normalizeReplayableItems(entry.inputHistory, normalizeReplayableInputItem),
+    inputHistory: normalizeReplayableItems(entry.inputHistory),
     updatedAt: Number(entry.updatedAt || Date.now())
   };
 }
@@ -118,11 +94,12 @@ function normalizeChainEntry(entry) {
 export function buildResponsesChainEntry(requestBody, response, now = Date.now()) {
   const responseId = normalizeId(response?.id);
   if (!responseId) return null;
-  const requestInput = normalizeReplayableItems(requestBody?.input, normalizeReplayableInputItem);
-  const outputItems = normalizeReplayableItems(response?.output, normalizeReplayableOutputItem);
+
+  const requestInput = normalizeReplayableItems(requestBody?.input);
+  const outputItems = normalizeReplayableItems(response?.output);
+
   return normalizeChainEntry({
     responseId,
-    requestDefaults: buildRequestDefaults(requestBody),
     inputHistory: [...requestInput, ...outputItems],
     updatedAt: now
   });
@@ -133,15 +110,7 @@ export function expandResponsesRequestBodyFromChain(requestBody, previousEntry) 
   if (!entry) return cloneJson(requestBody);
 
   const expanded = cloneJson(requestBody) || {};
-  for (const [key, value] of Object.entries(entry.requestDefaults || {})) {
-    if (expanded[key] === undefined) {
-      expanded[key] = cloneJson(value);
-    }
-  }
-
-  const priorHistory = normalizeReplayableItems(entry.inputHistory, normalizeReplayableInputItem);
-  const currentInput = normalizeReplayableItems(expanded.input, normalizeReplayableInputItem);
-  expanded.input = mergeExactHistoryForReplay(priorHistory, currentInput);
+  expanded.input = mergeReplayHistory(entry.inputHistory, expanded.input);
   delete expanded.previous_response_id;
   return expanded;
 }

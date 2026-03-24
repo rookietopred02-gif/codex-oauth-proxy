@@ -1529,6 +1529,7 @@ const {
   mergeNormalizedTokenUsage,
   extractTokenUsageFromAuditResponse,
   convertResponsesToChatCompletion,
+  extractAssistantDisplayTextFromResponse,
   extractAssistantTextFromResponse,
   extractAssistantToolCallsFromResponse,
   mapResponsesStatusToChatFinishReason
@@ -1543,6 +1544,7 @@ const codexOAuthResponsesHelpers = createCodexOAuthResponsesHelpers({
   parseResponsesResultFromSse,
   extractCompletedResponseFromJson,
   normalizeTokenUsage,
+  extractAssistantDisplayTextFromResponse,
   extractAssistantTextFromResponse,
   mapResponsesStatusToChatFinishReason,
   resolveReasoningEffort,
@@ -1653,6 +1655,7 @@ const proxyRouteHandlers = createProxyRouteHandlers({
   maybeCaptureCodexUsageFromHeaders,
   maybeMarkCodexPoolSuccess,
   truncate,
+  parseResponsesResultFromSse,
   extractCompletedResponseFromSse,
   convertResponsesToChatCompletion,
   pipeCodexSseAsChatCompletions,
@@ -5353,7 +5356,7 @@ async function runCodexDirectSelfTest(prompt, reasoningEffort) {
     model: completed.model || config.codex.defaultModel,
     status: completed.status || "completed",
     reasoningEffort,
-    preview: truncate(extractAssistantTextFromResponse(completed), 240)
+    preview: truncate(extractAssistantDisplayTextFromResponse(completed), 240)
   };
 }
 

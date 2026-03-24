@@ -1,0 +1,75 @@
+{
+  "generated_at": "2026-03-24",
+  "sources": [
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.completed",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.done",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.incomplete",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.failed",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.content_part.added",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.content_part.done",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.output_text.delta",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.output_text.done",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.output_text.annotation.added",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.reasoning_summary_part.added",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.reasoning_summary_part.done",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.reasoning_summary_text.delta",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.reasoning_summary_text.done",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.reasoning_text.delta",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.reasoning_text.done",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.refusal.delta",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.refusal.done",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.output_item.added",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.function_call_arguments.delta",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.function_call_arguments.done"
+  ],
+  "terminal_events": {
+    "success": [
+      {
+        "type": "response.completed",
+        "response_status": "completed",
+        "chat_finish_reason": "stop"
+      },
+      {
+        "type": "response.done",
+        "response_status": "completed",
+        "chat_finish_reason": "stop"
+      },
+      {
+        "type": "response.incomplete",
+        "response_status": "incomplete",
+        "chat_finish_reason": "length"
+      }
+    ],
+    "failure": [
+      "response.failed"
+    ]
+  },
+  "text_events": {
+    "delta": "response.output_text.delta",
+    "done": "response.output_text.done"
+  },
+  "content_part_events": [
+    "response.content_part.added",
+    "response.content_part.done"
+  ],
+  "annotation_events": [
+    "response.output_text.annotation.added"
+  ],
+  "reasoning_events": [
+    "response.reasoning_summary_part.added",
+    "response.reasoning_summary_part.done",
+    "response.reasoning_summary_text.delta",
+    "response.reasoning_summary_text.done",
+    "response.reasoning_text.delta",
+    "response.reasoning_text.done"
+  ],
+  "refusal_events": [
+    "response.refusal.delta",
+    "response.refusal.done"
+  ],
+  "function_events": [
+    "response.output_item.added",
+    "response.function_call_arguments.delta",
+    "response.function_call_arguments.done"
+  ]
+}

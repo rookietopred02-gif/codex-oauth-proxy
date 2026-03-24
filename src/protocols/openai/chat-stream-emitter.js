@@ -1,4 +1,5 @@
 import { createOpenAIChatCompletionStream } from "../../http/openai-chat-stream.js";
+import { isResponsesSuccessTerminalEventType } from "./responses-contract.js";
 
 export function createOpenAIChatCompletionStreamEmitter({
   upstream = null,
@@ -22,6 +23,8 @@ export function createOpenAIChatCompletionStreamEmitter({
   let finalUsage = null;
   let finalized = false;
   const functionCallsByItemId = new Map();
+  const outputTextByKey = new Map();
+  const refusalTextByKey = new Map();
   const reasoningByKey = new Map();
 
   const emitToolCallChunk = (toolCallIndex, callId, name, argumentsDelta) => {
@@ -42,20 +45,43 @@ export function createOpenAIChatCompletionStreamEmitter({
     stream.emitReasoningDelta(deltaText);
   };
 
-  const emitTrackedReasoningDelta = (key, text, { final = false } = {}) => {
+  const emitTrackedStringDelta = (stateMap, key, text, emitDelta, { final = false } = {}) => {
     const normalizedText = typeof text === "string" ? text : "";
     if (!normalizedText) return;
 
-    const state = reasoningByKey.get(key) || { emittedLength: 0 };
+    const state = stateMap.get(key) || { emittedText: "" };
     let deltaText = normalizedText;
     if (final) {
-      if (normalizedText.length <= state.emittedLength) return;
-      deltaText = normalizedText.slice(state.emittedLength);
+      if (normalizedText === state.emittedText) return;
+      if (state.emittedText.length > 0 && !normalizedText.startsWith(state.emittedText)) {
+        state.emittedText = normalizedText;
+        stateMap.set(key, state);
+        return;
+      }
+      deltaText = normalizedText.slice(state.emittedText.length);
+      state.emittedText = normalizedText;
+    } else {
+      state.emittedText += deltaText;
     }
+    if (!deltaText) {
+      stateMap.set(key, state);
+      return;
+    }
+    stateMap.set(key, state);
+    emitDelta(deltaText);
+  };
+
+  const emitTrackedToolArgumentsDone = (tracked, finalArguments) => {
+    const normalizedArguments = typeof finalArguments === "string" ? finalArguments : "";
+    if (!tracked || !normalizedArguments) return;
+    if (tracked.arguments.length > 0 && !normalizedArguments.startsWith(tracked.arguments)) {
+      tracked.arguments = normalizedArguments;
+      return;
+    }
+    const deltaText = normalizedArguments.slice(tracked.arguments.length);
+    tracked.arguments = normalizedArguments;
     if (!deltaText) return;
-    state.emittedLength += deltaText.length;
-    reasoningByKey.set(key, state);
-    emitReasoningDelta(deltaText);
+    emitToolCallChunk(tracked.toolCallIndex, tracked.callId, undefined, deltaText);
   };
 
   const mapUsage = (usage) => {
@@ -83,16 +109,19 @@ export function createOpenAIChatCompletionStreamEmitter({
       }
     }
 
-    if (!emittedToolCalls) {
-      const toolCalls = extractAssistantToolCallsFromResponse(completedResponse);
-      for (const toolCall of toolCalls) {
-        emitToolCallChunk(
-          toolCallCounter++,
-          toolCall.id,
-          toolCall.function?.name,
-          toolCall.function?.arguments || ""
-        );
+    const toolCalls = extractAssistantToolCallsFromResponse(completedResponse);
+    for (const toolCall of toolCalls) {
+      const tracked = [...functionCallsByItemId.values()].find((item) => item.callId === toolCall.id) || null;
+      if (tracked) {
+        emitTrackedToolArgumentsDone(tracked, toolCall.function?.arguments || "");
+        continue;
       }
+      emitToolCallChunk(
+        toolCallCounter++,
+        toolCall.id,
+        toolCall.function?.name,
+        toolCall.function?.arguments || ""
+      );
     }
 
     const usage = mapUsage(completedResponse?.usage);
@@ -121,9 +150,11 @@ export function createOpenAIChatCompletionStreamEmitter({
         event.type === "response.reasoning_summary_text.delta" ||
         event.type === "response.reasoning_summary_part.added"
       ) {
-        emitTrackedReasoningDelta(
+        emitTrackedStringDelta(
+          reasoningByKey,
           reasoningKey,
-          event.type === "response.reasoning_summary_text.delta" ? event.delta : event.part?.text
+          event.type === "response.reasoning_summary_text.delta" ? event.delta : event.part?.text,
+          emitReasoningDelta
         );
         return;
       }
@@ -132,16 +163,55 @@ export function createOpenAIChatCompletionStreamEmitter({
         event.type === "response.reasoning_summary_text.done" ||
         event.type === "response.reasoning_summary_part.done"
       ) {
-        emitTrackedReasoningDelta(
+        emitTrackedStringDelta(
+          reasoningByKey,
           reasoningKey,
           event.type === "response.reasoning_summary_text.done" ? event.text : event.part?.text,
+          emitReasoningDelta,
           { final: true }
         );
         return;
       }
 
+      if (event.type === "response.reasoning_text.delta" || event.type === "response.reasoning_text.done") {
+        const reasoningTextKey =
+          `${typeof event?.item_id === "string" ? event.item_id : ""}:` +
+          `${Number.isInteger(event?.content_index) ? event.content_index : 0}`;
+        emitTrackedStringDelta(
+          reasoningByKey,
+          reasoningTextKey,
+          event.type.endsWith(".done") ? event.text : event.delta,
+          emitReasoningDelta,
+          { final: event.type.endsWith(".done") }
+        );
+        return;
+      }
+
       if (event.type === "response.output_text.delta" || event.type === "response.output_text.done") {
-        emitTextDelta(event.type.endsWith(".done") ? event.text : event.delta);
+        const outputTextKey =
+          `${typeof event?.item_id === "string" ? event.item_id : ""}:` +
+          `${Number.isInteger(event?.content_index) ? event.content_index : 0}`;
+        emitTrackedStringDelta(
+          outputTextByKey,
+          outputTextKey,
+          event.type.endsWith(".done") ? event.text : event.delta,
+          emitTextDelta,
+          { final: event.type.endsWith(".done") }
+        );
+        return;
+      }
+
+      if (event.type === "response.refusal.delta" || event.type === "response.refusal.done") {
+        const refusalKey =
+          `${typeof event?.item_id === "string" ? event.item_id : ""}:` +
+          `${Number.isInteger(event?.content_index) ? event.content_index : 0}`;
+        emitTrackedStringDelta(
+          refusalTextByKey,
+          refusalKey,
+          event.type.endsWith(".done") ? event.refusal : event.delta,
+          emitTextDelta,
+          { final: event.type.endsWith(".done") }
+        );
         return;
       }
 
@@ -170,18 +240,18 @@ export function createOpenAIChatCompletionStreamEmitter({
       if (event.type === "response.function_call_arguments.done") {
         const tracked = event.item_id ? functionCallsByItemId.get(event.item_id) : null;
         if (!tracked) return;
-        if (!tracked.arguments && typeof event.arguments === "string") {
-          tracked.arguments = event.arguments;
-          emitToolCallChunk(tracked.toolCallIndex, tracked.callId, tracked.name, tracked.arguments);
-        }
+        emitTrackedToolArgumentsDone(tracked, event.arguments);
         return;
       }
 
-      if (event.type === "response.completed" || event.type === "response.done") {
+      if (isResponsesSuccessTerminalEventType(event.type)) {
         finalizeFromCompleted(event.response);
       }
     },
     finalizeFromCompleted,
+    isFinalized() {
+      return finalized;
+    },
     getUsage() {
       return finalUsage;
     }

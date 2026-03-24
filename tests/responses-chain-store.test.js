@@ -92,3 +92,182 @@ test("responses chain replay preserves exact tool outputs across turns", () => {
     false
   );
 });
+
+test("responses chain replay does not duplicate already-expanded history prefixes", () => {
+  const priorEntry = {
+    responseId: "resp_existing",
+    inputHistory: [
+      {
+        role: "user",
+        content: [{ type: "input_text", text: "Create the debug file." }]
+      },
+      {
+        type: "function_call",
+        call_id: "call_read",
+        name: "read_file",
+        arguments: "{\"path\":\"debug_camoufox_test.go\"}"
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_read",
+        output: "{\"content\":\"package main\"}"
+      }
+    ]
+  };
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_existing",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Create the debug file." }]
+        },
+        {
+          type: "function_call",
+          call_id: "call_read",
+          name: "read_file",
+          arguments: "{\"path\":\"debug_camoufox_test.go\"}"
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_read",
+          output: "{\"content\":\"package main\"}"
+        },
+        {
+          type: "function_call",
+          call_id: "call_edit",
+          name: "apply_patch",
+          arguments: "{\"patch\":\"*** Begin Patch\"}"
+        }
+      ]
+    },
+    priorEntry
+  );
+
+  assert.deepEqual(expanded.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Create the debug file." }]
+    },
+    {
+      type: "function_call",
+      call_id: "call_read",
+      name: "read_file",
+      arguments: "{\"path\":\"debug_camoufox_test.go\"}"
+    },
+    {
+      type: "function_call_output",
+      call_id: "call_read",
+      output: "{\"content\":\"package main\"}"
+    },
+    {
+      type: "function_call",
+      call_id: "call_edit",
+      name: "apply_patch",
+      arguments: "{\"patch\":\"*** Begin Patch\"}"
+    }
+  ]);
+});
+
+test("responses chain replay preserves reasoning items untouched", () => {
+  const entry = buildResponsesChainEntry(
+    {
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Use the prior reasoning." }]
+        }
+      ]
+    },
+    {
+      id: "resp_reasoning",
+      output: [
+        {
+          id: "rs_1",
+          type: "reasoning",
+          encrypted_content: "enc_123",
+          summary: [{ type: "summary_text", text: "first pass" }]
+        }
+      ]
+    }
+  );
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_reasoning",
+      input: [{ type: "function_call_output", call_id: "call_1", output: "{\"ok\":true}" }]
+    },
+    entry
+  );
+
+  assert.deepEqual(expanded.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Use the prior reasoning." }]
+    },
+    {
+      id: "rs_1",
+      type: "reasoning",
+      encrypted_content: "enc_123",
+      summary: [{ type: "summary_text", text: "first pass" }]
+    },
+    { type: "function_call_output", call_id: "call_1", output: "{\"ok\":true}" }
+  ]);
+});
+
+test("responses chain replay does not inherit prior request defaults", () => {
+  const entry = buildResponsesChainEntry(
+    {
+      model: "gpt-5.4",
+      instructions: "First turn instructions",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "First turn." }]
+        }
+      ]
+    },
+    {
+      id: "resp_defaults",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Done." }]
+        }
+      ]
+    }
+  );
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_defaults",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Second turn." }]
+        }
+      ]
+    },
+    entry
+  );
+
+  assert.equal(Object.hasOwn(expanded, "instructions"), false);
+  assert.equal(expanded.previous_response_id, undefined);
+  assert.deepEqual(expanded.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "First turn." }]
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Done." }]
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Second turn." }]
+    }
+  ]);
+});

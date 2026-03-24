@@ -13,6 +13,10 @@ import {
   toChatUsageFromNormalizedTokenUsage
 } from "../../http/token-usage.js";
 import { createOpenAIChatCompletionStreamEmitter } from "./chat-stream-emitter.js";
+import {
+  isResponsesFailureEventType,
+  isResponsesSuccessTerminalEventType
+} from "./responses-contract.js";
 
 function isRecordObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -49,9 +53,22 @@ export function createOpenAIResponsesCompatHelpers(context) {
     };
   }
 
+  function buildResponsesFailureResult(event) {
+    const message =
+      event?.response?.error?.message ||
+      event?.error?.message ||
+      event?.message ||
+      "Upstream response failed.";
+    return {
+      message: String(message || "Upstream response failed."),
+      statusCode: Number(event?.response?.status_code || event?.status_code || 502) || 502
+    };
+  }
+
   function normalizeResponsesReasoningItem(item) {
     if (!isRecordObject(item) || item.type !== "reasoning") return null;
     const summary = [];
+    const content = [];
     for (const part of Array.isArray(item.summary) ? item.summary : []) {
       if (!isRecordObject(part) || part.type !== "summary_text") continue;
       summary.push({
@@ -59,32 +76,66 @@ export function createOpenAIResponsesCompatHelpers(context) {
         text: typeof part.text === "string" ? part.text : ""
       });
     }
-    return {
+    for (const part of Array.isArray(item.content) ? item.content : []) {
+      if (!isRecordObject(part) || part.type !== "reasoning_text") continue;
+      content.push({
+        type: "reasoning_text",
+        text: typeof part.text === "string" ? part.text : ""
+      });
+    }
+    const normalized = {
       ...(typeof item.id === "string" && item.id.length > 0 ? { id: item.id } : {}),
       type: "reasoning",
-      summary
+      summary: []
     };
+    if (typeof item.encrypted_content === "string" && item.encrypted_content.length > 0) {
+      normalized.encrypted_content = item.encrypted_content;
+    }
+    if (summary.length > 0) {
+      normalized.summary = summary;
+    }
+    if (content.length > 0) {
+      normalized.content = content;
+    }
+    return normalized;
   }
 
-  function normalizeResponsesOutputMessageItem(item) {
-    if (!isRecordObject(item) || item.type !== "message" || item.role !== "assistant") return null;
-    const content = [];
-    for (const chunk of Array.isArray(item.content) ? item.content : []) {
-      if (!isRecordObject(chunk)) continue;
+  function normalizeResponsesMessageContentPart(chunk) {
+    if (!isRecordObject(chunk)) return null;
+    if (chunk.type === "output_text") {
       const text =
         typeof chunk.text === "string"
           ? chunk.text
           : typeof chunk.output_text === "string"
             ? chunk.output_text
             : "";
-      if (!text) continue;
       const normalizedChunk = {
         type: "output_text",
         text
       };
-      if (Array.isArray(chunk.annotations) && chunk.annotations.length > 0) {
+      if (Array.isArray(chunk.annotations)) {
         normalizedChunk.annotations = chunk.annotations;
       }
+      return normalizedChunk;
+    }
+    if (chunk.type === "refusal") {
+      const refusalText =
+        typeof chunk.refusal === "string" ? chunk.refusal : typeof chunk.text === "string" ? chunk.text : "";
+      return {
+        type: "output_text",
+        text: refusalText,
+        annotations: []
+      };
+    }
+    return null;
+  }
+
+  function normalizeResponsesOutputMessageItem(item) {
+    if (!isRecordObject(item) || item.type !== "message" || item.role !== "assistant") return null;
+    const content = [];
+    for (const chunk of Array.isArray(item.content) ? item.content : []) {
+      const normalizedChunk = normalizeResponsesMessageContentPart(chunk);
+      if (!normalizedChunk) continue;
       content.push(normalizedChunk);
     }
     return {
@@ -153,15 +204,14 @@ export function createOpenAIResponsesCompatHelpers(context) {
     const state = {
       completed: null,
       failed: null,
-      sawTerminalEvent: false,
+      sawSuccessTerminalEvent: false,
       usage: null,
       responseId: "",
       responseModel: "",
       responseStatus: "",
       output: [],
       outputIndexById: new Map(),
-      functionCallByItemId: new Map(),
-      reasoningByItemId: new Map()
+      functionCallByItemId: new Map()
     };
 
     const upsertOutputItem = (item) => {
@@ -189,12 +239,11 @@ export function createOpenAIResponsesCompatHelpers(context) {
         const existing = state.output[state.outputIndexById.get(itemId)];
         if (existing?.type === "reasoning") {
           if (!Array.isArray(existing.summary)) existing.summary = [];
+          if (!Array.isArray(existing.content)) existing.content = [];
           return existing;
         }
       }
-      const item = upsertOutputItem({ ...(itemId ? { id: itemId } : {}), type: "reasoning", summary: [] });
-      if (itemId) state.reasoningByItemId.set(itemId, item);
-      return item;
+      return upsertOutputItem({ ...(itemId ? { id: itemId } : {}), type: "reasoning", summary: [], content: [] });
     };
 
     const ensureReasoningSummaryPart = (itemId, summaryIndex = 0) => {
@@ -209,16 +258,56 @@ export function createOpenAIResponsesCompatHelpers(context) {
       return item.summary[summaryIndex];
     };
 
-    const appendAssistantText = (itemId, text) => {
-      if (typeof text !== "string" || text.length === 0) return;
+    const ensureAssistantTextPart = (itemId = "", contentIndex = 0) => {
       const message = ensureAssistantMessage(itemId);
       if (!Array.isArray(message.content)) message.content = [];
-      const lastChunk = message.content[message.content.length - 1];
-      if (lastChunk?.type === "output_text" && typeof lastChunk.text === "string") {
-        lastChunk.text += text;
-        return;
+      while (message.content.length <= contentIndex) {
+        message.content.push({ type: "output_text", text: "", annotations: [] });
       }
-      message.content.push({ type: "output_text", text });
+      const existing = message.content[contentIndex];
+      if (!isRecordObject(existing) || existing.type !== "output_text") {
+        message.content[contentIndex] = { type: "output_text", text: "", annotations: [] };
+      } else if (!Array.isArray(existing.annotations)) {
+        existing.annotations = [];
+      }
+      return message.content[contentIndex];
+    };
+
+    const ensureReasoningTextPart = (itemId = "", contentIndex = 0) => {
+      const reasoning = ensureReasoningItem(itemId);
+      if (!Array.isArray(reasoning.content)) reasoning.content = [];
+      while (reasoning.content.length <= contentIndex) {
+        reasoning.content.push({ type: "reasoning_text", text: "" });
+      }
+      const existing = reasoning.content[contentIndex];
+      if (!isRecordObject(existing) || existing.type !== "reasoning_text") {
+        reasoning.content[contentIndex] = { type: "reasoning_text", text: "" };
+      }
+      return reasoning.content[contentIndex];
+    };
+
+    const appendAssistantText = (itemId, contentIndex, text) => {
+      if (typeof text !== "string" || text.length === 0) return;
+      const part = ensureAssistantTextPart(itemId, contentIndex);
+      part.text += text;
+    };
+
+    const finalizeAssistantText = (itemId, contentIndex, text) => {
+      if (typeof text !== "string" || text.length === 0) return;
+      const part = ensureAssistantTextPart(itemId, contentIndex);
+      part.text = text;
+    };
+
+    const appendReasoningText = (itemId, contentIndex, text) => {
+      if (typeof text !== "string" || text.length === 0) return;
+      const part = ensureReasoningTextPart(itemId, contentIndex);
+      part.text += text;
+    };
+
+    const finalizeReasoningText = (itemId, contentIndex, text) => {
+      if (typeof text !== "string" || text.length === 0) return;
+      const part = ensureReasoningTextPart(itemId, contentIndex);
+      part.text = text;
     };
 
     for (const line of rawText.split(/\r?\n/)) {
@@ -241,24 +330,16 @@ export function createOpenAIResponsesCompatHelpers(context) {
       if (typeof parsed?.response?.model === "string" && parsed.response.model.length > 0) state.responseModel = parsed.response.model;
       if (typeof parsed?.response?.status === "string" && parsed.response.status.length > 0) state.responseStatus = parsed.response.status;
 
-      if (parsed.type === "response.completed" || parsed.type === "response.done") {
-        state.sawTerminalEvent = true;
+      if (isResponsesSuccessTerminalEventType(parsed.type)) {
+        state.sawSuccessTerminalEvent = true;
         if (parsed.response && typeof parsed.response === "object") {
           state.completed = parsed.response;
         }
         continue;
       }
 
-      if (parsed.type === "response.failed") {
-        const message =
-          parsed?.response?.error?.message ||
-          parsed?.error?.message ||
-          parsed?.message ||
-          "Upstream response failed.";
-        state.failed = {
-          message: String(message || "Upstream response failed."),
-          statusCode: Number(parsed?.response?.status_code || parsed?.status_code || 502) || 502
-        };
+      if (isResponsesFailureEventType(parsed.type)) {
+        state.failed = buildResponsesFailureResult(parsed);
         continue;
       }
 
@@ -266,9 +347,6 @@ export function createOpenAIResponsesCompatHelpers(context) {
         const reasoningItem = normalizeResponsesReasoningItem(parsed.item);
         if (reasoningItem) {
           upsertOutputItem(reasoningItem);
-          if (typeof parsed?.item?.id === "string" && parsed.item.id.length > 0) {
-            state.reasoningByItemId.set(parsed.item.id, reasoningItem);
-          }
           continue;
         }
         const messageItem = normalizeResponsesOutputMessageItem(parsed.item);
@@ -291,18 +369,89 @@ export function createOpenAIResponsesCompatHelpers(context) {
         continue;
       }
 
+      if (parsed.type === "response.content_part.added" || parsed.type === "response.content_part.done") {
+        if (typeof parsed.item_id !== "string" || parsed.item_id.length === 0) continue;
+        if (!isRecordObject(parsed.part)) continue;
+        const contentIndex = Number.isInteger(parsed.content_index) ? parsed.content_index : 0;
+
+        if (parsed.part.type === "output_text") {
+          const part = ensureAssistantTextPart(parsed.item_id, contentIndex);
+          if (typeof parsed.part.text === "string") {
+            part.text = parsed.part.text;
+          }
+          if (Array.isArray(parsed.part.annotations)) {
+            part.annotations = parsed.part.annotations;
+          }
+          continue;
+        }
+
+        if (parsed.part.type === "refusal") {
+          const part = ensureAssistantTextPart(parsed.item_id, contentIndex);
+          if (typeof parsed.part.refusal === "string") {
+            part.text = parsed.part.refusal;
+          }
+          continue;
+        }
+
+        if (parsed.part.type === "reasoning_text") {
+          const part = ensureReasoningTextPart(parsed.item_id, contentIndex);
+          if (typeof parsed.part.text === "string") {
+            part.text = parsed.part.text;
+          }
+        }
+        continue;
+      }
+
       if (parsed.type === "response.output_text.delta") {
         appendAssistantText(
           typeof parsed.item_id === "string" ? parsed.item_id : "",
+          Number.isInteger(parsed.content_index) ? parsed.content_index : 0,
           typeof parsed.delta === "string" ? parsed.delta : ""
         );
         continue;
       }
 
       if (parsed.type === "response.output_text.done") {
+        finalizeAssistantText(
+          typeof parsed.item_id === "string" ? parsed.item_id : "",
+          Number.isInteger(parsed.content_index) ? parsed.content_index : 0,
+          typeof parsed.text === "string" ? parsed.text : ""
+        );
+        continue;
+      }
+
+      if (parsed.type === "response.output_text.annotation.added") {
+        if (typeof parsed.item_id !== "string" || parsed.item_id.length === 0) continue;
+        if (!isRecordObject(parsed.annotation)) continue;
+        const contentIndex = Number.isInteger(parsed.content_index) ? parsed.content_index : 0;
+        const annotationIndex =
+          Number.isInteger(parsed.annotation_index) && parsed.annotation_index >= 0
+            ? parsed.annotation_index
+            : null;
+        const part = ensureAssistantTextPart(parsed.item_id, contentIndex);
+        if (!Array.isArray(part.annotations)) part.annotations = [];
+        if (annotationIndex === null) {
+          part.annotations.push(parsed.annotation);
+        } else {
+          part.annotations[annotationIndex] = parsed.annotation;
+        }
+        continue;
+      }
+
+      if (parsed.type === "response.refusal.delta") {
         appendAssistantText(
           typeof parsed.item_id === "string" ? parsed.item_id : "",
-          typeof parsed.text === "string" ? parsed.text : ""
+          Number.isInteger(parsed.content_index) ? parsed.content_index : 0,
+          typeof parsed.delta === "string" ? parsed.delta : ""
+        );
+        continue;
+      }
+
+      if (parsed.type === "response.refusal.done") {
+        finalizeAssistantText(
+          typeof parsed.item_id === "string" ? parsed.item_id : "",
+          Number.isInteger(parsed.content_index) ? parsed.content_index : 0,
+          typeof parsed.refusal === "string" ? parsed.refusal : ""
         );
         continue;
       }
@@ -315,9 +464,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
           isRecordObject(parsed.part) && parsed.part.type === "summary_text" && typeof parsed.part.text === "string"
             ? parsed.part.text
             : "";
-        if (parsed.type.endsWith(".added")) {
-          if (nextText) part.text = nextText;
-        } else if (nextText && nextText.length >= part.text.length) {
+        if (nextText) {
           part.text = nextText;
         }
         continue;
@@ -337,7 +484,25 @@ export function createOpenAIResponsesCompatHelpers(context) {
         const summaryIndex = Number.isInteger(parsed.summary_index) ? parsed.summary_index : 0;
         const part = ensureReasoningSummaryPart(parsed.item_id, summaryIndex);
         const doneText = typeof parsed.text === "string" ? parsed.text : "";
-        if (doneText && doneText.length >= part.text.length) part.text = doneText;
+        if (doneText) part.text = doneText;
+        continue;
+      }
+
+      if (parsed.type === "response.reasoning_text.delta") {
+        appendReasoningText(
+          typeof parsed.item_id === "string" ? parsed.item_id : "",
+          Number.isInteger(parsed.content_index) ? parsed.content_index : 0,
+          typeof parsed.delta === "string" ? parsed.delta : ""
+        );
+        continue;
+      }
+
+      if (parsed.type === "response.reasoning_text.done") {
+        finalizeReasoningText(
+          typeof parsed.item_id === "string" ? parsed.item_id : "",
+          Number.isInteger(parsed.content_index) ? parsed.content_index : 0,
+          typeof parsed.text === "string" ? parsed.text : ""
+        );
         continue;
       }
 
@@ -354,14 +519,15 @@ export function createOpenAIResponsesCompatHelpers(context) {
         const tracked =
           typeof parsed.item_id === "string" ? state.functionCallByItemId.get(parsed.item_id) : null;
         if (!tracked) continue;
-        if (typeof tracked.arguments === "string" && tracked.arguments.length > 0) continue;
-        tracked.arguments = typeof parsed.arguments === "string" ? parsed.arguments : "";
+        if (typeof parsed.arguments === "string") {
+          tracked.arguments = parsed.arguments;
+        }
       }
     }
 
     return {
       completed:
-        state.completed || (state.sawTerminalEvent ? buildSyntheticCompletedResponseFromSseState(state) : null),
+        state.completed || (state.sawSuccessTerminalEvent ? buildSyntheticCompletedResponseFromSseState(state) : null),
       failed: state.failed || null
     };
   }
@@ -415,10 +581,10 @@ export function createOpenAIResponsesCompatHelpers(context) {
         usage,
         event?.response?.usage || event?.message?.usage || event?.usage || event?.usageMetadata || null
       );
-      if (event.type === "response.failed") {
+      if (isResponsesFailureEventType(event.type)) {
         throw new Error(event.response?.error?.message || event.error?.message || event.message || "Codex response failed.");
       }
-      if (event.type === "response.completed" || event.type === "response.done") {
+      if (isResponsesSuccessTerminalEventType(event.type)) {
         sawTerminalEvent = true;
         if (event.response && typeof event.response === "object") {
           completed = event.response;
@@ -453,7 +619,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
       if (!session.isClosed() && buffer.trim().length > 0) handleBlock(buffer);
 
       if (!session.isClosed() && requireCompletion && !sawTerminalEvent) {
-        throw new Error("Upstream SSE ended before response.completed event.");
+        throw new Error("Upstream SSE ended before a terminal response event.");
       }
 
       if (!completed && sawTerminalEvent && rawSse) {
@@ -485,7 +651,29 @@ export function createOpenAIResponsesCompatHelpers(context) {
     let rawSse = "";
     let usage = null;
     let completed = null;
+    let failed = null;
     let sawTerminalEvent = false;
+    let responseId = "";
+    const seenTerminalEventKeys = new Set();
+
+    const buildTerminalEventKey = (parsed) => {
+      if (!parsed || typeof parsed !== "object") return "";
+      const type = typeof parsed.type === "string" ? parsed.type : "";
+      if (!type) return "";
+      const responseId =
+        typeof parsed?.response?.id === "string" && parsed.response.id.length > 0
+          ? parsed.response.id
+          : "";
+      const status =
+        typeof parsed?.response?.status === "string" && parsed.response.status.length > 0
+          ? parsed.response.status
+          : "";
+      const message =
+        type === "response.failed"
+          ? String(parsed?.response?.error?.message || parsed?.error?.message || parsed?.message || "")
+          : "";
+      return `${type}:${responseId}:${status}:${message}`;
+    };
 
     const handleSseBlock = (block) => {
       if (!block || typeof block !== "string") return;
@@ -504,7 +692,29 @@ export function createOpenAIResponsesCompatHelpers(context) {
           usage,
           parsed?.response?.usage || parsed?.message?.usage || parsed?.usage || parsed?.usageMetadata || null
         );
-        if (parsed.type === "response.completed" || parsed.type === "response.done") {
+        if (typeof parsed?.response?.id === "string" && parsed.response.id.length > 0) {
+          responseId = parsed.response.id;
+        }
+        if (isResponsesFailureEventType(parsed.type)) {
+          const terminalEventKey = buildTerminalEventKey(parsed);
+          if (terminalEventKey) {
+            if (seenTerminalEventKeys.has(terminalEventKey)) {
+              continue;
+            }
+            seenTerminalEventKeys.add(terminalEventKey);
+          }
+          sawTerminalEvent = true;
+          failed = buildResponsesFailureResult(parsed);
+          continue;
+        }
+        if (isResponsesSuccessTerminalEventType(parsed.type)) {
+          const terminalEventKey = buildTerminalEventKey(parsed);
+          if (terminalEventKey) {
+            if (seenTerminalEventKeys.has(terminalEventKey)) {
+              continue;
+            }
+            seenTerminalEventKeys.add(terminalEventKey);
+          }
           sawTerminalEvent = true;
           if (parsed.response && typeof parsed.response === "object") {
             completed = parsed.response;
@@ -538,11 +748,37 @@ export function createOpenAIResponsesCompatHelpers(context) {
 
       buffer += decoder.decode();
       if (!session.isClosed() && buffer.trim().length > 0) handleSseBlock(buffer);
-      if (!completed && sawTerminalEvent && rawSse) {
-        completed = parseResponsesResultFromSse(rawSse).completed;
+      if (!session.isClosed() && !sawTerminalEvent) {
+        const err = new Error("Upstream SSE ended before a terminal response event.");
+        if (session.hasWritten()) {
+          session.write(
+            `event: response.failed\ndata: ${JSON.stringify({
+              type: "response.failed",
+              response: {
+                ...(responseId ? { id: responseId } : {}),
+                status: "failed",
+                error: {
+                  message: err.message
+                }
+              }
+            })}\n\n`
+          );
+          session.end();
+        }
+        throw err;
+      }
+      if (rawSse) {
+        const parsedResult = parseResponsesResultFromSse(rawSse);
+        if (!completed) {
+          completed = parsedResult.completed;
+        }
+        if (!failed) {
+          failed = parsedResult.failed;
+        }
       }
       session.end();
       return {
+        failed,
         completed,
         usage: toChatUsageFromNormalizedTokenUsage(usage || completed?.usage || null)
       };
@@ -573,7 +809,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
         onBlock(block) {
           const event = parseSseJsonEventBlock(block);
           if (!event) return;
-          if (event.type === "response.failed") {
+          if (isResponsesFailureEventType(event.type)) {
             throw new Error(
               event.response?.error?.message ||
                 event.error?.message ||
@@ -584,8 +820,8 @@ export function createOpenAIResponsesCompatHelpers(context) {
           emitter.emitEvent(event);
         }
       });
-      if (!emitter.session.isClosed() && !emitter.getUsage() && !res.writableEnded) {
-        throw new Error("Upstream SSE ended before response.completed event.");
+      if (!emitter.session.isClosed() && !emitter.isFinalized() && !res.writableEnded) {
+        throw new Error("Upstream SSE ended before a terminal response event.");
       }
       if (!emitter.session.isClosed()) {
         emitter.session.end();
@@ -674,6 +910,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
 
   function convertResponsesToChatCompletion(response) {
     const content = extractAssistantTextFromResponse(response);
+    const annotations = extractAssistantAnnotationsFromResponse(response);
     const toolCalls = extractAssistantToolCallsFromResponse(response);
     const nowSec = Math.floor(Date.now() / 1000);
     const usage = response?.usage || {};
@@ -688,6 +925,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
         message: {
           role: "assistant",
           content: content.length > 0 ? content : null,
+          ...(annotations.length > 0 ? { annotations } : {}),
           ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {})
         },
         finish_reason: toolCalls.length > 0 ? "tool_calls" : mapResponsesStatusToChatFinishReason(response?.status)
@@ -700,16 +938,39 @@ export function createOpenAIResponsesCompatHelpers(context) {
     };
   }
 
-  function extractAssistantTextFromResponse(response) {
+  function extractAssistantMessageContentParts(response) {
     const output = Array.isArray(response?.output) ? response.output : [];
     const parts = [];
     for (const item of output) {
       if (!item || item.type !== "message" || item.role !== "assistant") continue;
       for (const chunk of Array.isArray(item.content) ? item.content : []) {
-        if (chunk?.type === "output_text" && typeof chunk.text === "string") parts.push(chunk.text);
+        const normalizedChunk = normalizeResponsesMessageContentPart(chunk);
+        if (normalizedChunk) parts.push(normalizedChunk);
       }
     }
-    return parts.join("");
+    return parts;
+  }
+
+  function extractAssistantTextFromResponse(response) {
+    return extractAssistantMessageContentParts(response)
+      .filter((part) => part.type === "output_text")
+      .map((part) => part.text)
+      .join("");
+  }
+
+  function extractAssistantRefusalFromResponse(response) {
+    void response;
+    return "";
+  }
+
+  function extractAssistantAnnotationsFromResponse(response) {
+    return extractAssistantMessageContentParts(response)
+      .filter((part) => part.type === "output_text" && Array.isArray(part.annotations))
+      .flatMap((part) => part.annotations);
+  }
+
+  function extractAssistantDisplayTextFromResponse(response) {
+    return extractAssistantTextFromResponse(response);
   }
 
   function extractAssistantToolCallsFromResponse(response) {
@@ -751,6 +1012,9 @@ export function createOpenAIResponsesCompatHelpers(context) {
     mergeNormalizedTokenUsage,
     extractTokenUsageFromAuditResponse,
     convertResponsesToChatCompletion,
+    extractAssistantAnnotationsFromResponse,
+    extractAssistantDisplayTextFromResponse,
+    extractAssistantRefusalFromResponse,
     extractAssistantTextFromResponse,
     extractAssistantToolCallsFromResponse,
     mapResponsesStatusToChatFinishReason

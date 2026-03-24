@@ -9,6 +9,7 @@ export function createCodexOAuthResponsesHelpers(context) {
     parseResponsesResultFromSse,
     extractCompletedResponseFromJson,
     normalizeTokenUsage,
+    extractAssistantDisplayTextFromResponse,
     extractAssistantTextFromResponse,
     mapResponsesStatusToChatFinishReason,
     resolveReasoningEffort,
@@ -21,6 +22,10 @@ export function createCodexOAuthResponsesHelpers(context) {
     maybeCaptureCodexUsageFromHeaders,
     toResponsesInputFromChatMessages
   } = context;
+  const getAssistantDisplayTextFromResponse =
+    typeof extractAssistantDisplayTextFromResponse === "function"
+      ? extractAssistantDisplayTextFromResponse
+      : extractAssistantTextFromResponse;
 
   function createMissingAccountIdError() {
     const err = new Error("Could not extract chatgpt_account_id from OAuth token.");
@@ -536,7 +541,7 @@ export function createCodexOAuthResponsesHelpers(context) {
     };
     return {
       model: result.model,
-      text: extractAssistantTextFromResponse(result.completed),
+      text: getAssistantDisplayTextFromResponse(result.completed),
       finishReason: mapResponsesStatusToChatFinishReason(result.completed?.status),
       usage,
       authAccountId: result.authAccountId

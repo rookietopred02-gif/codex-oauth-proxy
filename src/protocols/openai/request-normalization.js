@@ -8,6 +8,110 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     applyReasoningEffortDefaults
   } = context;
 
+  function ensureResponsesInclude(requestBody, value) {
+    if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) return;
+    const existing = Array.isArray(requestBody.include)
+      ? requestBody.include.filter((item) => typeof item === "string" && item.length > 0)
+      : [];
+    if (existing.includes(value)) {
+      requestBody.include = existing;
+      return;
+    }
+    requestBody.include = [...existing, value];
+  }
+
+  function normalizeResponsesReasoningItem(item) {
+    if (!item || typeof item !== "object" || Array.isArray(item) || item.type !== "reasoning") {
+      return null;
+    }
+
+    const normalized = {
+      type: "reasoning",
+      summary: []
+    };
+    if (typeof item.id === "string" && item.id.length > 0) {
+      normalized.id = item.id;
+    }
+    if (typeof item.encrypted_content === "string" && item.encrypted_content.length > 0) {
+      normalized.encrypted_content = item.encrypted_content;
+    }
+
+    const summary = [];
+    for (const part of Array.isArray(item.summary) ? item.summary : []) {
+      if (!part || typeof part !== "object" || Array.isArray(part) || part.type !== "summary_text") continue;
+      summary.push({
+        type: "summary_text",
+        text: typeof part.text === "string" ? part.text : ""
+      });
+    }
+    if (summary.length > 0) {
+      normalized.summary = summary;
+    }
+
+    return normalized.id || normalized.encrypted_content || summary.length > 0 ? normalized : null;
+  }
+
+  function normalizeResponsesMessageContentPart(part, role) {
+    if (!part || typeof part !== "object" || Array.isArray(part)) return null;
+    if (role === "assistant" && part.type === "refusal") {
+      const text =
+        typeof part.refusal === "string" ? part.refusal : typeof part.text === "string" ? part.text : "";
+      return { type: "output_text", text };
+    }
+    return structuredClone(part);
+  }
+
+  function normalizeResponsesMessageItem(item) {
+    if (!item || typeof item !== "object" || Array.isArray(item) || item.type !== "message") {
+      return null;
+    }
+    const normalized = structuredClone(item);
+    if (Array.isArray(item.content)) {
+      normalized.content = item.content
+        .map((part) => normalizeResponsesMessageContentPart(part, item.role))
+        .filter(Boolean);
+    }
+    return normalized;
+  }
+
+  function normalizeResponsesInputItem(item) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+
+    const itemType = typeof item.type === "string" ? item.type : "";
+    if (itemType === "reasoning") {
+      return normalizeResponsesReasoningItem(item);
+    }
+    if (itemType === "message") {
+      return normalizeResponsesMessageItem(item);
+    }
+    if (itemType) {
+      return structuredClone(item);
+    }
+
+    if (item.role === "system" || item.role === "developer") {
+      return structuredClone(item);
+    }
+
+    if (item.role === "assistant" || item.role === "user" || item.role === "tool") {
+      return toResponsesInputFromChatMessages([item])[0] || null;
+    }
+
+    return structuredClone(item);
+  }
+
+  function normalizeResponsesInput(input) {
+    if (typeof input === "string") {
+      return [{ role: "user", content: [{ type: "input_text", text: input }] }];
+    }
+    if (Array.isArray(input)) {
+      const normalized = input.map((item) => normalizeResponsesInputItem(item)).filter(Boolean);
+      return normalized.length > 0
+        ? normalized
+        : [{ role: "user", content: [{ type: "input_text", text: "" }] }];
+    }
+    return input;
+  }
+
   function normalizeCodexResponsesRequestBody(rawBody, options = {}) {
     if (!rawBody || rawBody.length === 0) {
       const modelRoute = resolveCodexCompatibleRoute(config.codex.defaultModel);
@@ -15,7 +119,6 @@ export function createOpenAIRequestNormalizationHelpers(context) {
       const json = {
         model: modelRoute.mappedModel,
         stream: true,
-        store: false,
         instructions: fallbackInstructions,
         reasoning: {
           effort: resolveReasoningEffort(undefined, {
@@ -65,15 +168,16 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     const modelRoute = resolveCodexCompatibleRoute(normalized.model || config.codex.defaultModel);
     normalized.model = modelRoute.mappedModel;
     normalized.stream = true;
-    if (normalized.store === undefined) normalized.store = false;
     if (!normalized.instructions || String(normalized.instructions).trim() === "") {
       normalized.instructions = config.codex.defaultInstructions;
     }
     if (normalized.input === undefined && Array.isArray(normalized.messages)) {
       normalized.input = toResponsesInputFromChatMessages(normalized.messages);
+    } else {
+      normalized.input = normalizeResponsesInput(normalized.input);
     }
-    if (Array.isArray(normalized.input)) {
-      normalized.input = toResponsesInputFromChatMessages(normalized.input);
+    if (normalized.store === false) {
+      ensureResponsesInclude(normalized, "reasoning.encrypted_content");
     }
     applyReasoningEffortDefaults(normalized, normalized.reasoning_effort, {
       input: normalized.input,
@@ -166,7 +270,14 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     for (const raw of messages) {
       if (!raw || typeof raw !== "object") continue;
       if (raw.type === "function_call" || raw.type === "function_call_output") {
-        converted.push(raw);
+        converted.push(structuredClone(raw));
+        continue;
+      }
+      if (raw.type === "reasoning") {
+        const normalizedReasoning = normalizeResponsesReasoningItem(raw);
+        if (normalizedReasoning) {
+          converted.push(normalizedReasoning);
+        }
         continue;
       }
       if (raw.role === "system" || raw.role === "developer") continue;
@@ -225,7 +336,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
       if (item.type === "refusal" && role === "assistant") {
         const refusalText =
           typeof item.refusal === "string" ? item.refusal : typeof item.text === "string" ? item.text : "";
-        if (refusalText) converted.push({ type: "refusal", refusal: refusalText });
+        if (refusalText) converted.push({ type: targetType, text: refusalText });
         continue;
       }
       if (role !== "assistant" && (item.type === "image_url" || item.type === "input_image")) {

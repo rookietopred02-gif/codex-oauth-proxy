@@ -1,3 +1,5 @@
+import { isResponsesCreatePath } from "../protocols/openai/responses-contract.js";
+
 export function createProxyRouteHandlers(context) {
   const {
     config,
@@ -44,7 +46,7 @@ export function createProxyRouteHandlers(context) {
     maybeCaptureCodexUsageFromHeaders,
     maybeMarkCodexPoolSuccess,
     truncate,
-    extractCompletedResponseFromSse,
+    parseResponsesResultFromSse,
     convertResponsesToChatCompletion,
     pipeCodexSseAsChatCompletions,
     pipeSseAndCaptureTokenUsage,
@@ -108,9 +110,10 @@ export function createProxyRouteHandlers(context) {
     };
   }
 
-  function resolvePinnedCodexPoolEntryId(req, target, rawBody) {
+  function resolvePinnedCodexPoolEntryId(req, target, rawBody, pathname = "") {
     if (config.authMode !== "codex-oauth" || !isCodexMultiAccountEnabled() || !isCodexPoolRetryEnabled()) return "";
     if (!target || target.endpointKind !== "responses") return "";
+    if (!isResponsesCreatePath(pathname) || req.method !== "POST") return "";
     if (req.method === "GET" || req.method === "HEAD") return "";
     const previousResponseId = extractPreviousResponseId(rawBody);
     if (!previousResponseId) return "";
@@ -372,8 +375,12 @@ export function createProxyRouteHandlers(context) {
         parsedRequestBody = undefined;
       }
     }
-    const previousResponseId = target?.endpointKind === "responses" ? extractPreviousResponseId(requestBody) : "";
-    const preferredPoolEntryId = resolvePinnedCodexPoolEntryId(req, target, requestBody);
+    const isResponsesCreateRequest =
+      target?.endpointKind === "responses" &&
+      req.method === "POST" &&
+      isResponsesCreatePath(incoming.pathname);
+    const previousResponseId = isResponsesCreateRequest ? extractPreviousResponseId(requestBody) : "";
+    const preferredPoolEntryId = resolvePinnedCodexPoolEntryId(req, target, requestBody, incoming.pathname);
 
     let auth;
     let releaseAuthLease = () => {};
@@ -437,7 +444,7 @@ export function createProxyRouteHandlers(context) {
 
         try {
           if (config.upstreamMode === "codex-chatgpt") {
-            if (target.endpointKind === "responses") {
+            if (target.endpointKind === "responses" && isResponsesCreateRequest) {
               const normalized = normalizeCodexResponsesRequestBody(body, {
                 parsedBody: parsedRequestBody
               });
@@ -465,7 +472,7 @@ export function createProxyRouteHandlers(context) {
                   return;
                 }
               }
-              upstreamAuditBody = normalized.json || upstreamAuditBody;
+              upstreamAuditBody = normalizedResponsesRequest || normalized.json || upstreamAuditBody;
               headers.set("content-type", "application/json");
             } else if (target.endpointKind === "chat-completions") {
               const normalized = normalizeChatCompletionsRequestBody(body, {
@@ -489,7 +496,11 @@ export function createProxyRouteHandlers(context) {
           return;
         }
 
-        init.body = body;
+        if (body.length > 0) {
+          init.body = body;
+        } else {
+          delete init.body;
+        }
         noteUpstreamRequestAudit(
           res,
           upstreamAuditBody,
@@ -561,10 +572,6 @@ export function createProxyRouteHandlers(context) {
 
       await maybeCaptureCodexUsageFromHeaders(auth, upstream.headers, "response").catch(() => {});
 
-      if (upstream.ok) {
-        await maybeMarkCodexPoolSuccess(auth).catch(() => {});
-      }
-
       if (collectCompletedResponseAsJson) {
         let raw;
         try {
@@ -606,8 +613,28 @@ export function createProxyRouteHandlers(context) {
           return;
         }
 
-        const completed = context.extractCompletedResponseFromSse(raw);
+        const parsedResponse = parseResponsesResultFromSse(raw);
+        if (parsedResponse.failed) {
+          await maybeMarkCodexPoolFailure(
+            auth,
+            `Upstream SSE response failed on ${req.method} ${req.originalUrl}: ${truncate(parsedResponse.failed.message, 200)}`,
+            parsedResponse.failed.statusCode
+          ).catch(() => {});
+          res.status(parsedResponse.failed.statusCode || 502).json({
+            error: "upstream_response_failed",
+            message: parsedResponse.failed.message,
+            retry_count: Number(res.locals?.upstreamRetryCount || 0)
+          });
+          return;
+        }
+
+        const completed = parsedResponse.completed;
         if (!completed) {
+          await maybeMarkCodexPoolFailure(
+            auth,
+            `Invalid upstream SSE on ${req.method} ${req.originalUrl}`,
+            502
+          ).catch(() => {});
           res.status(502).json({
             error: "invalid_upstream_sse",
             message: "Could not parse completed response from codex SSE stream."
@@ -616,6 +643,7 @@ export function createProxyRouteHandlers(context) {
         }
         rememberCodexResponseAffinity(completed, auth);
         rememberCodexResponseChain(completed, normalizedResponsesRequest);
+        await maybeMarkCodexPoolSuccess(auth).catch(() => {});
         if (responseShape === "chat-completions") {
           const converted = convertResponsesToChatCompletion(completed);
           converted.model = responseModel;
@@ -675,8 +703,14 @@ export function createProxyRouteHandlers(context) {
           if (streamResult?.usage) {
             res.locals.tokenUsage = streamResult.usage;
           }
+          await maybeMarkCodexPoolSuccess(auth).catch(() => {});
         } catch (err) {
           noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          await maybeMarkCodexPoolFailure(
+            auth,
+            `Invalid upstream SSE on ${req.method} ${req.originalUrl}: ${err.message}`,
+            502
+          ).catch(() => {});
           if (!res.headersSent) {
             res.status(502).json({
               error: "invalid_upstream_sse",
@@ -718,12 +752,26 @@ export function createProxyRouteHandlers(context) {
           if (streamResult?.usage) {
             res.locals.tokenUsage = streamResult.usage;
           }
+          if (streamResult?.failed) {
+            await maybeMarkCodexPoolFailure(
+              auth,
+              `Upstream SSE response failed on ${req.method} ${req.originalUrl}: ${truncate(streamResult.failed.message, 200)}`,
+              streamResult.failed.statusCode
+            ).catch(() => {});
+            return;
+          }
           if (target.endpointKind === "responses" && streamResult?.completed) {
             rememberCodexResponseAffinity(streamResult.completed, auth);
             rememberCodexResponseChain(streamResult.completed, normalizedResponsesRequest);
           }
+          await maybeMarkCodexPoolSuccess(auth).catch(() => {});
         } catch (err) {
           noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          await maybeMarkCodexPoolFailure(
+            auth,
+            `Invalid upstream SSE on ${req.method} ${req.originalUrl}: ${err.message}`,
+            502
+          ).catch(() => {});
           if (!res.headersSent) {
             res.status(502).json({
               error: "invalid_upstream_sse",
@@ -740,6 +788,9 @@ export function createProxyRouteHandlers(context) {
       }
 
       await pipeUpstreamBodyToResponse(upstream, res);
+      if (upstream.ok) {
+        await maybeMarkCodexPoolSuccess(auth).catch(() => {});
+      }
     } finally {
       releaseAuthLease();
     }

@@ -82,6 +82,25 @@ function createControllableReadableStream() {
   };
 }
 
+function collectGeminiText(writes) {
+  let text = "";
+  for (const chunk of writes) {
+    for (const line of String(chunk).split(/\r?\n/)) {
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6).trim();
+      if (!payload) continue;
+      const parsed = JSON.parse(payload);
+      const parts = parsed?.candidates?.[0]?.content?.parts || [];
+      for (const part of parts) {
+        if (typeof part?.text === "string") {
+          text += part.text;
+        }
+      }
+    }
+  }
+  return text;
+}
+
 function createHelpers(overrides = {}) {
   return createGeminiLocalCompatHelpers({
     config: {
@@ -166,6 +185,66 @@ test("Gemini native stream sends SSE deltas before Codex completion", async () =
   assert.match(output, /"finishReason":"STOP"/);
   assert.match(output, /"totalTokenCount":3/);
   assert.equal(res.writableEnded, true);
+});
+
+test("Gemini native stream treats output_text.done as the final text value", async () => {
+  const upstream = createControllableReadableStream();
+  const helpers = createHelpers({
+    async openCodexConversationStreamViaOAuth() {
+      return {
+        authAccountId: "acct_123",
+        upstream: { body: upstream.stream },
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    contents: [{ role: "user", parts: [{ text: "hello" }] }]
+  });
+  const res = createMockResponse();
+
+  const pending = helpers.handleGeminiNativeCompat(req, res);
+  upstream.enqueue('data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"hel"}\n\n');
+  upstream.enqueue('data: {"type":"response.output_text.done","item_id":"msg_1","text":"hello"}\n\n');
+  upstream.enqueue(
+    'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}\n\n'
+  );
+  upstream.close();
+  await pending;
+
+  assert.equal(collectGeminiText(res.writes), "hello");
+});
+
+test("Gemini native stream finalizes response.incomplete as MAX_TOKENS", async () => {
+  const upstream = createControllableReadableStream();
+  const helpers = createHelpers({
+    async openCodexConversationStreamViaOAuth() {
+      return {
+        authAccountId: "acct_123",
+        upstream: { body: upstream.stream },
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    contents: [{ role: "user", parts: [{ text: "hello" }] }]
+  });
+  const res = createMockResponse();
+
+  const pending = helpers.handleGeminiNativeCompat(req, res);
+  upstream.enqueue(
+    'data: {"type":"response.incomplete","response":{"status":"incomplete","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}}\n\n'
+  );
+  upstream.close();
+  await pending;
+
+  const output = res.writes.join("");
+  assert.equal(collectGeminiText(res.writes), "partial");
+  assert.match(output, /"finishReason":"MAX_TOKENS"/);
 });
 
 test("Gemini native stream falls back to JSON error when upstream fails before any delta", async () => {

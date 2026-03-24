@@ -242,6 +242,46 @@ test("Anthropic native stream falls back to JSON error when upstream fails befor
   });
 });
 
+test("Anthropic native stream finalizes response.incomplete", async () => {
+  const upstream = createControllableReadableStream();
+  const helpers = createHelpers({
+    mapResponsesStatusToChatFinishReason(status) {
+      return status === "incomplete" ? "length" : "stop";
+    },
+    mapOpenAIFinishReasonToAnthropic(reason) {
+      return reason === "length" ? "max_tokens" : "end_turn";
+    },
+    async openCodexResponsesStreamViaOAuth() {
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        upstream: { body: upstream.stream },
+        bufferedCompletion: null,
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    stream: true,
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  const pending = helpers.handleAnthropicNativeCompat(req, res);
+  upstream.enqueue(
+    'data: {"type":"response.incomplete","response":{"status":"incomplete","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}}\n\n'
+  );
+  upstream.close();
+  await pending;
+
+  const output = res.writes.join("");
+  assert.match(output, /event: message_stop/);
+  assert.match(output, /"stop_reason":"max_tokens"/);
+});
+
 test("Anthropic native stream rejects sessions without an SSE body", async () => {
   let failureArgs = null;
   const helpers = createHelpers({

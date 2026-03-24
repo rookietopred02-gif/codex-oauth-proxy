@@ -3,6 +3,10 @@ import {
   createSseSession,
   parseSseJsonEventBlock
 } from "../../http/sse-runtime.js";
+import {
+  isResponsesFailureEventType,
+  isResponsesSuccessTerminalEventType
+} from "../openai/responses-contract.js";
 
 export function createGeminiLocalCompatHelpers(context) {
   const {
@@ -152,7 +156,7 @@ export function createGeminiLocalCompatHelpers(context) {
 
     const reader = upstream.body.getReader();
     const idleTimeoutMs = Math.max(0, Number(config?.upstreamStreamIdleTimeoutMs || 0));
-    const seenTextItems = new Set();
+    const textStateByItemId = new Map();
     let emittedAnyPayload = false;
     let emittedTerminal = false;
     let finalUsage = null;
@@ -193,6 +197,29 @@ export function createGeminiLocalCompatHelpers(context) {
       });
     };
 
+    const emitTrackedTextDelta = (itemId, text, { final = false } = {}) => {
+      const normalizedText = typeof text === "string" ? text : "";
+      if (!normalizedText) return;
+
+      const key = itemId || "__default__";
+      const state = textStateByItemId.get(key) || { emittedText: "" };
+      let deltaText = normalizedText;
+      if (final) {
+        if (state.emittedText.length > 0 && !normalizedText.startsWith(state.emittedText)) {
+          state.emittedText = normalizedText;
+          textStateByItemId.set(key, state);
+          return;
+        }
+        deltaText = normalizedText.slice(state.emittedText.length);
+        state.emittedText = normalizedText;
+      } else {
+        state.emittedText += deltaText;
+      }
+      textStateByItemId.set(key, state);
+      if (!deltaText) return;
+      emitTextDelta(deltaText);
+    };
+
     const emitCompleted = (response) => {
       const usage = toOpenAIUsage(response?.usage);
       finalUsage = usage;
@@ -225,7 +252,7 @@ export function createGeminiLocalCompatHelpers(context) {
       const event = parseSseJsonEventBlock(block);
       if (!event) return;
 
-      if (event.type === "response.failed") {
+      if (isResponsesFailureEventType(event.type)) {
         const err = new Error(event.response?.error?.message || "Codex response failed.");
         err.statusCode = Number(event.response?.status_code || event.status_code || 502) || 502;
         throw err;
@@ -233,24 +260,20 @@ export function createGeminiLocalCompatHelpers(context) {
 
       if (event.type === "response.output_text.delta") {
         const deltaText = typeof event.delta === "string" ? event.delta : "";
-        if (deltaText && typeof event.item_id === "string" && event.item_id.length > 0) {
-          seenTextItems.add(event.item_id);
-        }
-        emitTextDelta(deltaText);
+        emitTrackedTextDelta(typeof event.item_id === "string" ? event.item_id : "", deltaText);
         return;
       }
 
       if (event.type === "response.output_text.done") {
-        const text = typeof event.text === "string" ? event.text : "";
-        const itemId = typeof event.item_id === "string" ? event.item_id : "";
-        if (text && (!itemId || !seenTextItems.has(itemId))) {
-          if (itemId) seenTextItems.add(itemId);
-          emitTextDelta(text);
-        }
+        emitTrackedTextDelta(
+          typeof event.item_id === "string" ? event.item_id : "",
+          typeof event.text === "string" ? event.text : "",
+          { final: true }
+        );
         return;
       }
 
-      if (event.type === "response.completed" || event.type === "response.done") {
+      if (isResponsesSuccessTerminalEventType(event.type)) {
         if (!emittedAnyPayload) {
           emitTextDelta(extractBufferedAssistantText(event.response));
         }
@@ -267,7 +290,7 @@ export function createGeminiLocalCompatHelpers(context) {
       });
 
       if (!session.isClosed() && !emittedTerminal) {
-        throw new Error("Upstream SSE ended before response.completed event.");
+        throw new Error("Upstream SSE ended before a terminal response event.");
       }
 
       if (!session.isClosed()) {

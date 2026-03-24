@@ -169,7 +169,14 @@ export function sendOpenAICompletionAsSse(
 
   try {
     stream.emitAssistantRole();
-    stream.emitTextDelta(completion?.choices?.[0]?.message?.content || "");
+    const message = completion?.choices?.[0]?.message || {};
+    const text =
+      typeof message?.content === "string" && message.content.length > 0
+        ? message.content
+        : typeof message?.refusal === "string"
+          ? message.refusal
+          : "";
+    stream.emitTextDelta(text);
     stream.finish({
       finishReason: completion?.choices?.[0]?.finish_reason || "stop",
       usage: completion?.usage || null

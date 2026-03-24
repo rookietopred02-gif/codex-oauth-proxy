@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createOpenAIResponsesCompatHelpers } from "../src/protocols/openai/responses-compat.js";
+import {
+  RESPONSES_FAILURE_TERMINAL_EVENT_TYPES,
+  RESPONSES_SUCCESS_TERMINAL_EVENT_TYPES
+} from "../src/protocols/openai/responses-contract.js";
+
+const responsesEventContract = JSON.parse(
+  readFileSync(new URL("./fixtures/openai-responses-events.json", import.meta.url), "utf8")
+);
 
 function createHelpers() {
   return createOpenAIResponsesCompatHelpers({
@@ -42,7 +51,7 @@ function createMockResponse() {
     },
     write(chunk) {
       this.headersSent = true;
-      this.writes.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+      this.writes.push(Buffer.from(chunk).toString("utf8"));
       return true;
     },
     end(chunk) {
@@ -125,6 +134,48 @@ function createRejectingReaderUpstream(error) {
   };
 }
 
+function collectChatDeltaContent(writes) {
+  let text = "";
+  let reasoning = "";
+  const toolArguments = [];
+
+  for (const chunk of writes) {
+    for (const line of chunk.split(/\r?\n/)) {
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6).trim();
+      if (!payload || payload === "[DONE]") continue;
+      const parsed = JSON.parse(payload);
+      const delta = parsed?.choices?.[0]?.delta || {};
+      if (typeof delta.content === "string") {
+        text += delta.content;
+      }
+      if (typeof delta.reasoning_content === "string") {
+        reasoning += delta.reasoning_content;
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const toolCall of delta.tool_calls) {
+          const index = Number(toolCall?.index || 0);
+          const nextArguments = typeof toolCall?.function?.arguments === "string" ? toolCall.function.arguments : "";
+          toolArguments[index] = `${toolArguments[index] || ""}${nextArguments}`;
+        }
+      }
+    }
+  }
+
+  return { text, reasoning, toolArguments };
+}
+
+test("Responses event fixture matches the runtime terminal event contract", () => {
+  assert.deepEqual(
+    responsesEventContract.terminal_events.success.map((entry) => entry.type),
+    RESPONSES_SUCCESS_TERMINAL_EVENT_TYPES
+  );
+  assert.deepEqual(
+    responsesEventContract.terminal_events.failure,
+    RESPONSES_FAILURE_TERMINAL_EVENT_TYPES
+  );
+});
+
 test("pipeCodexSseAsChatCompletions leaves headers uncommitted on early upstream failure", async () => {
   const helpers = createHelpers();
   const res = createMockResponse();
@@ -165,8 +216,10 @@ test("pipeSseAndCaptureTokenUsage does not arm heartbeats before the first upstr
   global.clearInterval = (() => {});
 
   try {
-    const result = await helpers.pipeSseAndCaptureTokenUsage(upstream, res);
-    assert.deepEqual(result, { completed: null, usage: null });
+    await assert.rejects(
+      () => helpers.pipeSseAndCaptureTokenUsage(upstream, res),
+      /Upstream SSE ended before a terminal response event/
+    );
     assert.equal(intervalCalls, 0);
     assert.deepEqual(res.writes, []);
   } finally {
@@ -196,6 +249,96 @@ test("pipeSseAndCaptureTokenUsage returns the completed response for raw respons
   });
   assert.equal(res.headersSent, true);
   assert.equal(res.writes.length > 0, true);
+});
+
+test("pipeSseAndCaptureTokenUsage ignores duplicated terminal SSE events", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const completedEvent =
+    'data: {"type":"response.completed","response":{"id":"resp_dup","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}\n\n';
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      completedEvent,
+      completedEvent
+    ])
+  };
+
+  const result = await helpers.pipeSseAndCaptureTokenUsage(upstream, res);
+
+  assert.equal(result.completed?.id, "resp_dup");
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 1,
+    completion_tokens: 2,
+    total_tokens: 3
+  });
+  assert.equal(
+    res.writes.filter((chunk) => chunk.includes('"type":"response.completed"')).length,
+    2
+  );
+});
+
+test("pipeSseAndCaptureTokenUsage accepts response.incomplete as a terminal event", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      'data: {"type":"response.incomplete","response":{"id":"resp_incomplete","status":"incomplete","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}}\n\n'
+    ])
+  };
+
+  const result = await helpers.pipeSseAndCaptureTokenUsage(upstream, res);
+
+  assert.equal(result.failed, null);
+  assert.equal(result.completed?.id, "resp_incomplete");
+  assert.equal(result.completed?.status, "incomplete");
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 1,
+    completion_tokens: 2,
+    total_tokens: 3
+  });
+});
+
+for (const scenario of responsesEventContract.terminal_events.success) {
+  test(`parseResponsesResultFromSse accepts ${scenario.type} as a success terminal`, () => {
+    const helpers = createHelpers();
+    const parsed = helpers.parseResponsesResultFromSse(
+      `data: ${JSON.stringify({
+        type: scenario.type,
+        response: {
+          id: "resp_terminal",
+          status: scenario.response_status,
+          usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        }
+      })}\n\n`
+    );
+
+    assert.equal(parsed.failed, null);
+    assert.equal(parsed.completed?.id, "resp_terminal");
+    assert.equal(parsed.completed?.status, scenario.response_status);
+  });
+}
+
+test("pipeSseAndCaptureTokenUsage captures response.done as a terminal event", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      'data: {"type":"response.done","response":{"id":"resp_done","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n'
+    ])
+  };
+
+  const result = await helpers.pipeSseAndCaptureTokenUsage(upstream, res);
+
+  assert.equal(result.failed, null);
+  assert.equal(result.completed?.id, "resp_done");
+  assert.equal(result.completed?.status, "completed");
 });
 
 test("pipeSseAndCaptureTokenUsage rejects pre-body upstream aborts", async () => {
@@ -280,13 +423,34 @@ test("pipeCodexSseAsChatCompletions streams text deltas before response.complete
 
   const result = await pending;
   const finalOutput = res.writes.join("");
-  assert.match(finalOutput, /"content":"lo"/);
+  const deltas = collectChatDeltaContent(res.writes);
+  assert.equal(deltas.text, "hello");
   assert.match(finalOutput, /\[DONE\]/);
   assert.deepEqual(result.usage, {
     prompt_tokens: 1,
     completion_tokens: 2,
     total_tokens: 3
   });
+});
+
+test("pipeCodexSseAsChatCompletions treats output_text.done as the final text value", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = createControllableReadableStream();
+
+  const pending = helpers.pipeCodexSseAsChatCompletions({ body: upstream.stream }, res, "gpt-5.4");
+
+  upstream.enqueue('data: {"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"hel"}\n\n');
+  upstream.enqueue('data: {"type":"response.output_text.done","item_id":"msg_1","content_index":0,"text":"hello"}\n\n');
+  upstream.enqueue(
+    'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}\n\n'
+  );
+  upstream.close();
+
+  await pending;
+
+  const deltas = collectChatDeltaContent(res.writes);
+  assert.equal(deltas.text, "hello");
 });
 
 test("pipeCodexSseAsChatCompletions emits reasoning progress before final text", async () => {
@@ -313,8 +477,123 @@ test("pipeCodexSseAsChatCompletions emits reasoning progress before final text",
 
   await pending;
   const finalOutput = res.writes.join("");
-  assert.match(finalOutput, /"content":"done"/);
+  const deltas = collectChatDeltaContent(res.writes);
+  assert.equal(deltas.reasoning, "step 1");
+  assert.equal(deltas.text, "done");
   assert.match(finalOutput, /\[DONE\]/);
+});
+
+test("pipeCodexSseAsChatCompletions emits reasoning_text deltas", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      'data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning","summary":[],"content":[]}}\n\n',
+      'data: {"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"think"}\n\n',
+      'data: {"type":"response.reasoning_text.done","item_id":"rs_1","output_index":0,"content_index":0,"text":"thinking"}\n\n',
+      'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"id":"rs_1","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"thinking"}]},{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n'
+    ])
+  };
+
+  await helpers.pipeCodexSseAsChatCompletions(upstream, res, "gpt-5.4");
+
+  const deltas = collectChatDeltaContent(res.writes);
+  assert.equal(deltas.reasoning, "thinking");
+  assert.equal(deltas.text, "done");
+});
+
+test("pipeCodexSseAsChatCompletions finalizes response.incomplete with finish_reason length", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      'data: {"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"part"}\n\n',
+      'data: {"type":"response.incomplete","response":{"status":"incomplete","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}}\n\n'
+    ])
+  };
+
+  const result = await helpers.pipeCodexSseAsChatCompletions(upstream, res, "gpt-5.4");
+  const output = res.writes.join("");
+  const deltas = collectChatDeltaContent(res.writes);
+
+  assert.equal(deltas.text, "partial");
+  assert.match(output, /"finish_reason":"length"/);
+  assert.match(output, /\[DONE\]/);
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 1,
+    completion_tokens: 1,
+    total_tokens: 2
+  });
+});
+
+test("pipeCodexSseAsChatCompletions finalizes response.done with finish_reason stop", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      'data: {"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"done"}\n\n',
+      'data: {"type":"response.done","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n'
+    ])
+  };
+
+  const result = await helpers.pipeCodexSseAsChatCompletions(upstream, res, "gpt-5.4");
+  const output = res.writes.join("");
+  const deltas = collectChatDeltaContent(res.writes);
+
+  assert.equal(deltas.text, "done");
+  assert.match(output, /"finish_reason":"stop"/);
+  assert.match(output, /\[DONE\]/);
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 1,
+    completion_tokens: 1,
+    total_tokens: 2
+  });
+});
+
+test("pipeCodexSseAsChatCompletions emits the missing function arguments suffix on done", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"tool"}}\n\n',
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"a\\""}\n\n',
+      'data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{\\"a\\":1}"}\n\n',
+      'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"tool","arguments":"{\\"a\\":1}"}]}}\n\n'
+    ])
+  };
+
+  await helpers.pipeCodexSseAsChatCompletions(upstream, res, "gpt-5.4");
+
+  const deltas = collectChatDeltaContent(res.writes);
+  assert.deepEqual(deltas.toolArguments, ['{"a":1}']);
+});
+
+test("pipeCodexSseAsChatCompletions maps refusal deltas to chat text chunks", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      'data: {"type":"response.output_item.added","item":{"id":"msg_ref","type":"message","role":"assistant","content":[]}}\n\n',
+      'data: {"type":"response.content_part.added","item_id":"msg_ref","output_index":0,"content_index":0,"part":{"type":"refusal","refusal":""}}\n\n',
+      'data: {"type":"response.refusal.delta","item_id":"msg_ref","output_index":0,"content_index":0,"delta":"No"}\n\n',
+      'data: {"type":"response.refusal.done","item_id":"msg_ref","output_index":0,"content_index":0,"refusal":"Nope"}\n\n',
+      'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"id":"msg_ref","type":"message","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"Nope"}]}]}}\n\n'
+    ])
+  };
+
+  const result = await helpers.pipeCodexSseAsChatCompletions(upstream, res, "gpt-5.4");
+  const output = res.writes.join("");
+  const deltas = collectChatDeltaContent(res.writes);
+
+  assert.equal(deltas.text, "Nope");
+  assert.match(output, /"content":"No"/);
+  assert.match(output, /"finish_reason":"stop"/);
+  assert.match(output, /\[DONE\]/);
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 1,
+    completion_tokens: 1,
+    total_tokens: 2
+  });
 });
 
 test("pipeCodexSseAsChatCompletions rejects truncated streams after partial output", async () => {
@@ -330,7 +609,7 @@ test("pipeCodexSseAsChatCompletions rejects truncated streams after partial outp
 
   await assert.rejects(
     () => pending,
-    /Upstream SSE ended before response.completed event/
+    /Upstream SSE ended before a terminal response event/
   );
 
   const output = res.writes.join("");
@@ -363,4 +642,49 @@ test("pipeCodexSseAsChatCompletions parses SSE events split across reader chunks
 
   await pending;
   assert.match(res.writes.join(""), /\[DONE\]/);
+});
+
+test("convertResponsesToChatCompletion flattens refusal into content text", () => {
+  const helpers = createHelpers();
+  const response = {
+    id: "resp_refusal",
+    status: "completed",
+    output: [
+      {
+        id: "msg_ref",
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "refusal",
+            refusal: "Policy says no."
+          }
+        ]
+      },
+      {
+        id: "msg_text",
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: "Annotated text",
+            annotations: [{ type: "file_citation", file_id: "file_1", filename: "x.txt", index: 0 }]
+          }
+        ]
+      }
+    ],
+    usage: {
+      input_tokens: 2,
+      output_tokens: 3,
+      total_tokens: 5
+    }
+  };
+
+  const converted = helpers.convertResponsesToChatCompletion(response);
+  assert.equal(converted.choices[0].message.content, "Policy says no.Annotated text");
+  assert.equal(Object.hasOwn(converted.choices[0].message, "refusal"), false);
+  assert.deepEqual(converted.choices[0].message.annotations, [
+    { type: "file_citation", file_id: "file_1", filename: "x.txt", index: 0 }
+  ]);
 });

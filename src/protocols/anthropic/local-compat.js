@@ -6,6 +6,10 @@ import {
   createSseSession,
   parseSseJsonEventBlock
 } from "../../http/sse-runtime.js";
+import {
+  isResponsesFailureEventType,
+  isResponsesSuccessTerminalEventType
+} from "../openai/responses-contract.js";
 
 const SUPPORTED_LOCAL_IMAGE_EXTENSIONS = new Map([
   [".png", "image/png"],
@@ -2199,13 +2203,13 @@ export function createAnthropicLocalCompatHelpers(context) {
         return;
       }
 
-      if (event.type === "response.failed") {
+      if (isResponsesFailureEventType(event.type)) {
         const err = new Error(event.response?.error?.message || "Codex response failed.");
         err.statusCode = Number(event.response?.status_code || event.status_code || 502) || 502;
         throw err;
       }
 
-      if (event.type === "response.completed" || event.type === "response.done") {
+      if (isResponsesSuccessTerminalEventType(event.type)) {
         finalResponse = event.response && typeof event.response === "object" ? event.response : finalResponse;
       }
     };
@@ -2219,7 +2223,7 @@ export function createAnthropicLocalCompatHelpers(context) {
       });
 
       if (!session.isClosed() && !finalResponse) {
-        throw new Error("Upstream SSE ended before response.completed event.");
+        throw new Error("Upstream SSE ended before a terminal response event.");
       }
 
       const allFunctionCalls = Array.isArray(finalResponse?.output)
