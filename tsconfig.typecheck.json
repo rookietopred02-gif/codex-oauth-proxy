@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM"],
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/services/cloudflared-service.js",
+    "src/services/config-service.js",
+    "src/services/desktop-runtime-service.js",
+    "public/dashboard/api.js",
+    "public/dashboard/auth.js",
+    "public/dashboard/public-access.js"
+  ]
+}

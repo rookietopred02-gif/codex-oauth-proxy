@@ -3,6 +3,7 @@ import path from "node:path";
 
 const DEFAULT_MAX_ENTRIES = 120;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 50;
+const RECENT_REQUESTS_STORAGE_VERSION = 2;
 
 function clampMaxEntries(value) {
   const parsed = Number(value);
@@ -13,6 +14,35 @@ function clampMaxEntries(value) {
 function normalizeRow(row) {
   if (!row || typeof row !== "object" || Array.isArray(row)) return null;
   return { ...row };
+}
+
+function sanitizeRowFileSegment(value, fallback = "request") {
+  const text = String(value || "").trim();
+  const normalized = text.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
+  return normalized || fallback;
+}
+
+function getRowsDirectory(filePath) {
+  return `${filePath}.rows`;
+}
+
+function buildRowFileName(index, row) {
+  const idSegment = sanitizeRowFileSegment(row?.id, `row_${index + 1}`);
+  return `${String(index + 1).padStart(4, "0")}_${idSegment}.json`;
+}
+
+async function removeStaleRowFiles(rowsDirectory, keepFileNames) {
+  let existingFiles = [];
+  try {
+    existingFiles = await fs.readdir(rowsDirectory);
+  } catch {
+    return;
+  }
+  await Promise.all(
+    existingFiles
+      .filter((fileName) => !keepFileNames.has(fileName))
+      .map((fileName) => fs.rm(path.join(rowsDirectory, fileName), { force: true }).catch(() => {}))
+  );
 }
 
 export function normalizeRecentRequestsStore(payload, maxEntries = DEFAULT_MAX_ENTRIES) {
@@ -32,6 +62,7 @@ export function normalizeRecentRequestsStore(payload, maxEntries = DEFAULT_MAX_E
 
 export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_ENTRIES }) {
   const limit = clampMaxEntries(maxEntries);
+  const rowsDirectory = getRowsDirectory(filePath);
   let state = normalizeRecentRequestsStore([], limit);
   let persistChain = Promise.resolve();
   let persistTimer = null;
@@ -41,7 +72,29 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
 
   async function writeState() {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify(state, null, 2), "utf8");
+    await fs.mkdir(rowsDirectory, { recursive: true });
+
+    const keepFileNames = new Set();
+    const persistedRows = [];
+
+    for (const [index, row] of state.recentRequests.entries()) {
+      const rowFile = buildRowFileName(index, row);
+      keepFileNames.add(rowFile);
+      await fs.writeFile(path.join(rowsDirectory, rowFile), JSON.stringify(row, null, 2), "utf8");
+      persistedRows.push({
+        file: rowFile
+      });
+    }
+
+    await removeStaleRowFiles(rowsDirectory, keepFileNames);
+
+    const persistedState = {
+      storageVersion: RECENT_REQUESTS_STORAGE_VERSION,
+      updatedAt: state.updatedAt,
+      count: state.count,
+      recentRequests: persistedRows
+    };
+    await fs.writeFile(filePath, JSON.stringify(persistedState, null, 2), "utf8");
   }
 
   function ensurePendingFlush() {
@@ -101,7 +154,32 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
   async function load() {
     try {
       const raw = await fs.readFile(filePath, "utf8");
-      state = normalizeRecentRequestsStore(JSON.parse(raw), limit);
+      const parsed = JSON.parse(raw);
+      if (
+        Number(parsed?.storageVersion || 0) === RECENT_REQUESTS_STORAGE_VERSION &&
+        Array.isArray(parsed?.recentRequests)
+      ) {
+        const loadedRows = [];
+        for (const entry of parsed.recentRequests) {
+          const rowFile = typeof entry?.file === "string" ? entry.file.trim() : "";
+          if (!rowFile) continue;
+          try {
+            const rowRaw = await fs.readFile(path.join(rowsDirectory, rowFile), "utf8");
+            loadedRows.push(JSON.parse(rowRaw));
+          } catch {
+            continue;
+          }
+        }
+        state = normalizeRecentRequestsStore(
+          {
+            updatedAt: parsed?.updatedAt,
+            recentRequests: loadedRows
+          },
+          limit
+        );
+      } else {
+        state = normalizeRecentRequestsStore(parsed, limit);
+      }
     } catch {
       state = normalizeRecentRequestsStore([], limit);
     }

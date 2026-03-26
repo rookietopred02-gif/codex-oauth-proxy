@@ -92,6 +92,18 @@ export function registerAdminSettingsRoutes(app, context) {
       if (typeof body.autoLogoutExpiredAccounts === "boolean") {
         nextConfig.expiredAccountCleanup.enabled = body.autoLogoutExpiredAccounts;
       }
+      const runtimePortValue = body.runtimePort ?? body.publicAccessLocalPort;
+      if (runtimePortValue !== undefined) {
+        const parsed = parseNumberEnv(runtimePortValue, NaN, {
+          min: 1,
+          max: 65535,
+          integer: true
+        });
+        if (!Number.isFinite(parsed)) {
+          throw new Error("runtimePort must be a number between 1 and 65535.");
+        }
+        nextConfig.runtimePort = parsed;
+      }
       if (typeof body.publicAccessMode === "string") {
         const mode = String(body.publicAccessMode || "").trim().toLowerCase();
         if (mode !== "quick" && mode !== "auth") {
@@ -107,18 +119,6 @@ export function registerAdminSettingsRoutes(app, context) {
       }
       if (body.publicAccessAutoInstall !== undefined) {
         nextConfig.publicAccess.autoInstall = Boolean(body.publicAccessAutoInstall);
-      }
-      if (body.publicAccessLocalPort !== undefined) {
-        const parsed = parseNumberEnv(body.publicAccessLocalPort, NaN, {
-          min: 1,
-          max: 65535,
-          integer: true
-        });
-        if (!Number.isFinite(parsed)) {
-          throw new Error("publicAccessLocalPort must be a number between 1 and 65535.");
-        }
-        nextConfig.publicAccess.localPort = parsed;
-        nextCloudflaredRuntime.localPort = parsed;
       }
       if (body.publicAccessToken !== undefined) {
         nextConfig.publicAccess.defaultTunnelToken = String(body.publicAccessToken || "").trim();

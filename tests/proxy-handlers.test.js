@@ -27,6 +27,10 @@ function createMockRequest({ method, originalUrl, body }) {
 
 function createMockResponse() {
   const events = new EventEmitter();
+  const emitCompleted = () => {
+    events.emit("finish");
+    events.emit("close");
+  };
   return {
     locals: {},
     statusCode: 200,
@@ -55,13 +59,14 @@ function createMockResponse() {
     },
     end(chunk) {
       if (chunk !== undefined) {
-        this.write(chunk);
+        this.headersSent = true;
+        this.body += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : Buffer.from(chunk).toString("utf8");
       }
       this.headersSent = true;
       this.writableEnded = true;
       this.writableFinished = true;
       this.closed = true;
-      events.emit("close");
+      emitCompleted();
       return this;
     },
     send(payload) {
@@ -69,6 +74,7 @@ function createMockResponse() {
       this.writableEnded = true;
       this.writableFinished = true;
       this.body = Buffer.isBuffer(payload) ? payload.toString("utf8") : String(payload);
+      emitCompleted();
       return this;
     },
     json(payload) {
@@ -76,6 +82,11 @@ function createMockResponse() {
       this.writableEnded = true;
       this.writableFinished = true;
       this.jsonPayload = payload;
+      emitCompleted();
+      return this;
+    },
+    on(eventName, handler) {
+      events.on(eventName, handler);
       return this;
     },
     once(eventName, handler) {
@@ -89,7 +100,7 @@ function createMockResponse() {
   };
 }
 
-function createHandlers({ normalizeResponsesImpl, fetchImpl }) {
+function createHandlers({ normalizeResponsesImpl, fetchImpl, configOverrides = {}, contextOverrides = {} }) {
   return createProxyRouteHandlers({
     config: {
       upstreamMode: "codex-chatgpt",
@@ -97,7 +108,8 @@ function createHandlers({ normalizeResponsesImpl, fetchImpl }) {
       authMode: "codex-oauth",
       codex: {
         defaultModel: "gpt-5.4"
-      }
+      },
+      ...configOverrides
     },
     runtimeStats: {},
     recentRequestsStore: { append() {} },
@@ -271,7 +283,11 @@ function createHandlers({ normalizeResponsesImpl, fetchImpl }) {
     },
     getAuthModeHint() {
       return "";
-    }
+    },
+    nextRuntimeRequestSeq() {
+      return 1;
+    },
+    ...contextOverrides
   });
 }
 
@@ -330,6 +346,153 @@ test("POST /v1/responses applies create normalization before forwarding upstream
   assert.equal(normalizeRawBody, JSON.stringify(requestBody));
   assert.equal(capturedUrl, "https://example.test/codex/responses");
   assert.equal(Buffer.from(capturedInit.body).toString("utf8"), JSON.stringify(normalizedJson));
+});
+
+test("Responses WebSocket session helper rejects non-codex upstream modes", async () => {
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      return {
+        body: rawBody,
+        json: JSON.parse(rawBody.toString("utf8")),
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      throw new Error("should not reach upstream fetch");
+    },
+    configOverrides: {
+      upstreamMode: "gemini-v1beta"
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      handlers.openResponsesCreateProxySession(
+        {
+          method: "POST",
+          originalUrl: "/v1/responses",
+          url: "/v1/responses",
+          headers: {}
+        },
+        null,
+        {
+          originalUrl: "/v1/responses",
+          requestBody: Buffer.from(JSON.stringify({ model: "gpt-5.4", input: "hi" }), "utf8"),
+          parsedRequestBody: { model: "gpt-5.4", input: "hi" }
+        }
+      ),
+    /UPSTREAM_MODE=codex-chatgpt/
+  );
+});
+
+test("Responses create proxy session forwards previous_response_id without local replay", async () => {
+  let capturedInit = null;
+  let chainLookupCalls = 0;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      const json = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: Buffer.from(JSON.stringify(json), "utf8"),
+        json,
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl(_url, init) {
+      capturedInit = init;
+      return new Response("", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" }
+      });
+    },
+    contextOverrides: {
+      extractPreviousResponseId(rawBody) {
+        return JSON.parse(rawBody.toString("utf8")).previous_response_id || "";
+      },
+      codexResponsesChain: {
+        lookup() {
+          chainLookupCalls += 1;
+          return null;
+        },
+        remember() {}
+      }
+    }
+  });
+
+  const payload = {
+    model: "gpt-5.4",
+    previous_response_id: "resp_prev_123",
+    input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
+  };
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {}
+    },
+    createMockResponse(),
+    {
+      originalUrl: "/v1/responses",
+      requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+      parsedRequestBody: payload
+    }
+  );
+
+  assert.equal(chainLookupCalls, 0);
+  assert.deepEqual(session.normalizedResponsesRequest, payload);
+  assert.equal(Buffer.from(capturedInit.body).toString("utf8"), JSON.stringify(payload));
+  assert.equal(session.compatibilityHint, "");
+  session.release();
+});
+
+test("audit middleware preserves full packets without truncation even if limits are small", () => {
+  let capturedRow = null;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      return {
+        body: rawBody,
+        json: JSON.parse(rawBody.toString("utf8")),
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      throw new Error("not used");
+    },
+    contextOverrides: {
+      runtimeStats: { totalRequests: 0, okRequests: 0, errorRequests: 0 },
+      recentRequestsStore: {
+        append(row) {
+          capturedRow = row;
+          return { recentRequests: [row] };
+        }
+      },
+      runtimeAuditMaxBodyBytes: 4,
+      runtimeAuditMaxTextChars: 4,
+      formatPayloadForAudit(raw) {
+        if (Buffer.isBuffer(raw)) return raw.toString("utf8");
+        if (raw && typeof raw === "object") return JSON.stringify(raw);
+        return String(raw || "");
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { prompt: "abcdefghijklmnopqrstuvwxyz" }
+  });
+  const res = createMockResponse();
+
+  handlers.auditMiddleware(req, res, () => {});
+  res.setHeader("content-type", "text/plain");
+  res.write("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+  res.end();
+
+  assert.equal(capturedRow?.requestPacket, JSON.stringify({ prompt: "abcdefghijklmnopqrstuvwxyz" }));
+  assert.equal(capturedRow?.responsePacket, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
 });
 
 for (const route of responsesOpenApiContract.methods.filter((entry) => entry.expects_create_normalization === false)) {

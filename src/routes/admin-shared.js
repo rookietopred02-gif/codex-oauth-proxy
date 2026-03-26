@@ -16,6 +16,9 @@ export function buildAdminConfigSnapshot({
 }) {
   return {
     authMode: config.authMode,
+    runtimeHost: config.host,
+    activeRuntimePort: Number(config.port || 8787),
+    runtimePort: Number(config.runtimePort || config.port || 8787),
     upstreamMode: config.upstreamMode,
     upstreamBaseUrl: getActiveUpstreamBaseUrl(),
     defaultModel: config.codex.defaultModel,

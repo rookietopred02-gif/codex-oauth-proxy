@@ -194,6 +194,39 @@ test("pipeCodexSseAsChatCompletions leaves headers uncommitted on early upstream
   assert.deepEqual(res.writes, []);
 });
 
+test("parseResponsesResultFromSse treats error as a failure terminal event", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    'data: {"type":"error","error":{"code":"server_error","message":"upstream exploded"}}\n\n'
+  );
+
+  assert.equal(parsed.completed, null);
+  assert.deepEqual(parsed.failed, {
+    code: "server_error",
+    message: "upstream exploded",
+    statusCode: 502
+  });
+});
+
+test("pipeSseAndCaptureTokenUsage accepts error as a terminal failure event", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      'data: {"type":"error","error":{"code":"server_error","message":"upstream exploded"}}\n\n'
+    ])
+  };
+
+  const result = await helpers.pipeSseAndCaptureTokenUsage(upstream, res);
+
+  assert.equal(result.completed, null);
+  assert.deepEqual(result.failed, {
+    code: "server_error",
+    message: "upstream exploded",
+    statusCode: 502
+  });
+});
+
 test("pipeSseAndCaptureTokenUsage does not arm heartbeats before the first upstream chunk", async () => {
   const helpers = createHelpers();
   const res = createMockResponse();

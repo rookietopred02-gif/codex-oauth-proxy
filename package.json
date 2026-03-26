@@ -9,25 +9,33 @@
   "productName": "codex-pro-max",
   "scripts": {
     "start": "node src/server.js",
-    "desktop:dev": "electron .",
+    "desktop:dev": "node scripts/run-electron.mjs .",
     "build:runner": "node scripts/build-temp-mail-runner.mjs",
     "build:cloudflared": "node scripts/build-cloudflared-bundles.mjs",
     "build:desktop-resources": "npm run build:runner && npm run build:cloudflared",
     "dist:win": "npm run build:desktop-resources && electron-builder --win nsis --x64",
     "dist:mac": "npm run build:desktop-resources && electron-builder --mac dmg --universal",
     "dist:linux": "npm run build:desktop-resources && electron-builder --linux AppImage --x64",
-    "test": "node --test"
+    "lint": "node scripts/lint.mjs",
+    "format:check": "node scripts/check-format.mjs",
+    "typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
+    "test:smoke": "node --test tests/app-server.test.js tests/cloudflared-service.test.js tests/config-service.test.js tests/dashboard-auth.test.js tests/electron-runtime-paths.test.js tests/lifecycle-control.test.js",
+    "test": "node --test",
+    "check": "npm run lint && npm run format:check && npm run typecheck && npm run test:smoke"
   },
   "engines": {
     "node": ">=20.0.0"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@types/node": "^24.6.2",
     "electron": "^37.2.6",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.9.3"
   },
   "build": {
     "appId": "local.codexpromax.desktop",

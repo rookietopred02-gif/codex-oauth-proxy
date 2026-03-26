@@ -13,7 +13,7 @@ export const RESPONSES_SUCCESS_TERMINAL_EVENT_TYPES = Object.freeze([
   "response.incomplete"
 ]);
 
-export const RESPONSES_FAILURE_TERMINAL_EVENT_TYPES = Object.freeze(["response.failed"]);
+export const RESPONSES_FAILURE_TERMINAL_EVENT_TYPES = Object.freeze(["response.failed", "error"]);
 
 const RESPONSES_SUCCESS_TERMINAL_EVENT_TYPE_SET = new Set(RESPONSES_SUCCESS_TERMINAL_EVENT_TYPES);
 const RESPONSES_FAILURE_TERMINAL_EVENT_TYPE_SET = new Set(RESPONSES_FAILURE_TERMINAL_EVENT_TYPES);

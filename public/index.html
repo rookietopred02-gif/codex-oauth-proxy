@@ -868,6 +868,40 @@
         padding: 16px;
       }
 
+      .runtime-port-modal {
+        width: min(520px, 96vw);
+        max-height: min(86vh, 560px);
+      }
+
+      .runtime-port-modal-copy {
+        margin: 0;
+        color: #d6e4ff;
+        font-size: 12px;
+        line-height: 1.65;
+      }
+
+      .runtime-port-modal-copy strong {
+        color: #fff5d5;
+      }
+
+      .runtime-port-modal-note {
+        margin-top: 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(132, 171, 247, 0.18);
+        background: rgba(9, 16, 34, 0.48);
+        padding: 10px 12px;
+        color: #a9bbdf;
+        font-size: 11px;
+        line-height: 1.55;
+      }
+
+      .runtime-port-modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 16px;
+      }
+
       .req-detail-head {
         display: flex;
         align-items: center;
@@ -1063,38 +1097,72 @@
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 14px;
         background: linear-gradient(180deg, rgba(8, 15, 33, 0.56), rgba(6, 13, 28, 0.48));
-        padding: 12px;
+        padding: 14px;
         margin-bottom: 12px;
         box-shadow: inset 0 0 0 1px rgba(129, 160, 222, 0.06);
       }
 
       .preheat-panel h4 {
-        margin: 0 0 6px;
+        margin: 0;
         font-size: 11px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         color: #d9e4ff;
       }
 
+      .preheat-head {
+        display: grid;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+
+      .preheat-copy {
+        margin: 0;
+        color: #9fb4dc;
+        font-size: 11px;
+        line-height: 1.5;
+      }
+
       .preheat-grid {
         display: grid;
-        grid-template-columns: minmax(220px, 1fr) auto;
-        gap: 6px;
+        grid-template-columns: minmax(240px, 1fr) auto;
+        gap: 10px;
         align-items: end;
+      }
+
+      .preheat-control {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
       }
 
       .preheat-grid label {
         margin-bottom: 0;
       }
 
-      .preheat-grid input,
+      .preheat-grid .custom-select,
       .preheat-grid select {
         margin-bottom: 0;
       }
 
+      .preheat-grid .custom-select__trigger,
+      .preheat-grid > button {
+        min-height: 42px;
+        height: 42px;
+      }
+
+      .preheat-grid > button {
+        padding-inline: 16px;
+      }
+
+      .preheat-grid .custom-select__trigger {
+        border-radius: 12px;
+      }
+
       .preheat-status {
-        margin-top: 7px;
-        font-size: 10px;
+        margin-top: 10px;
+        font-size: 11px;
+        line-height: 1.45;
         font-family: "JetBrains Mono", monospace;
         color: var(--muted);
         white-space: pre-wrap;
@@ -1185,16 +1253,23 @@
 
       .inline-row {
         display: grid;
-        grid-template-columns: 1.3fr 1.3fr auto;
+        grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.3fr) auto;
         gap: 8px;
-        align-items: center;
+        align-items: stretch;
         position: relative;
         z-index: 6;
       }
 
       .inline-row select,
-      .inline-row input {
+      .inline-row input,
+      .inline-row .custom-select {
         margin-bottom: 0;
+      }
+
+      .inline-row .custom-select__trigger,
+      .inline-row > button {
+        min-height: 36px;
+        height: 36px;
       }
 
       .checkline {
@@ -1520,17 +1595,19 @@
 
       .runtime-control-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-        margin-top: 8px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 10px;
       }
 
       .runtime-heartbeat,
-      .runtime-language {
+      .runtime-language,
+      .runtime-port {
         margin-top: 0;
       }
 
-      .runtime-heartbeat input {
+      .runtime-heartbeat input,
+      .runtime-port input {
         margin-bottom: 0;
       }
 
@@ -1538,21 +1615,60 @@
         margin-bottom: 0;
       }
 
-      .runtime-subcard {
+      .runtime-port-note {
         margin-top: 10px;
+        border: 1px solid rgba(126, 156, 218, 0.2);
+        border-radius: 12px;
+        background: linear-gradient(180deg, rgba(8, 15, 33, 0.44), rgba(6, 12, 28, 0.34));
+        padding: 10px 12px;
+        color: #a9bbdf;
+        font-size: 11px;
+        line-height: 1.5;
+      }
+
+      .runtime-port-note.is-ok {
+        border-color: rgba(92, 240, 186, 0.22);
+        color: #b9ecd7;
+      }
+
+      .runtime-port-note.is-pending {
+        border-color: rgba(245, 158, 11, 0.26);
+        color: #f8d9a3;
+      }
+
+      .runtime-port-note.is-error {
+        border-color: rgba(248, 113, 113, 0.28);
+        color: #ffc3c3;
+      }
+
+      .runtime-subcard {
+        margin-top: 12px;
         border: 1px solid rgba(155, 187, 241, 0.2);
-        border-radius: 14px;
+        border-radius: 16px;
         background: linear-gradient(180deg, rgba(8, 15, 33, 0.54), rgba(6, 12, 28, 0.46));
-        padding: 10px;
+        padding: 14px;
         box-shadow: inset 0 0 0 1px rgba(126, 156, 218, 0.05);
       }
 
       .runtime-subcard.runtime-subcard--api {
-        display: block;
+        display: grid;
+        gap: 12px;
+      }
+
+      .runtime-subcard-head {
+        display: grid;
+        gap: 6px;
+      }
+
+      .runtime-subcopy {
+        margin: 0;
+        color: #9fb4dc;
+        font-size: 11px;
+        line-height: 1.5;
       }
 
       .runtime-subcard h4 {
-        margin: 0 0 6px;
+        margin: 0;
         font-size: 11px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
@@ -1615,11 +1731,34 @@
         margin-bottom: 0;
       }
 
+      .runtime-api-form {
+        display: grid;
+        grid-template-columns: minmax(0, 1.4fr) minmax(180px, 0.8fr) auto;
+        gap: 10px;
+        align-items: end;
+      }
+
+      .runtime-api-form > div {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+      }
+
+      .runtime-api-form input {
+        margin-bottom: 0;
+      }
+
+      .runtime-api-form button {
+        min-height: 40px;
+        height: 40px;
+        padding-inline: 16px;
+      }
+
       .runtime-inline-grid--public {
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        margin-bottom: 6px;
+        margin-bottom: 10px;
         align-items: stretch;
-        gap: 10px;
+        gap: 12px;
       }
 
       .runtime-inline-grid--public > div {
@@ -1707,56 +1846,77 @@
         padding-right: 30px;
       }
 
+      .runtime-public-binding-value {
+        min-height: 42px;
+        border-radius: 12px;
+        border: 1px solid rgba(130, 164, 232, 0.28);
+        background: linear-gradient(180deg, rgba(13, 24, 55, 0.96), rgba(9, 18, 42, 0.96));
+        box-shadow: inset 0 0 0 1px rgba(132, 171, 247, 0.08);
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+        font-size: 11.5px;
+        line-height: 1.45;
+        color: #d6e4ff;
+        white-space: normal;
+        word-break: break-word;
+      }
+
       .runtime-inline-grid--url {
         grid-template-columns: 1fr auto;
-        margin-top: 6px;
+        gap: 10px;
+        margin-top: 8px;
+        align-items: end;
       }
 
       .runtime-inline-grid--url .public-access-url {
-        min-height: 34px;
-        border-radius: 8px;
-        border: 1px solid var(--card-border);
-        background: rgba(0, 0, 0, 0.25);
-        padding: 7px 9px;
+        min-height: 42px;
+        border-radius: 12px;
+        border: 1px solid rgba(130, 164, 232, 0.28);
+        background: linear-gradient(180deg, rgba(13, 24, 55, 0.96), rgba(9, 18, 42, 0.96));
+        padding: 10px 12px;
         font-size: 11.5px;
+        display: flex;
+        align-items: center;
       }
 
       .api-key-generated {
-        margin-top: 6px;
         border: 1px solid rgba(92, 240, 186, 0.34);
-        border-radius: 8px;
-        background: rgba(8, 35, 41, 0.45);
-        padding: 7px;
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(8, 35, 41, 0.58), rgba(5, 25, 29, 0.46));
+        padding: 12px;
+        display: grid;
+        gap: 10px;
       }
 
       .api-key-generated .k {
-        color: var(--muted);
+        color: #a8dbc8;
         font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 0.06em;
-        margin-bottom: 6px;
+        margin-bottom: 0;
       }
 
       .api-key-secret {
         font-size: 11px;
         border: 1px dashed rgba(255, 255, 255, 0.2);
-        border-radius: 8px;
-        padding: 7px;
+        border-radius: 12px;
+        padding: 10px 12px;
         background: rgba(1, 9, 24, 0.72);
       }
 
       .api-key-list {
-        margin-top: 6px;
         display: grid;
-        gap: 6px;
-        max-height: 180px;
+        gap: 10px;
+        max-height: 240px;
         overflow: auto;
         padding-right: 2px;
       }
 
       .runtime-subcard--api .api-key-list {
-        height: 220px;
-        max-height: 220px;
+        min-height: 220px;
+        height: 240px;
+        max-height: 240px;
         overflow-y: scroll;
         overflow-x: hidden;
         scrollbar-gutter: stable both-edges;
@@ -1777,17 +1937,18 @@
 
       .api-key-item {
         border: 1px solid rgba(255, 255, 255, 0.16);
-        border-radius: 8px;
-        background: rgba(20, 33, 66, 0.7);
-        padding: 7px;
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(20, 33, 66, 0.82), rgba(14, 24, 49, 0.78));
+        padding: 12px;
+        display: grid;
+        gap: 8px;
       }
 
       .api-key-item-head {
         display: flex;
         justify-content: space-between;
-        align-items: center;
+        align-items: flex-start;
         gap: 8px;
-        margin-bottom: 4px;
       }
 
       .api-key-item-title {
@@ -1797,6 +1958,11 @@
         word-break: break-word;
       }
 
+      .api-key-item-meta {
+        display: grid;
+        gap: 6px;
+      }
+
       .api-key-item-sub {
         color: var(--muted);
         font-size: 11px;
@@ -1804,9 +1970,13 @@
         line-height: 1.35;
       }
 
+      .api-key-item .btns {
+        margin-top: 2px;
+      }
+
       .public-access-status {
-        min-height: 38px;
-        margin-top: 6px;
+        min-height: 48px;
+        margin-top: 8px;
       }
 
       .pool-current-actions {
@@ -2230,6 +2400,18 @@
           grid-template-columns: 1fr;
         }
 
+        .runtime-api-form,
+        .runtime-inline-grid--public,
+        .runtime-inline-grid--url {
+          grid-template-columns: 1fr;
+        }
+
+        .runtime-api-form button,
+        .preheat-grid > button,
+        .runtime-inline-grid--url button {
+          width: 100%;
+        }
+
         .pool-layout {
           grid-template-columns: 1fr;
         }
@@ -2314,6 +2496,53 @@
         padding: 7px 9px;
       }
 
+      .dashboard-auth-gate {
+        position: fixed;
+        inset: 0;
+        z-index: 80;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(4, 8, 18, 0.82);
+        backdrop-filter: blur(18px);
+      }
+
+      .dashboard-auth-gate[hidden] {
+        display: none;
+      }
+
+      .dashboard-auth-gate__card {
+        width: min(100%, 460px);
+        display: grid;
+        gap: 14px;
+        padding: 22px;
+        border-radius: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: linear-gradient(180deg, rgba(18, 24, 44, 0.97), rgba(9, 14, 28, 0.97));
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.42);
+      }
+
+      .dashboard-auth-gate__card h2 {
+        margin: 0;
+        font-size: 21px;
+      }
+
+      .dashboard-auth-gate__card p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .dashboard-auth-gate__status {
+        min-height: 44px;
+        white-space: pre-wrap;
+      }
+
+      .dashboard-auth-panel {
+        margin-top: 16px;
+      }
+
       @media (prefers-reduced-motion: reduce) {
         html {
           scroll-behavior: auto !important;
@@ -2340,6 +2569,24 @@
       <div id="fxOrbC" class="fx-orb fx-c"></div>
     </div>
     <div id="fxSparkLayer" class="fx-spark-layer" aria-hidden="true"></div>
+    <div id="dashboardAuthGate" class="dashboard-auth-gate" hidden>
+      <div class="dashboard-auth-gate__card">
+        <h2 data-i18n="dashboard_auth_gate_title">Dashboard Locked</h2>
+        <p data-i18n="dashboard_auth_gate_subtitle">
+          Enter the local dashboard password before using public admin and account controls.
+        </p>
+        <div class="field field--full">
+          <label for="dashboardAuthLoginPassword" data-i18n="dashboard_auth_password">Password</label>
+          <input id="dashboardAuthLoginPassword" type="password" autocomplete="current-password" />
+        </div>
+        <div class="btns">
+          <button id="dashboardAuthLoginBtn" class="button-strong" data-i18n="dashboard_auth_login">
+            Unlock Dashboard
+          </button>
+        </div>
+        <div id="dashboardAuthGateStatus" class="result dashboard-auth-gate__status">-</div>
+      </div>
+    </div>
     <div class="wrap">
       <div class="head">
         <div class="head-top">
@@ -2383,7 +2630,10 @@
           <div class="kv-grid">
             <div class="kv"><div class="k" data-i18n="runtime_mode">Mode</div><div id="mode" class="mono">-</div></div>
             <div class="kv"><div class="k" data-i18n="runtime_uptime">Uptime</div><div id="uptime" class="mono">-</div></div>
-            <div class="kv kv--full"><div class="k" data-i18n="runtime_base_url">Base URL</div><div class="mono">http://127.0.0.1:8787/v1</div></div>
+            <div class="kv kv--full">
+              <div class="k" data-i18n="runtime_base_url">Base URL</div>
+              <div id="runtimeBaseUrlValue" class="mono">http://127.0.0.1:8787/v1</div>
+            </div>
           </div>
           <div class="status" id="authBadge">loading...</div>
           <div class="btns">
@@ -2425,10 +2675,22 @@
               <label for="heartbeatSeconds" data-i18n="runtime_heartbeat">Status Heartbeat (s)</label>
               <input id="heartbeatSeconds" type="number" min="2" max="3600" step="1" value="7" />
             </div>
+            <div class="runtime-port">
+              <label for="runtimePort" data-i18n="runtime_port">Local Port</label>
+              <input id="runtimePort" type="number" min="1" max="65535" step="1" value="8787" />
+            </div>
+          </div>
+          <div id="runtimePortStatus" class="runtime-port-note" data-i18n="runtime_port_hint">
+            Saved to PORT. Restart the proxy/app to apply a new port.
           </div>
           <div class="runtime-subcard runtime-subcard--api">
-            <h4 data-i18n="api_keys_title">API Keys</h4>
-            <div class="runtime-inline-grid">
+            <div class="runtime-subcard-head">
+              <h4 data-i18n="api_keys_title">API Keys</h4>
+              <p class="runtime-subcopy" data-i18n="api_keys_subcopy">
+                Issue local keys for integrations without leaving the dashboard.
+              </p>
+            </div>
+            <div class="runtime-api-form">
               <div>
                 <label for="apiKeyLabel" data-i18n="api_keys_label">Label</label>
                 <input id="apiKeyLabel" maxlength="80" placeholder="dashboard-generated" />
@@ -2449,6 +2711,30 @@
             <div id="apiKeyList" class="api-key-list">
               <div class="account-empty account-empty--compact" data-i18n="api_keys_empty">No API keys yet.</div>
             </div>
+          </div>
+          <div class="runtime-subcard dashboard-auth-panel">
+            <h4 data-i18n="dashboard_auth_title">Dashboard Password</h4>
+            <label class="checkline">
+              <input id="dashboardAuthEnabled" type="checkbox" />
+              <span data-i18n="dashboard_auth_enable">Require a password before exposing admin controls through Cloudflare.</span>
+            </label>
+            <label for="dashboardAuthPassword" data-i18n="dashboard_auth_password">Password</label>
+            <input
+              id="dashboardAuthPassword"
+              type="password"
+              autocomplete="new-password"
+              placeholder="Leave blank to keep the current password"
+            />
+            <div class="hint" data-i18n="dashboard_auth_hint">
+              Passwords are stored locally as a hash. Leave the field blank to keep the current password.
+            </div>
+            <div class="btns">
+              <button id="dashboardAuthSaveBtn" data-i18n="dashboard_auth_save">Save Dashboard Password</button>
+              <button id="dashboardAuthLogoutBtn" class="secondary" data-i18n="dashboard_auth_logout">
+                Lock This Browser Session
+              </button>
+            </div>
+            <div id="dashboardAuthStatus" class="result">-</div>
           </div>
         </section>
 
@@ -2501,7 +2787,12 @@
             </div>
           </div>
           <div class="runtime-subcard">
-            <h4 data-i18n="public_access_title">Public Access (Cloudflared)</h4>
+            <div class="runtime-subcard-head">
+              <h4 data-i18n="public_access_title">Public Access (Cloudflared)</h4>
+              <p class="runtime-subcopy" data-i18n="public_access_binding_hint">
+                Cloudflared follows the active runtime port automatically.
+              </p>
+            </div>
             <div class="runtime-inline-grid runtime-inline-grid--public">
               <div>
                 <label for="publicAccessMode" data-i18n="public_access_mode">Mode</label>
@@ -2511,8 +2802,8 @@
                 </select>
               </div>
               <div>
-                <label for="publicAccessLocalPort" data-i18n="public_access_local_port">Local Port</label>
-                <input id="publicAccessLocalPort" type="number" min="1" max="65535" step="1" value="8787" />
+                <label data-i18n="public_access_runtime_binding">Local Target</label>
+                <div id="publicAccessLocalBinding" class="runtime-public-binding-value mono">Runtime port</div>
               </div>
             </div>
             <label for="publicAccessToken" data-i18n="public_access_token">Tunnel Token (auth mode)</label>
@@ -2594,17 +2885,20 @@
             <button id="refreshUsageBtn" data-i18n="pool_refresh_usage">Refresh Usage (All)</button>
           </div>
           <div class="preheat-panel">
-            <h4 data-i18n="preheat_title">Preheat</h4>
+            <div class="preheat-head">
+              <h4 data-i18n="preheat_title">Preheat</h4>
+              <p class="preheat-copy" data-i18n="preheat_hint">
+                Runs a minimal Codex probe across every enabled account for the selected model, or for every supported
+                model.
+              </p>
+            </div>
             <div class="preheat-grid">
-              <label for="preheatModelSelect">
-                <span data-i18n="preheat_target_model">Target Model</span>
+              <div class="preheat-control">
+                <label for="preheatModelSelect" data-i18n="preheat_target_model">Target Model</label>
                 <select id="preheatModelSelect"></select>
-              </label>
+              </div>
               <button id="runPreheatBtn" class="button-strong" data-i18n="preheat_run">Preheat All Accounts</button>
             </div>
-            <p class="section-hint" data-i18n="preheat_hint">
-              Runs a minimal Codex probe across every enabled account for the selected model, or for every supported model.
-            </p>
             <div id="preheatStatus" class="preheat-status" data-i18n="preheat_none">No preheat run yet.</div>
           </div>
           <div class="preheat-panel">
@@ -2737,7 +3031,7 @@
             <div class="btns">
               <button id="ignoreReqBtn" class="record-toggle" type="button" aria-pressed="false">
                 <span class="record-toggle__glyph" aria-hidden="true"></span>
-                <span id="ignoreReqBtnLabel" class="record-toggle__label" data-i18n="recent_requests_record">Record Requests</span>
+                <span id="ignoreReqBtnLabel" class="record-toggle__label" data-i18n="recent_requests_record">recording</span>
               </button>
               <button id="clearReqBtn" class="secondary" data-i18n="recent_requests_clear">Clear Records</button>
             </div>
@@ -2818,9 +3112,48 @@
       </div>
     </div>
 
+    <div id="runtimePortConfirmBackdrop" class="req-detail-backdrop" hidden>
+      <div
+        class="req-detail-modal runtime-port-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="runtimePortConfirmTitle"
+        aria-describedby="runtimePortConfirmBody"
+      >
+        <div class="req-detail-head">
+          <h3 id="runtimePortConfirmTitle" class="req-detail-title" data-i18n="runtime_port_confirm_title">
+            Apply local port change?
+          </h3>
+          <button id="runtimePortConfirmCloseBtn" class="secondary req-detail-close" data-i18n="runtime_port_confirm_cancel">
+            Cancel
+          </button>
+        </div>
+        <p id="runtimePortConfirmBody" class="runtime-port-modal-copy"></p>
+        <div id="runtimePortConfirmModeNote" class="runtime-port-modal-note"></div>
+        <div class="runtime-port-modal-actions">
+          <button id="runtimePortConfirmCancelBtn" class="secondary" data-i18n="runtime_port_confirm_cancel">Cancel</button>
+          <button id="runtimePortConfirmApplyBtn" class="button-strong" data-i18n="runtime_port_confirm_apply">
+            Apply Port
+          </button>
+        </div>
+      </div>
+    </div>
+
     <script type="module">
       import { api } from "./dashboard/api.js";
+      import { createDashboardAuthFeature } from "./dashboard/auth.js";
+      import { createPublicAccessFeature } from "./dashboard/public-access.js";
       import { createRecentRequestsUi } from "./dashboard/requests.js";
+      import { createDiagnosticsFeature } from "./app/features/diagnostics.js";
+      import { createPoolFeature } from "./app/features/pool.js";
+      import { createTempMailFeature } from "./app/features/temp-mail.js";
+      import { createDashboardI18n } from "./app/i18n.js";
+      import {
+        readStoredBool as readStoredBoolFromStore,
+        readStoredNumber as readStoredNumberFromStore,
+        readStoredString as readStoredStringFromStore,
+        writeStoredString as writeStoredStringFromStore
+      } from "./app/store.js";
 
       const $ = (id) => document.getElementById(id);
       let currentMappings = {};
@@ -2830,20 +3163,13 @@
       let stateRefreshInFlight = false;
       let stateRefreshQueued = false;
       let lastStateRefreshAtMs = 0;
-      let usageRefreshInFlight = false;
-      let lastUsageRefreshAtMs = 0;
       let autoSaveTimer = null;
       let autoSaveInFlight = false;
       let autoSaveQueued = false;
       let autoSaveReady = false;
       let autoSaveSnapshot = "";
-      let lastAccounts = [];
-      let lastActiveEntryId = "";
       let lastApiKeySummary = { keys: [] };
       let transientApiKeyValues = new Map();
-      let lastPublicAccessStatus = null;
-      let lastTempMailState = null;
-      let tempMailActionInFlight = false;
       const customSelectRegistry = new Map();
       let customSelectSeq = 0;
       let activeCustomSelectKey = "";
@@ -2859,10 +3185,10 @@
       const DEFAULT_STATE_REFRESH_VISIBLE_MS = 7000;
       const DEFAULT_STATE_REFRESH_HIDDEN_MS = 30000;
       const TEMP_MAIL_ACTIVE_REFRESH_MS = 2000;
+      const DASHBOARD_AUTH_MIN_PASSWORD_LENGTH = 8;
       let stateRefreshVisibleMs = DEFAULT_STATE_REFRESH_VISIBLE_MS;
       let stateRefreshHiddenMs = DEFAULT_STATE_REFRESH_HIDDEN_MS;
       let stateRefreshTimerId = 0;
-      let tempMailRefreshTimerId = 0;
       const USAGE_AUTO_REFRESH_MIN_MS = 5 * 60 * 1000;
       const AUTO_SAVE_DEBOUNCE_MS = 500;
       const REQUESTS_RECORDING_ENABLED_STORAGE_KEY = "codex_proxy_dashboard_requests_recording_enabled";
@@ -2875,879 +3201,22 @@
         "defaultReasoningEffort",
         "defaultServiceTier",
         "multiAccountStrategy",
+        "runtimePort",
         "publicAccessMode",
         "publicAccessToken",
-        "publicAccessLocalPort",
         "publicAccessHttp2",
         "autoLogoutExpiredAccounts",
         "modelRouterEnabled"
       ];
       const FX_ENABLED_STORAGE_KEY = "codex_proxy_dashboard_fx_enabled";
       const FX_CARD_SELECTOR = ".card, .metric-card, .account-card, .recommend-item";
-      const I18N_TEXT = {
-        en: {
-          dashboard_title: "codex-pro-max dashboard",
-          dashboard_subtitle: "Local control surface for auth, upstream settings, and runtime diagnostics.",
-          hero_auth: "Auth",
-          hero_mode: "Upstream",
-          hero_pool: "Pool",
-          hero_temp: "Temp Mail",
-          hero_auth_ok: "Authenticated",
-          hero_auth_missing: "Needs login",
-          hero_pool_value: "{enabled}/{total} enabled",
-          hero_temp_idle: "Idle",
-          hero_temp_running: "{success}/{total} active",
-          hero_temp_stopping: "Stopping",
-          hero_temp_done: "{success}/{total} complete",
-          hero_temp_error: "Check logs",
-          nav_runtime: "Runtime",
-          nav_proxy: "Proxy",
-          nav_automation: "Automation",
-          nav_pool: "Pool",
-          nav_router: "Router",
-          nav_requests: "Requests",
-          fx_toggle_on: "FX: ON",
-          fx_toggle_off: "FX: OFF",
-          fx_title_disabled_reduced_motion: "Disabled by system reduced-motion preference",
-          fx_title_disable: "Disable interactive effects",
-          fx_title_enable: "Enable interactive effects",
-          runtime_title: "Runtime",
-          runtime_mode: "Mode",
-          runtime_uptime: "Uptime",
-          runtime_base_url: "Base URL",
-          runtime_refresh: "Refresh",
-          runtime_connect_account: "Connect Account",
-          runtime_logout_current: "Logout Current",
-          runtime_export_tokens: "Export Tokens",
-          runtime_import_tokens: "Import Tokens",
-          runtime_import_progress: "Import Progress",
-          runtime_import_preparing: "Preparing import...",
-          runtime_import_scanning: "Scanning selected folder...",
-          runtime_import_parsing: "Parsing {current}/{total} JSON files...",
-          runtime_import_uploading: "Uploading {count} tokens...",
-          runtime_import_refreshing: "Refreshing dashboard state...",
-          runtime_import_done: "Import complete.",
-          runtime_language: "Language",
-          runtime_heartbeat: "Status Heartbeat (s)",
-          runtime_authenticated: "AUTHENTICATED",
-          runtime_not_authenticated: "NOT AUTHENTICATED",
-          api_keys_title: "API Keys",
-          api_keys_label: "Label",
-          api_keys_expires_days: "Expires (days)",
-          api_keys_generate: "Generate API Key",
-          api_keys_generated_once: "Generated Key (shown once)",
-          api_keys_copy: "Copy",
-          api_keys_empty: "No API keys yet.",
-          api_keys_active: "active",
-          api_keys_revoked: "revoked",
-          api_keys_created: "created",
-          api_keys_last_used: "last used",
-          api_keys_use_count: "uses",
-          api_keys_never_expires: "never expires",
-          api_keys_revoke: "Revoke",
-          api_keys_revoke_confirm: "Revoke API key {label}?",
-          api_keys_generated_and_copied: "API key generated.",
-          api_keys_copy_success: "API key copied.",
-          public_access_title: "Public Access (Cloudflared)",
-          public_access_mode: "Mode",
-          public_access_mode_quick: "quick (trycloudflare)",
-          public_access_mode_auth: "auth (named tunnel)",
-          public_access_local_port: "Local Port",
-          public_access_token: "Tunnel Token (auth mode)",
-          public_access_http2: "Use HTTP/2",
-          public_access_auto_install: "Auto install cloudflared if missing",
-          public_access_refresh: "Refresh Status",
-          public_access_install: "Install cloudflared",
-          public_access_start: "Start Tunnel",
-          public_access_stop: "Stop Tunnel",
-          public_access_url: "Public URL",
-          public_access_copy_url: "Copy URL",
-          public_access_status_not_installed: "cloudflared not installed",
-          public_access_status_installing: "installing",
-          public_access_status_running: "running",
-          public_access_status_stopped: "stopped",
-          public_access_status_line: "status={status} mode={mode} local={port} http2={http2}",
-          public_access_status_line_2: "installed={installed} version={version} pid={pid}",
-          public_access_status_url: "url={url}",
-          public_access_status_error: "error={error}",
-          proxy_config_title: "Proxy Config",
-          proxy_upstream_mode: "Upstream Mode",
-          proxy_default_model: "Default Model",
-          proxy_default_instructions: "Default Instructions",
-          proxy_reasoning_effort: "Reasoning Effort",
-          proxy_service_tier: "Service Tier",
-          proxy_service_tier_openai_only: "Service Tier only applies to openai-v1 upstream.",
-          proxy_pool_strategy: "Account Pool Strategy",
-          service_tier_default: "Default",
-          service_tier_priority: "Priority",
-          reasoning_adaptive: "adaptive (auto)",
-          reasoning_none: "none",
-          reasoning_low: "low",
-          reasoning_medium: "medium",
-          reasoning_high: "high",
-          reasoning_xhigh: "xhigh",
-          strategy_smart: "smart (health-aware)",
-          strategy_manual: "manual (current account only)",
-          strategy_round_robin: "round-robin",
-          strategy_random: "random",
-          strategy_sticky: "sticky",
-          self_test_title: "Self Test",
-          self_test_prompt: "Prompt",
-          self_test_run: "Run Upstream Test",
-          self_test_none: "No test executed.",
-          self_test_running: "Running test...",
-          self_test_failed: "TEST FAILED: {message}",
-          temp_mail_title: "Temp Mail",
-          temp_mail_count: "Count",
-          temp_mail_password: "Password",
-          temp_mail_delay: "Next Delay (s)",
-          temp_mail_workers: "Threads",
-          temp_mail_allow_parallel: "Enable Parallel",
-          temp_mail_idle: "Idle.",
-          temp_mail_console_empty: "No Temp Mail logs yet.",
-          temp_mail_password_missing_warning: "WARN: U havnt set up password yet.",
-          temp_mail_runner_missing: "Temp Mail runner unavailable: {message}",
-          temp_mail_running: "Running: {success}/{total} success · {fail} fail · threads={threads}",
-          temp_mail_stopping: "Stopping Temp Mail...",
-          temp_mail_done: "Finished: {success}/{total} success · {fail} fail",
-          temp_mail_toggle_run: "Run Temp Mail",
-          temp_mail_toggle_stop: "Stop Temp Mail",
-          temp_mail_start_failed: "Temp Mail start failed: {message}",
-          temp_mail_stop_failed: "Temp Mail stop failed: {message}",
-          init_failed: "Init failed: {message}",
-          pool_title: "Account Pool",
-          pool_hint:
-            "Dual-window accounts show 5h/W; single-window plans (for example free) auto-switch to one limit badge.",
-          pool_refresh_usage: "Refresh Usage (All)",
-          preheat_title: "Preheat",
-          preheat_target_model: "Target Model",
-          preheat_all_models: "All supported models",
-          preheat_hint: "Runs a minimal Codex probe across every enabled account for the selected model, or for every supported model.",
-          preheat_run: "Preheat All Accounts",
-          preheat_none: "No preheat run yet.",
-          preheat_no_state: "No preheat state available.",
-          preheat_running: "Running preheat...",
-          preheat_failed: "Preheat failed: {message}",
-          preheat_status_line: "status={status} ({running}) | {summary}",
-          preheat_status_line_2: "run={run} complete={complete} duration={duration}ms{error}",
-          preheat_error_segment: " error={error}",
-          preheat_running_state_running: "running",
-          preheat_running_state_idle: "idle",
-          preheat_summary_none: "last=none",
-          preheat_summary_fmt: "last={status} success={success} failed={failed} models={models} accounts={accounts} attempts={attempts}",
-          expired_cleanup_title: "Account Auto RM",
-          expired_cleanup_enable: "Probe every account and auto-remove failed or token-invalidated ones",
-          expired_cleanup_idle: "Background account auto-remove idle.",
-          expired_cleanup_status_line: "status={status} ({running}) | removed={removed}",
-          expired_cleanup_status_line_2: "run={run} complete={complete} reason={reason}{error}",
-          expired_cleanup_error_segment: " error={error}",
-          kpi_total_accounts: "Total Accounts",
-          kpi_total_accounts_sub: "all pooled identities",
-          kpi_healthy_ratio: "Healthy Ratio",
-          kpi_healthy_ratio_sub: "ready for request routing",
-          kpi_primary_avg: "Primary Avg Remaining",
-          kpi_primary_avg_sub: "5-hour usage window",
-          kpi_secondary_avg: "Secondary Avg Remaining",
-          kpi_secondary_avg_sub: "weekly usage window",
-          kpi_cooldown: "Cooldown",
-          kpi_cooldown_sub: "temporarily paused",
-          kpi_at_risk: "At Risk",
-          kpi_at_risk_sub: "disabled / expired",
-          kpi_low_quota: "Low Quota",
-          kpi_low_quota_sub: "remaining ≤ 20%",
-          kpi_strategy: "Strategy",
-          pool_auth_unknown: "auth: -",
-          pool_auth_connected: "auth: connected",
-          pool_auth_disconnected: "auth: disconnected",
-          pool_risk_hint_enabled: "{enabled}/{total} enabled",
-          pool_risk_hint_disabled: "multi-account disabled",
-          current_account_title: "Current Account",
-          switch_to_this_account: "Switch to this account",
-          account_logout: "Log out",
-          best_account_recommendation: "Best Account Recommendation",
-          all_accounts_title: "All Accounts",
-          all_accounts_with_count: "All Accounts ({count})",
-          all_accounts_refresh: "Refresh all account statuses",
-          all_accounts_refreshing: "Refreshing all account statuses...",
-          account_no_active: "No active account selected.",
-          account_no_recommendation: "No recommendation yet.",
-          account_no_recommendation_available: "No recommendation available.",
-          account_loading_pool: "Loading account pool...",
-          account_no_pool_accounts: "No pooled accounts yet. Use Connect Account.",
-          account_usage_not_fetched: "Usage snapshot not fetched yet.",
-          account_name_unknown: "unnamed-account",
-          account_slot: "Slot",
-          account_expires: "Expires",
-          account_last_used: "Last Used",
-          account_failures: "Failures",
-          account_cooldown: "Cooldown",
-          account_plan: "Plan",
-          account_usage_updated: "Usage Updated",
-          account_entry_prefix: "entry",
-          account_error_prefix: "last_error",
-          account_title_switch_tooltip_enabled: "Switch current account to this one",
-          account_title_switch_tooltip_active: "This is already the current account",
-          account_title_switch_tooltip_disabled: "This account is disabled",
-          account_title_switch_tooltip_unresolved: "Cannot resolve this account identity",
-          account_title_logout_tooltip_enabled: "Log out and remove this account from pool",
-          account_title_logout_tooltip_unresolved: "Cannot resolve this account identity",
-          account_status_healthy: "healthy",
-          account_status_limited: "limited",
-          account_status_limited_hard: "limited-hard",
-          account_status_cooldown: "cooldown",
-          account_status_expiring: "expiring",
-          account_status_expired: "expired",
-          account_status_disabled: "disabled",
-          account_status_active: "active",
-          cooldown_ready: "ready",
-          limit_weekly: "Weekly limit",
-          limit_5h: "5h limit",
-          limit_primary: "Primary limit",
-          limit_hour: "{hours}h limit",
-          limit_minute: "{minutes}m limit",
-          limit_short_weekly: "W",
-          limit_short_5h: "5h",
-          limit_short_primary: "P",
-          limit_short_hour: "{hours}h",
-          limit_short_minute: "{minutes}m",
-          remaining_used: "{remaining}% remaining · {used}% used",
-          remaining_only: "{remaining}% remaining",
-          token_usage_format: "I {input} / O {output}",
-          request_detail_title: "Proxy Request Detail",
-          request_detail_title_fmt: "Proxy Request Detail · {method} {path}",
-          request_detail_close: "Close",
-          request_detail_request_packet: "Request Packet",
-          request_detail_response_packet: "Response Packet",
-          request_detail_copy: "Copy",
-          request_detail_copied: "Copied",
-          request_detail_content_type: "content-type: {type}",
-          request_detail_empty: "(empty)",
-          req_meta_request_time: "Request Time",
-          req_meta_latency: "Latency",
-          req_meta_token_usage: "Token Usage",
-          req_meta_total_tokens: "Total Tokens",
-          req_meta_protocol: "Protocol",
-          req_meta_model: "Model",
-          req_meta_account: "Account",
-          req_meta_path: "Path",
-          req_meta_status: "Status",
-          req_meta_upstream_retries: "Upstream Retries",
-          req_meta_transport_error_code: "Transport Error Code",
-          req_meta_transport_error_detail: "Transport Error Detail",
-          req_meta_compatibility: "Compatibility",
-          compatibility_previous_response_id_unsupported: "previous_response_id unsupported; replay without chain id",
-          compatibility_previous_response_id_emulated_locally: "previous_response_id emulated locally; replay kept inside proxy",
-          router_title: "Model Router",
-          router_hint: "Priority: exact mapping > wildcard (`*`) > system fallback mapping.",
-          router_enable: "Enable model router",
-          router_add_mapping: "Add Mapping",
-          router_reset_mappings: "Reset Mappings",
-          router_reload_models: "Reload Model Options",
-          router_source: "Source",
-          router_target: "Target",
-          router_action: "Action",
-          router_select_model: "Select model...",
-          router_delete: "Delete",
-          recent_requests_title: "Recent Proxy Requests",
-          recent_requests_record: "Record Requests",
-          recent_requests_ignore: "Ignore Requests",
-          recent_requests_clear: "Clear Records",
-          recent_requests_total_requests: "Total Requests",
-          recent_requests_total_requests_sub: "shown rows",
-          recent_requests_total_input: "Total Input",
-          recent_requests_total_input_sub: "sum of input tokens",
-          recent_requests_total_output: "Total Output",
-          recent_requests_total_output_sub: "sum of output tokens",
-          recent_requests_total_tokens: "Total",
-          recent_requests_total_tokens_sub: "input + output total",
-          recent_requests_time: "Time",
-          recent_requests_method: "Method",
-          recent_requests_path: "Path",
-          recent_requests_input: "Input",
-          recent_requests_output: "Output",
-          recent_requests_total: "Total",
-          recent_requests_status: "Status",
-          recent_requests_latency: "Latency",
-          quota_remaining_percent_title: "remaining quota percent",
-          autosave_saving: "Auto-saving...",
-          autosave_saved: "Auto-saved.",
-          autosave_failed: "Auto-save failed: {message}",
-          autosave_pending: "Auto-save pending...",
-          alert_mapping_required: "Both source and target model are required.",
-          confirm_reset_mappings: "Reset all custom model mappings?",
-          confirm_clear_requests: "Clear all recent proxy request records?",
-          alert_logout_failed: "Logout failed: {message}",
-          alert_account_logout_failed: "Account logout failed: {message}",
-          alert_switch_failed: "Switch account failed: {message}",
-          alert_switch_target_missing: "Cannot resolve target account identity.",
-          alert_switch_no_enabled: "No enabled account available to switch.",
-          alert_switch_only_one: "Only one enabled account is available.",
-          alert_refresh_requests_failed: "Refresh requests failed: {message}",
-          alert_clear_requests_failed: "Clear request records failed: {message}",
-          alert_refresh_usage_failed: "Refresh usage failed: {message}",
-          alert_api_key_generate_failed: "Generate API key failed: {message}",
-          alert_api_key_revoke_failed: "Revoke API key failed: {message}",
-          alert_api_key_copy_failed: "Copy API key failed: {message}",
-          alert_request_detail_copy_failed: "Copy request log failed: {message}",
-          alert_token_export_empty: "No account tokens to export.",
-          alert_token_export_success: "Exported {count} token files.",
-          alert_token_export_failed: "Export tokens failed: {message}",
-          alert_token_import_no_json: "No valid JSON token files found in selected folder.",
-          alert_token_import_success: "Imported {count} tokens.",
-          alert_token_import_failed: "Import tokens failed: {message}",
-          alert_public_access_start_failed: "Start public access failed: {message}",
-          alert_public_access_stop_failed: "Stop public access failed: {message}",
-          alert_public_access_install_failed: "Install cloudflared failed: {message}",
-          alert_public_access_refresh_failed: "Refresh public access failed: {message}",
-          alert_public_access_copy_failed: "Copy public URL failed: {message}"
-        },
-        "zh-hant": {
-          dashboard_title: "codex-pro-max 控制台",
-          dashboard_subtitle: "本地控制介面：認證、上游設定與執行診斷。",
-          hero_auth: "認證",
-          hero_mode: "上游",
-          hero_pool: "帳號池",
-          hero_temp: "Temp Mail",
-          hero_auth_ok: "已登入",
-          hero_auth_missing: "需要登入",
-          hero_pool_value: "{enabled}/{total} 已啟用",
-          hero_temp_idle: "閒置",
-          hero_temp_running: "{success}/{total} 執行中",
-          hero_temp_stopping: "停止中",
-          hero_temp_done: "{success}/{total} 已完成",
-          hero_temp_error: "請查看日誌",
-          nav_runtime: "執行狀態",
-          nav_proxy: "代理設定",
-          nav_automation: "自動化",
-          nav_pool: "帳號池",
-          nav_router: "模型路由",
-          nav_requests: "請求紀錄",
-          fx_toggle_on: "特效：開",
-          fx_toggle_off: "特效：關",
-          fx_title_disabled_reduced_motion: "系統偏好降低動效，已停用",
-          fx_title_disable: "停用互動特效",
-          fx_title_enable: "啟用互動特效",
-          runtime_title: "執行狀態",
-          runtime_mode: "模式",
-          runtime_uptime: "運行時間",
-          runtime_base_url: "基礎 URL",
-          runtime_refresh: "重新整理",
-          runtime_connect_account: "連接帳號",
-          runtime_logout_current: "登出目前帳號",
-          runtime_export_tokens: "導出 Token",
-          runtime_import_tokens: "導入 Token",
-          runtime_import_progress: "導入進度",
-          runtime_import_preparing: "準備導入中...",
-          runtime_import_scanning: "掃描所選資料夾...",
-          runtime_import_parsing: "解析 {current}/{total} 個 JSON 檔案...",
-          runtime_import_uploading: "上傳 {count} 個 Token...",
-          runtime_import_refreshing: "刷新控制台狀態...",
-          runtime_import_done: "導入完成。",
-          runtime_language: "語言",
-          runtime_heartbeat: "狀態心跳檢查 (秒)",
-          runtime_authenticated: "已認證",
-          runtime_not_authenticated: "尚未認證",
-          api_keys_title: "API 金鑰",
-          api_keys_label: "標籤",
-          api_keys_expires_days: "有效天數",
-          api_keys_generate: "產生 API 金鑰",
-          api_keys_generated_once: "已產生金鑰（僅顯示一次）",
-          api_keys_copy: "複製",
-          api_keys_empty: "目前沒有 API 金鑰。",
-          api_keys_active: "啟用中",
-          api_keys_revoked: "已撤銷",
-          api_keys_created: "建立時間",
-          api_keys_last_used: "上次使用",
-          api_keys_use_count: "使用次數",
-          api_keys_never_expires: "永不過期",
-          api_keys_revoke: "撤銷",
-          api_keys_revoke_confirm: "確定要撤銷 API 金鑰 {label}？",
-          api_keys_generated_and_copied: "API 金鑰已產生。",
-          api_keys_copy_success: "API 金鑰已複製。",
-          public_access_title: "公網訪問（Cloudflared）",
-          public_access_mode: "模式",
-          public_access_mode_quick: "quick（trycloudflare）",
-          public_access_mode_auth: "auth（命名隧道）",
-          public_access_local_port: "本地端口",
-          public_access_token: "隧道 Token（auth 模式）",
-          public_access_http2: "使用 HTTP/2",
-          public_access_auto_install: "缺少 cloudflared 時自動安裝",
-          public_access_refresh: "刷新狀態",
-          public_access_install: "安裝 cloudflared",
-          public_access_start: "啟動隧道",
-          public_access_stop: "停止隧道",
-          public_access_url: "公網 URL",
-          public_access_copy_url: "複製 URL",
-          public_access_status_not_installed: "未安裝 cloudflared",
-          public_access_status_installing: "安裝中",
-          public_access_status_running: "執行中",
-          public_access_status_stopped: "已停止",
-          public_access_status_line: "狀態={status} 模式={mode} 本地={port} http2={http2}",
-          public_access_status_line_2: "安裝={installed} 版本={version} pid={pid}",
-          public_access_status_url: "網址={url}",
-          public_access_status_error: "錯誤={error}",
-          proxy_config_title: "代理設定",
-          proxy_upstream_mode: "上游協定模式",
-          proxy_default_model: "預設模型",
-          proxy_default_instructions: "預設指示詞",
-          proxy_reasoning_effort: "思維長度",
-          proxy_service_tier: "服務等級",
-          proxy_service_tier_openai_only: "服務等級只對 openai-v1 上游生效。",
-          proxy_pool_strategy: "帳號池策略",
-          service_tier_default: "預設",
-          service_tier_priority: "優先",
-          reasoning_adaptive: "自適應（自動）",
-          reasoning_none: "無",
-          reasoning_low: "低",
-          reasoning_medium: "中",
-          reasoning_high: "高",
-          reasoning_xhigh: "極高",
-          strategy_smart: "智慧（健康優先）",
-          strategy_manual: "手動（僅目前帳號）",
-          strategy_round_robin: "輪詢",
-          strategy_random: "隨機",
-          strategy_sticky: "黏性",
-          self_test_title: "自我測試",
-          self_test_prompt: "提示詞",
-          self_test_run: "執行上游測試",
-          self_test_none: "尚未執行測試。",
-          self_test_running: "測試執行中...",
-          self_test_failed: "測試失敗：{message}",
-          temp_mail_title: "Temp Mail",
-          temp_mail_count: "數量",
-          temp_mail_password: "密碼",
-          temp_mail_delay: "切換延遲（秒）",
-          temp_mail_workers: "Threads",
-          temp_mail_allow_parallel: "啟用平行",
-          temp_mail_idle: "目前閒置。",
-          temp_mail_console_empty: "尚無 Temp Mail 日誌。",
-          temp_mail_password_missing_warning: "警告：你還沒設定密碼。",
-          temp_mail_runner_missing: "Temp Mail runner 不可用：{message}",
-          temp_mail_running: "執行中：成功 {success}/{total} · 失敗 {fail} · threads={threads}",
-          temp_mail_stopping: "正在停止 Temp Mail...",
-          temp_mail_done: "已完成：成功 {success}/{total} · 失敗 {fail}",
-          temp_mail_toggle_run: "執行 Temp Mail",
-          temp_mail_toggle_stop: "停止 Temp Mail",
-          temp_mail_start_failed: "Temp Mail 啟動失敗：{message}",
-          temp_mail_stop_failed: "Temp Mail 停止失敗：{message}",
-          init_failed: "初始化失敗：{message}",
-          pool_title: "帳號池",
-          pool_hint: "雙視窗帳號會顯示 5h/W；單視窗方案（如 free）會自動切成單一額度標籤。",
-          pool_refresh_usage: "刷新用量（全部）",
-          preheat_title: "預熱",
-          preheat_target_model: "目標模型",
-          preheat_all_models: "全部支援模型",
-          preheat_hint: "對所選模型的每個啟用帳號執行最小 Codex 探測；若選全部支援模型，則逐一預熱所有模型。",
-          preheat_run: "預熱全部帳號",
-          preheat_none: "尚未執行預熱。",
-          preheat_no_state: "尚無預熱狀態。",
-          preheat_running: "預熱執行中...",
-          preheat_failed: "預熱失敗：{message}",
-          preheat_status_line: "狀態={status}（{running}）| {summary}",
-          preheat_status_line_2: "執行={run} 完成={complete} 耗時={duration}ms{error}",
-          preheat_error_segment: " 錯誤={error}",
-          preheat_running_state_running: "執行中",
-          preheat_running_state_idle: "閒置",
-          preheat_summary_none: "上次=無",
-          preheat_summary_fmt: "上次={status} 成功={success} 失敗={failed} 模型={models} 帳號={accounts} 嘗試={attempts}",
-          expired_cleanup_title: "帳號自動移除",
-          expired_cleanup_enable: "背景最小測試每個帳號，失敗或回傳 token_invalidated 就自動移除",
-          expired_cleanup_idle: "背景帳號自動移除目前閒置。",
-          expired_cleanup_status_line: "狀態={status}（{running}）| 已移除={removed}",
-          expired_cleanup_status_line_2: "執行={run} 完成={complete} 原因={reason}{error}",
-          expired_cleanup_error_segment: " 錯誤={error}",
-          kpi_total_accounts: "帳號總數",
-          kpi_total_accounts_sub: "所有池內身份",
-          kpi_healthy_ratio: "健康比例",
-          kpi_healthy_ratio_sub: "可用於請求路由",
-          kpi_primary_avg: "主要視窗平均剩餘",
-          kpi_primary_avg_sub: "5 小時用量視窗",
-          kpi_secondary_avg: "次要視窗平均剩餘",
-          kpi_secondary_avg_sub: "每週用量視窗",
-          kpi_cooldown: "冷卻中",
-          kpi_cooldown_sub: "暫時停用",
-          kpi_at_risk: "風險帳號",
-          kpi_at_risk_sub: "停用 / 過期",
-          kpi_low_quota: "低額度",
-          kpi_low_quota_sub: "剩餘 ≤ 20%",
-          kpi_strategy: "策略",
-          pool_auth_unknown: "認證：-",
-          pool_auth_connected: "認證：已連線",
-          pool_auth_disconnected: "認證：未連線",
-          pool_risk_hint_enabled: "{enabled}/{total} 已啟用",
-          pool_risk_hint_disabled: "多帳號已停用",
-          current_account_title: "目前帳號",
-          switch_to_this_account: "切換到此帳號",
-          account_logout: "登出",
-          best_account_recommendation: "最佳帳號推薦",
-          all_accounts_title: "所有帳號",
-          all_accounts_with_count: "所有帳號（{count}）",
-          all_accounts_refresh: "刷新全部帳號狀態",
-          all_accounts_refreshing: "正在刷新全部帳號狀態...",
-          account_no_active: "尚未選擇目前帳號。",
-          account_no_recommendation: "尚無推薦結果。",
-          account_no_recommendation_available: "目前沒有可推薦的帳號。",
-          account_loading_pool: "帳號池載入中...",
-          account_no_pool_accounts: "尚無池內帳號，請使用連接帳號。",
-          account_usage_not_fetched: "尚未抓取用量快照。",
-          account_name_unknown: "未命名帳號",
-          account_slot: "槽位",
-          account_expires: "到期",
-          account_last_used: "上次使用",
-          account_failures: "失敗次數",
-          account_cooldown: "冷卻",
-          account_plan: "方案",
-          account_usage_updated: "用量更新",
-          account_entry_prefix: "條目",
-          account_error_prefix: "上次錯誤",
-          account_title_switch_tooltip_enabled: "切換目前帳號到此帳號",
-          account_title_switch_tooltip_active: "這已是目前帳號",
-          account_title_switch_tooltip_disabled: "此帳號已停用",
-          account_title_switch_tooltip_unresolved: "無法解析此帳號識別",
-          account_title_logout_tooltip_enabled: "登出並從帳號池移除此帳號",
-          account_title_logout_tooltip_unresolved: "無法解析此帳號識別",
-          account_status_healthy: "健康",
-          account_status_limited: "受限",
-          account_status_limited_hard: "嚴重受限",
-          account_status_cooldown: "冷卻中",
-          account_status_expiring: "即將到期",
-          account_status_expired: "已過期",
-          account_status_disabled: "已停用",
-          account_status_active: "目前",
-          cooldown_ready: "可用",
-          limit_weekly: "每週額度",
-          limit_5h: "5 小時額度",
-          limit_primary: "主要額度",
-          limit_hour: "{hours} 小時額度",
-          limit_minute: "{minutes} 分鐘額度",
-          limit_short_weekly: "W",
-          limit_short_5h: "5h",
-          limit_short_primary: "P",
-          limit_short_hour: "{hours}h",
-          limit_short_minute: "{minutes}m",
-          remaining_used: "剩餘 {remaining}% · 已用 {used}%",
-          remaining_only: "剩餘 {remaining}%",
-          token_usage_format: "輸入 {input} / 輸出 {output}",
-          request_detail_title: "代理請求詳情",
-          request_detail_title_fmt: "代理請求詳情 · {method} {path}",
-          request_detail_close: "關閉",
-          request_detail_request_packet: "請求封包",
-          request_detail_response_packet: "回應封包",
-          request_detail_copy: "複製",
-          request_detail_copied: "已複製",
-          request_detail_content_type: "內容類型：{type}",
-          request_detail_empty: "（空）",
-          req_meta_request_time: "請求時間",
-          req_meta_latency: "延遲",
-          req_meta_token_usage: "Token 用量",
-          req_meta_total_tokens: "Token 總量",
-          req_meta_protocol: "協定",
-          req_meta_model: "模型",
-          req_meta_account: "帳號",
-          req_meta_path: "路徑",
-          req_meta_status: "狀態",
-          req_meta_upstream_retries: "上游重試次數",
-          req_meta_transport_error_code: "傳輸錯誤代碼",
-          req_meta_transport_error_detail: "傳輸錯誤細節",
-          req_meta_compatibility: "相容性提示",
-          compatibility_previous_response_id_unsupported: "previous_response_id 不受支援；需改用 replay",
-          compatibility_previous_response_id_emulated_locally: "previous_response_id 已由本地 proxy 模擬；replay 保留在 proxy 內部",
-          router_title: "模型路由",
-          router_hint: "優先順序：精確映射 > 萬用字元（`*`）> 系統回退映射。",
-          router_enable: "啟用模型路由",
-          router_add_mapping: "新增映射",
-          router_reset_mappings: "重設映射",
-          router_reload_models: "重新載入模型選項",
-          router_source: "來源",
-          router_target: "目標",
-          router_action: "操作",
-          router_select_model: "選擇模型...",
-          router_delete: "刪除",
-          recent_requests_title: "近期代理請求",
-          recent_requests_record: "記錄請求",
-          recent_requests_ignore: "忽略請求",
-          recent_requests_clear: "清除紀錄",
-          recent_requests_total_requests: "請求總數",
-          recent_requests_total_requests_sub: "目前顯示筆數",
-          recent_requests_total_input: "輸入總計",
-          recent_requests_total_input_sub: "輸入 Token 加總",
-          recent_requests_total_output: "輸出總計",
-          recent_requests_total_output_sub: "輸出 Token 加總",
-          recent_requests_total_tokens: "總量",
-          recent_requests_total_tokens_sub: "輸入與輸出總和",
-          recent_requests_time: "時間",
-          recent_requests_method: "方法",
-          recent_requests_path: "路徑",
-          recent_requests_input: "輸入",
-          recent_requests_output: "輸出",
-          recent_requests_total: "總量",
-          recent_requests_status: "狀態",
-          recent_requests_latency: "延遲",
-          quota_remaining_percent_title: "剩餘額度百分比",
-          autosave_saving: "自動儲存中...",
-          autosave_saved: "已自動儲存。",
-          autosave_failed: "自動儲存失敗：{message}",
-          autosave_pending: "等待自動儲存...",
-          alert_mapping_required: "來源模型與目標模型都必填。",
-          confirm_reset_mappings: "確定要重設全部自訂模型映射嗎？",
-          confirm_clear_requests: "確定要清除全部近期代理請求紀錄嗎？",
-          alert_logout_failed: "登出失敗：{message}",
-          alert_account_logout_failed: "帳號登出失敗：{message}",
-          alert_switch_failed: "切換帳號失敗：{message}",
-          alert_switch_target_missing: "無法解析目標帳號識別。",
-          alert_switch_no_enabled: "沒有可切換的啟用帳號。",
-          alert_switch_only_one: "目前只有一個啟用帳號。",
-          alert_refresh_requests_failed: "刷新請求失敗：{message}",
-          alert_clear_requests_failed: "清除請求紀錄失敗：{message}",
-          alert_refresh_usage_failed: "刷新用量失敗：{message}",
-          alert_api_key_generate_failed: "產生 API 金鑰失敗：{message}",
-          alert_api_key_revoke_failed: "撤銷 API 金鑰失敗：{message}",
-          alert_api_key_copy_failed: "複製 API 金鑰失敗：{message}",
-          alert_request_detail_copy_failed: "複製請求日誌失敗：{message}",
-          alert_token_export_empty: "沒有可導出的帳號 Token。",
-          alert_token_export_success: "已導出 {count} 個 Token 檔案。",
-          alert_token_export_failed: "導出 Token 失敗：{message}",
-          alert_token_import_no_json: "選取的資料夾中找不到有效的 JSON Token 檔案。",
-          alert_token_import_success: "已導入 {count} 個 Token。",
-          alert_token_import_failed: "導入 Token 失敗：{message}",
-          alert_public_access_start_failed: "啟動公網訪問失敗：{message}",
-          alert_public_access_stop_failed: "停止公網訪問失敗：{message}",
-          alert_public_access_install_failed: "安裝 cloudflared 失敗：{message}",
-          alert_public_access_refresh_failed: "刷新公網訪問狀態失敗：{message}",
-          alert_public_access_copy_failed: "複製公網 URL 失敗：{message}"
-        }
-      };
-      function buildSimplifiedChineseTable(source) {
-        const replacements = [
-          ["執行狀態", "运行状态"],
-          ["狀態心跳檢查", "状态心跳检查"],
-          ["控制台", "控制台"],
-          ["本地控制介面", "本地控制界面"],
-          ["認證", "认证"],
-          ["執行診斷", "运行诊断"],
-          ["特效等級", "特效等级"],
-          ["效能守護", "性能守护"],
-          ["運行時間", "运行时间"],
-          ["基礎 URL", "基础 URL"],
-          ["重新整理", "刷新"],
-          ["OAuth 登入", "OAuth 登录"],
-          ["登出目前帳號", "登出当前账号"],
-          ["導出 Token", "导出 Token"],
-          ["導入 Token", "导入 Token"],
-          ["導入進度", "导入进度"],
-          ["準備導入中", "准备导入中"],
-          ["掃描所選資料夾", "扫描所选文件夹"],
-          ["個 JSON 檔案", "个 JSON 文件"],
-          ["上傳", "上传"],
-          ["刷新控制台狀態", "刷新控制台状态"],
-          ["導入完成", "导入完成"],
-          ["新增帳號", "新增账号"],
-          ["目前帳號", "当前账号"],
-          ["刷新全部帳號狀態", "刷新全部账号状态"],
-          ["正在刷新全部帳號狀態", "正在刷新全部账号状态"],
-          ["切換到此帳號", "切换到此账号"],
-          ["登出並從帳號池移除此帳號", "登出并从账号池移除此账号"],
-          ["語言", "语言"],
-          ["API 金鑰", "API 密钥"],
-          ["標籤", "标签"],
-          ["有效天數", "有效天数"],
-          ["產生 API 金鑰", "生成 API 密钥"],
-          ["已產生金鑰（僅顯示一次）", "已生成密钥（仅显示一次）"],
-          ["複製", "复制"],
-          ["請求日誌", "请求日志"],
-          ["目前沒有 API 金鑰。", "目前没有 API 密钥。"],
-          ["啟用中", "启用中"],
-          ["已撤銷", "已撤销"],
-          ["建立時間", "创建时间"],
-          ["使用次數", "使用次数"],
-          ["永不過期", "永不过期"],
-          ["撤銷", "撤销"],
-          ["公網訪問", "公网访问"],
-          ["命名隧道", "命名隧道"],
-          ["本地端口", "本地端口"],
-          ["隧道 Token", "隧道 Token"],
-          ["使用 HTTP/2", "使用 HTTP/2"],
-          ["刷新狀態", "刷新状态"],
-          ["啟動隧道", "启动隧道"],
-          ["停止隧道", "停止隧道"],
-          ["缺少 cloudflared 時自動安裝", "缺少 cloudflared 时自动安装"],
-          ["安裝 cloudflared", "安装 cloudflared"],
-          ["安裝中", "安装中"],
-          ["公網 URL", "公网 URL"],
-          ["複製 URL", "复制 URL"],
-          ["服務等級", "服务等级"],
-          ["服務", "服务"],
-          ["優先", "优先"],
-          ["沒有可導出的帳號 Token。", "没有可导出的账号 Token。"],
-          ["已導出 {count} 個 Token 檔案。", "已导出 {count} 个 Token 文件。"],
-          ["導出 Token 失敗：{message}", "导出 Token 失败：{message}"],
-          ["選取的資料夾中找不到有效的 JSON Token 檔案。", "所选文件夹中找不到有效的 JSON Token 文件。"],
-          ["已導入 {count} 個 Token。", "已导入 {count} 个 Token。"],
-          ["導入 Token 失敗：{message}", "导入 Token 失败：{message}"],
-          ["未安裝 cloudflared", "未安装 cloudflared"],
-          ["執行中", "运行中"],
-          ["已停止", "已停止"],
-          ["狀態=", "状态="],
-          ["模式=", "模式="],
-          ["本地=", "本地="],
-          ["安裝=", "安装="],
-          ["版本=", "版本="],
-          ["網址=", "网址="],
-          ["錯誤=", "错误="],
-          ["代理設定", "代理设置"],
-          ["上游協定模式", "上游协议模式"],
-          ["預設模型", "默认模型"],
-          ["預設指示詞", "默认指令词"],
-          ["思維長度", "思维长度"],
-          ["帳號池策略", "账号池策略"],
-          ["智慧（健康優先）", "智能（健康优先）"],
-          ["手動（僅目前帳號）", "手动（仅当前账号）"],
-          ["自我測試", "自测"],
-          ["提示詞", "提示词"],
-          ["執行上游測試", "执行上游测试"],
-          ["尚未執行測試。", "尚未执行测试。"],
-          ["測試執行中...", "测试执行中..."],
-          ["測試失敗", "测试失败"],
-          ["初始化失敗", "初始化失败"],
-          ["帳號池", "账号池"],
-          ["雙視窗帳號會顯示", "双窗口账号会显示"],
-          ["單視窗方案", "单窗口方案"],
-          ["刷新用量（全部）", "刷新用量（全部）"],
-          ["冷卻秒數", "冷却秒数"],
-          ["立即預熱", "立即预热"],
-          ["尚未執行預熱。", "尚未执行预热。"],
-          ["尚無預熱狀態。", "暂无预热状态。"],
-          ["預熱執行中...", "预热执行中..."],
-          ["預熱失敗", "预热失败"],
-          ["狀態=", "状态="],
-          ["執行中", "执行中"],
-          ["閒置", "空闲"],
-          ["上次", "上次"],
-          ["成功", "成功"],
-          ["失敗", "失败"],
-          ["選取", "选取"],
-          ["帳號總數", "账号总数"],
-          ["所有池內身份", "所有池内身份"],
-          ["健康比例", "健康比例"],
-          ["可用於請求路由", "可用于请求路由"],
-          ["主要視窗平均剩餘", "主要窗口平均剩余"],
-          ["次要視窗平均剩餘", "次要窗口平均剩余"],
-          ["每週用量視窗", "每周用量窗口"],
-          ["冷卻中", "冷却中"],
-          ["暫時停用", "临时停用"],
-          ["風險帳號", "风险账号"],
-          ["停用 / 過期", "停用 / 过期"],
-          ["低額度", "低额度"],
-          ["剩餘", "剩余"],
-          ["認證：已連線", "认证：已连接"],
-          ["認證：未連線", "认证：未连接"],
-          ["認證：-", "认证：-"],
-          ["已啟用", "已启用"],
-          ["切換到此帳號", "切换到此账号"],
-          ["最佳帳號推薦", "最佳账号推荐"],
-          ["所有帳號", "所有账号"],
-          ["尚未選擇目前帳號。", "尚未选择当前账号。"],
-          ["尚無推薦結果。", "暂无推荐结果。"],
-          ["目前沒有可推薦的帳號。", "当前没有可推荐的账号。"],
-          ["帳號池載入中...", "账号池加载中..."],
-          ["尚無池內帳號", "暂无池内账号"],
-          ["請使用 OAuth 登入 / 新增帳號。", "请使用 OAuth 登录 / 新增账号。"],
-          ["尚未抓取用量快照。", "尚未抓取用量快照。"],
-          ["未命名帳號", "未命名账号"],
-          ["槽位", "槽位"],
-          ["到期", "到期"],
-          ["上次使用", "上次使用"],
-          ["失敗次數", "失败次数"],
-          ["冷卻", "冷却"],
-          ["方案", "套餐"],
-          ["用量更新", "用量更新"],
-          ["條目", "条目"],
-          ["上次錯誤", "上次错误"],
-          ["切換目前帳號到此帳號", "切换当前账号到此账号"],
-          ["這已是目前帳號", "这已是当前账号"],
-          ["此帳號已停用", "此账号已停用"],
-          ["無法解析此帳號識別", "无法解析此账号标识"],
-          ["健康", "健康"],
-          ["受限", "受限"],
-          ["嚴重受限", "严重受限"],
-          ["即將到期", "即将到期"],
-          ["已過期", "已过期"],
-          ["已停用", "已停用"],
-          ["目前", "当前"],
-          ["可用", "可用"],
-          ["每週額度", "每周额度"],
-          ["5 小時額度", "5 小时额度"],
-          ["主要額度", "主要额度"],
-          ["小時額度", "小时额度"],
-          ["分鐘額度", "分钟额度"],
-          ["剩餘 {remaining}% · 已用 {used}%", "剩余 {remaining}% · 已用 {used}%"],
-          ["輸入", "输入"],
-          ["輸出", "输出"],
-          ["代理請求詳情", "代理请求详情"],
-          ["關閉", "关闭"],
-          ["請求封包", "请求封包"],
-          ["回應封包", "响应封包"],
-          ["內容類型", "内容类型"],
-          ["（空）", "（空）"],
-          ["請求時間", "请求时间"],
-          ["延遲", "延迟"],
-          ["協定", "协议"],
-          ["模型路由", "模型路由"],
-          ["優先順序", "优先顺序"],
-          ["精確映射", "精确映射"],
-          ["萬用字元", "通配符"],
-          ["系統回退映射", "系统回退映射"],
-          ["啟用模型路由", "启用模型路由"],
-          ["新增映射", "新增映射"],
-          ["重設映射", "重置映射"],
-          ["重新載入模型選項", "重新加载模型选项"],
-          ["來源", "来源"],
-          ["目標", "目标"],
-          ["操作", "操作"],
-          ["選擇模型...", "选择模型..."],
-          ["刪除", "删除"],
-          ["近期代理請求", "近期代理请求"],
-          ["刷新請求", "刷新请求"],
-          ["清除紀錄", "清除记录"],
-          ["時間", "时间"],
-          ["方法", "方法"],
-          ["路徑", "路径"],
-          ["總量", "总量"],
-          ["自動儲存中...", "自动保存中..."],
-          ["已自動儲存。", "已自动保存。"],
-          ["自動儲存失敗", "自动保存失败"],
-          ["等待自動儲存...", "等待自动保存..."],
-          ["來源模型與目標模型都必填。", "来源模型与目标模型都必填。"],
-          ["確定要重設全部自訂模型映射嗎？", "确定要重置全部自定义模型映射吗？"],
-          ["確定要清除全部近期代理請求紀錄嗎？", "确定要清除全部近期代理请求记录吗？"],
-          ["登出失敗", "登出失败"],
-          ["切換帳號失敗", "切换账号失败"],
-          ["無法解析目標帳號識別。", "无法解析目标账号标识。"],
-          ["沒有可切換的啟用帳號。", "没有可切换的启用账号。"],
-          ["目前只有一個啟用帳號。", "当前只有一个启用账号。"],
-          ["刷新請求失敗", "刷新请求失败"],
-          ["清除請求紀錄失敗", "清除请求记录失败"],
-          ["刷新用量失敗", "刷新用量失败"]
-        ];
+      const dashboardI18n = createDashboardI18n();
+      let uiLang = dashboardI18n.getLanguage();
+      const desktopBridge =
+        window.codexProMaxDesktop && typeof window.codexProMaxDesktop === "object" ? window.codexProMaxDesktop : null;
+      let runtimePortPendingConfirmation = null;
+      let runtimePortApplyInFlight = false;
 
-        const out = {};
-        for (const [key, value] of Object.entries(source || {})) {
-          if (typeof value !== "string") {
-            out[key] = value;
-            continue;
-          }
-          let next = value;
-          for (const [from, to] of replacements) {
-            next = next.split(from).join(to);
-          }
-          out[key] = next;
-        }
-        return out;
-      }
-
-      I18N_TEXT["zh-hans"] = buildSimplifiedChineseTable(I18N_TEXT["zh-hant"]);
-
-      let uiLang = "en";
       const FX_PROFILE = {
         high: {
           sparkIntervalMs: 42,
@@ -3790,216 +3259,19 @@
       }
 
       function readStoredString(key) {
-        try {
-          return localStorage.getItem(key);
-        } catch (_) {
-          return null;
-        }
+        return readStoredStringFromStore(key);
       }
 
       function readStoredBool(key) {
-        const raw = readStoredString(key);
-        if (raw === null) return null;
-        return raw === "1";
+        return readStoredBoolFromStore(key);
       }
 
       function writeStoredString(key, value) {
-        try {
-          localStorage.setItem(key, value);
-        } catch (_) {
-          // ignore storage errors
-        }
+        writeStoredStringFromStore(key, value);
       }
 
       function readStoredNumber(key, fallback, min, max) {
-        const raw = readStoredString(key);
-        const n = Number(raw);
-        if (!Number.isFinite(n)) return fallback;
-        return Math.min(max, Math.max(min, Math.floor(n)));
-      }
-
-      function readNumberInputValue(id, fallback, min, max) {
-        const node = $(id);
-        const raw = String(node?.value ?? "").trim();
-        if (!raw) return fallback;
-        const n = Number(raw);
-        if (!Number.isFinite(n)) return fallback;
-        return Math.min(max, Math.max(min, Math.floor(n)));
-      }
-
-      function syncTempMailWorkersDisabled() {
-        const input = $("tempMailWorkers");
-        const allowParallel = $("tempMailAllowParallel").checked;
-        input.disabled = !allowParallel;
-      }
-
-      function loadTempMailFormFromStorage() {
-        $("tempMailCount").value = String(readStoredNumber(TEMP_MAIL_COUNT_STORAGE_KEY, 1, 1, 100));
-        $("tempMailPassword").value = readStoredString(TEMP_MAIL_PASSWORD_STORAGE_KEY) || "";
-        $("tempMailDelay").value = String(readStoredNumber(TEMP_MAIL_DELAY_STORAGE_KEY, 15, 0, 300));
-        $("tempMailWorkers").value = String(readStoredNumber(TEMP_MAIL_WORKERS_STORAGE_KEY, 1, 1, 50));
-        $("tempMailAllowParallel").checked = readStoredBool(TEMP_MAIL_ALLOW_PARALLEL_STORAGE_KEY) === true;
-        syncTempMailWorkersDisabled();
-      }
-
-      function saveTempMailFormToStorage() {
-        writeStoredString(TEMP_MAIL_COUNT_STORAGE_KEY, String(readNumberInputValue("tempMailCount", 1, 1, 100)));
-        writeStoredString(TEMP_MAIL_PASSWORD_STORAGE_KEY, String($("tempMailPassword").value || ""));
-        writeStoredString(TEMP_MAIL_DELAY_STORAGE_KEY, String(readNumberInputValue("tempMailDelay", 15, 0, 300)));
-        writeStoredString(TEMP_MAIL_WORKERS_STORAGE_KEY, String(readNumberInputValue("tempMailWorkers", 1, 1, 50)));
-        writeStoredString(TEMP_MAIL_ALLOW_PARALLEL_STORAGE_KEY, $("tempMailAllowParallel").checked ? "1" : "0");
-      }
-
-      function buildTempMailPayload() {
-        const count = readNumberInputValue("tempMailCount", 1, 1, 100);
-        const workers = readNumberInputValue("tempMailWorkers", 1, 1, 50);
-        const nextDelaySeconds = readNumberInputValue("tempMailDelay", 15, 0, 300);
-        return {
-          count,
-          password: String($("tempMailPassword").value || "").trim(),
-          workers,
-          nextDelaySeconds,
-          allowParallel: $("tempMailAllowParallel").checked
-        };
-      }
-
-      function renderTempMailConsole(logs) {
-        const el = $("tempMailConsole");
-        const entries = Array.isArray(logs) ? logs : [];
-        const stickToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-        if (entries.length === 0) {
-          el.innerHTML = `<div class="temp-mail-console-line">${escapeHtml(t("temp_mail_console_empty"))}</div>`;
-          return;
-        }
-        el.innerHTML = entries
-          .map((entry) => {
-            const level = String(entry?.level || "info").toLowerCase();
-            const cls =
-              level === "success"
-                ? " is-success"
-                : level === "warning"
-                  ? " is-warning"
-                  : level === "error"
-                    ? " is-error"
-                    : "";
-            return `<div class="temp-mail-console-line${cls}">${escapeHtml(String(entry?.text || ""))}</div>`;
-          })
-          .join("");
-        if (stickToBottom) {
-          el.scrollTop = el.scrollHeight;
-        }
-      }
-
-      function isTempMailPasswordRequiredError(err) {
-        const message = String(err?.message || err || "").trim().toLowerCase();
-        return message === "temp mail password is required.";
-      }
-
-      function showTempMailInlineWarning(message) {
-        const summaryEl = $("tempMailSummary");
-        summaryEl.className = "result temp-mail-summary warn";
-        summaryEl.textContent = message;
-        renderTempMailConsole([{ level: "warning", text: message }]);
-      }
-
-      function syncTempMailRefreshLoop() {
-        const isActive = Boolean(lastTempMailState && (lastTempMailState.running || lastTempMailState.stopping));
-        if (!isActive) {
-          if (tempMailRefreshTimerId) {
-            clearInterval(tempMailRefreshTimerId);
-            tempMailRefreshTimerId = 0;
-          }
-          return;
-        }
-        if (tempMailRefreshTimerId) return;
-        tempMailRefreshTimerId = setInterval(() => {
-          if (!(lastTempMailState && (lastTempMailState.running || lastTempMailState.stopping))) {
-            clearInterval(tempMailRefreshTimerId);
-            tempMailRefreshTimerId = 0;
-            return;
-          }
-          refreshState(false).catch(() => {});
-        }, TEMP_MAIL_ACTIVE_REFRESH_MS);
-      }
-
-      function renderTempMailState(tempMail) {
-        lastTempMailState = tempMail || null;
-        const summaryEl = $("tempMailSummary");
-        const toggleBtn = $("tempMailToggleBtn");
-        if (!tempMail) {
-          summaryEl.className = "result temp-mail-summary";
-          summaryEl.textContent = t("temp_mail_idle");
-          toggleBtn.textContent = t("temp_mail_toggle_run");
-          toggleBtn.disabled = tempMailActionInFlight;
-          syncTempMailWorkersDisabled();
-          renderTempMailConsole([]);
-          syncTempMailRefreshLoop();
-          return;
-        }
-
-        const state = tempMail || {};
-        const logs = Array.isArray(state.logs) ? state.logs : [];
-        const progress = state.progress || {};
-        const running = state.running === true;
-        const stopping = state.stopping === true;
-        const runnerReady = state.runnerReady === true;
-        const supported = state.supported !== false;
-        const config = state.config || {};
-        const effectiveThreads = Number(config.effectiveWorkers || 1) || 1;
-
-        if (!supported) {
-          summaryEl.className = "result temp-mail-summary bad";
-          summaryEl.textContent = tt("temp_mail_runner_missing", {
-            message: state.runnerError || "unsupported mode"
-          });
-        } else if (!runnerReady) {
-          summaryEl.className = "result temp-mail-summary bad";
-          summaryEl.textContent = tt("temp_mail_runner_missing", {
-            message: state.runnerError || "go toolchain not found"
-          });
-        } else if (stopping) {
-          summaryEl.className = "result temp-mail-summary";
-          summaryEl.textContent = t("temp_mail_stopping");
-        } else if (running) {
-          summaryEl.className = "result temp-mail-summary";
-          summaryEl.textContent = tt("temp_mail_running", {
-            success: progress.success ?? 0,
-            total: progress.total ?? 0,
-            fail: progress.fail ?? 0,
-            threads: effectiveThreads
-          });
-        } else if (state.lastResult?.summary) {
-          summaryEl.className = "result temp-mail-summary ok";
-          summaryEl.textContent = tt("temp_mail_done", {
-            success: state.lastResult.summary.success ?? 0,
-            total: state.lastResult.summary.total ?? 0,
-            fail: state.lastResult.summary.fail ?? 0
-          });
-        } else if (state.lastError) {
-          summaryEl.className = "result temp-mail-summary bad";
-          summaryEl.textContent = state.lastError;
-        } else {
-          summaryEl.className = "result temp-mail-summary";
-          summaryEl.textContent = t("temp_mail_idle");
-        }
-
-        toggleBtn.textContent = running || stopping ? t("temp_mail_toggle_stop") : t("temp_mail_toggle_run");
-        toggleBtn.disabled = tempMailActionInFlight || (!supported || !runnerReady) || stopping;
-        for (const id of [
-          "tempMailCount",
-          "tempMailPassword",
-          "tempMailDelay",
-          "tempMailAllowParallel",
-          "tempMailWorkers"
-        ]) {
-          const node = $(id);
-          node.disabled = running || stopping;
-        }
-        if (!running && !stopping) {
-          syncTempMailWorkersDisabled();
-        }
-        renderTempMailConsole(logs);
-        syncTempMailRefreshLoop();
+        return readStoredNumberFromStore(key, fallback, min, max);
       }
 
       function setHeadChip(prefix, value, tone = "neutral") {
@@ -4010,36 +3282,11 @@
         setTextAndPulse(`${prefix}Value`, value, false);
       }
 
-      function summarizeHeadTempMail(tempMail) {
-        if (!tempMail) return { text: t("hero_temp_idle"), tone: "neutral" };
-        if (tempMail.stopping) return { text: t("hero_temp_stopping"), tone: "warn" };
-        if (tempMail.running) {
-          return {
-            text: tt("hero_temp_running", {
-              success: tempMail.progress?.success ?? 0,
-              total: tempMail.progress?.total ?? 0
-            }),
-            tone: "accent"
-          };
-        }
-        if (tempMail.lastError) return { text: t("hero_temp_error"), tone: "bad" };
-        if (tempMail.lastResult?.summary) {
-          return {
-            text: tt("hero_temp_done", {
-              success: tempMail.lastResult.summary.success ?? 0,
-              total: tempMail.lastResult.summary.total ?? 0
-            }),
-            tone: "ok"
-          };
-        }
-        return { text: t("hero_temp_idle"), tone: "neutral" };
-      }
-
       function renderHeadOverview(state) {
         const authOk = Boolean(state.auth?.authenticated);
         const accounts = Array.isArray(state.auth?.accounts) ? state.auth.accounts : [];
         const enabledCount = Number(state.auth?.enabledAccountCount || 0);
-        const tempSummary = summarizeHeadTempMail(state.tempMail || null);
+        const tempSummary = tempMailFeature.summarizeHead();
 
         setHeadChip("heroAuth", authOk ? t("hero_auth_ok") : t("hero_auth_missing"), authOk ? "ok" : "bad");
         setHeadChip("heroMode", displayUpstreamMode(state.config?.upstreamMode || "-"), "accent");
@@ -4047,44 +3294,128 @@
         setHeadChip("heroTemp", tempSummary.text, tempSummary.tone);
       }
 
-      function normalizeUiLang(value) {
-        const v = String(value || "").trim().toLowerCase();
-        if (["zh-hans", "zh_cn", "zh-cn", "hans", "cn", "sc"].includes(v)) return "zh-hans";
-        if (["zh-hant", "zh_tw", "zh-tw", "zh-hk", "hant", "tw", "tc", "zh"].includes(v)) return "zh-hant";
-        return "en";
+      function normalizeRuntimeDisplayHost(value) {
+        const host = String(value || "").trim();
+        if (!host || host === "0.0.0.0" || host === "::" || host === "[::]") return "127.0.0.1";
+        return host;
       }
 
-      function t(key) {
-        const table = I18N_TEXT[uiLang] || I18N_TEXT.en;
-        return table[key] ?? I18N_TEXT.en[key] ?? key;
+      function setRuntimePortStatus(message, tone = "") {
+        const noteEl = $("runtimePortStatus");
+        if (!(noteEl instanceof HTMLElement)) return;
+        noteEl.textContent = String(message || "");
+        noteEl.classList.toggle("is-ok", tone === "ok");
+        noteEl.classList.toggle("is-pending", tone === "pending");
+        noteEl.classList.toggle("is-error", tone === "bad");
       }
 
-      function tt(key, vars = {}) {
-        const template = String(t(key));
-        return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, varName) => {
-          if (!Object.prototype.hasOwnProperty.call(vars, varName)) return "";
-          const value = vars[varName];
-          return value === undefined || value === null ? "" : String(value);
+      function isValidPortNumber(value) {
+        return Number.isInteger(value) && value >= 1 && value <= 65535;
+      }
+
+      function getSavedRuntimePort() {
+        const input = $("runtimePort");
+        const saved = Number(input?.dataset?.lastSavedValue || "");
+        if (isValidPortNumber(saved)) return saved;
+        const parsed = Number(input?.value || "");
+        if (isValidPortNumber(parsed)) return parsed;
+        return 8787;
+      }
+
+      function getActiveRuntimePort() {
+        const input = $("runtimePort");
+        const active = Number(input?.dataset?.activeRuntimePort || "");
+        if (isValidPortNumber(active)) return active;
+        return getSavedRuntimePort();
+      }
+
+      function patchAutoSaveSnapshot(patch) {
+        let snapshot = {};
+        try {
+          snapshot = autoSaveSnapshot ? JSON.parse(autoSaveSnapshot) : {};
+        } catch {
+          snapshot = {};
+        }
+        autoSaveSnapshot = JSON.stringify({
+          ...snapshot,
+          ...patch
         });
       }
 
-      function syncAccountStatusRefreshControls() {
-        const busy = usageRefreshInFlight === true;
-        const toolbarBtn = $("refreshUsageBtn");
-        if (toolbarBtn instanceof HTMLButtonElement) {
-          toolbarBtn.disabled = busy;
+      function syncRuntimePortStatus(activePort = getActiveRuntimePort(), configuredPort = getSavedRuntimePort()) {
+        if (configuredPort !== activePort) {
+          setRuntimePortStatus(tt("runtime_port_pending", { active: activePort, configured: configuredPort }), "pending");
+          return;
         }
-        const iconBtn = $("refreshAllAccountsBtn");
-        if (!(iconBtn instanceof HTMLButtonElement)) return;
-        const label = t(busy ? "all_accounts_refreshing" : "all_accounts_refresh");
-        iconBtn.disabled = busy;
-        iconBtn.title = label;
-        iconBtn.setAttribute("aria-label", label);
-        iconBtn.classList.toggle("is-spinning", busy);
+        setRuntimePortStatus(tt("runtime_port_synced", { port: activePort }), "ok");
+      }
+
+      function canAutoRestartRuntimePort() {
+        return Boolean(desktopBridge && typeof desktopBridge.restartBackend === "function");
+      }
+
+      function renderRuntimeAddress(state, { preservePortInput = false } = {}) {
+        const cfg = state?.config || {};
+        const activePort = Number(cfg.activeRuntimePort || cfg.port || 8787) || 8787;
+        const configuredPort = Number(cfg.runtimePort || activePort || 8787) || 8787;
+        const host = normalizeRuntimeDisplayHost(cfg.runtimeHost || "127.0.0.1");
+        const runtimePortInput = $("runtimePort");
+        const baseUrlEl = $("runtimeBaseUrlValue");
+        const noteEl = $("runtimePortStatus");
+
+        if (baseUrlEl) {
+          baseUrlEl.textContent = `http://${host}:${activePort}/v1`;
+        }
+        if (runtimePortInput && !preservePortInput) {
+          runtimePortInput.value = String(configuredPort);
+        }
+        if (runtimePortInput) {
+          runtimePortInput.dataset.lastSavedValue = String(configuredPort);
+          runtimePortInput.dataset.activeRuntimePort = String(activePort);
+          runtimePortInput.dataset.runtimeHost = host;
+        }
+        if (noteEl instanceof HTMLElement) {
+          syncRuntimePortStatus(activePort, configuredPort);
+        }
+      }
+
+      function normalizeUiLang(value) {
+        return dashboardI18n.normalizeUiLang(value);
+      }
+
+      function t(key) {
+        return dashboardI18n.t(key);
+      }
+
+      function tt(key, vars = {}) {
+        return dashboardI18n.tt(key, vars);
+      }
+
+      function setResultMessage(id, message, tone = "") {
+        const node = $(id);
+        if (!node) return;
+        node.className = tone ? `result ${tone}` : "result";
+        node.textContent = message;
+      }
+      const dashboardAuthFeature = createDashboardAuthFeature({
+        $,
+        api,
+        t,
+        tt,
+        setResultMessage,
+        minimumPasswordLength: DASHBOARD_AUTH_MIN_PASSWORD_LENGTH,
+        loadProtectedData: async () => {
+          await loadModelCandidates();
+          await refreshState(true);
+        }
+      });
+
+      function syncAccountStatusRefreshControls() {
+        poolFeature.syncRefreshControls();
       }
 
       function applyUiLanguage(lang, options = {}) {
-        uiLang = normalizeUiLang(lang);
+        uiLang = dashboardI18n.setLanguage(lang);
         if (options.persist !== false) {
           writeStoredString(UI_LANG_STORAGE_KEY, uiLang);
         }
@@ -4101,8 +3432,10 @@
         renderMappingsTable();
         syncServiceTierControl();
         syncAllCustomSelects();
+        dashboardAuthFeature.render();
+        publicAccessFeature.render(publicAccessFeature.getStatusSnapshot());
         recentRequestsUi.renderRecordingToggle();
-        renderTempMailState(lastTempMailState);
+        tempMailFeature.render(tempMailFeature.getState());
         recentRequestsUi.reopenActiveDetail();
       }
 
@@ -4451,6 +3784,12 @@
         return `${v.toFixed(1).replace(/\\.0$/, "")}k`;
       }
 
+      function parseTokenMetric(value) {
+        if (value === null || value === undefined || value === "") return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+
       function fmtUnixSec(sec) {
         if (!Number.isFinite(sec) || sec <= 0) return "-";
         return new Date(sec * 1000).toLocaleString();
@@ -4470,20 +3809,31 @@
       function sumRecentRequestTotals(rows) {
         return (Array.isArray(rows) ? rows : []).reduce(
           (acc, row) => {
-            const input = Number(row?.inputTokens);
-            const output = Number(row?.outputTokens);
-            const total = Number(row?.totalTokens);
-            const hasInput = Number.isFinite(input);
-            const hasOutput = Number.isFinite(output);
-            const hasTotal = Number.isFinite(total);
+            const input = parseTokenMetric(row?.inputTokens);
+            const output = parseTokenMetric(row?.outputTokens);
+            const total = parseTokenMetric(row?.totalTokens);
+            const hasInput = input !== null;
+            const hasOutput = output !== null;
+            const hasTotal = total !== null;
             acc.count += 1;
-            if (hasInput) acc.input += input;
-            if (hasOutput) acc.output += output;
-            if (hasTotal) acc.total += total;
-            else if (hasInput || hasOutput) acc.total += (hasInput ? input : 0) + (hasOutput ? output : 0);
+            if (hasInput) {
+              acc.input += input;
+              acc.knownInput += 1;
+            }
+            if (hasOutput) {
+              acc.output += output;
+              acc.knownOutput += 1;
+            }
+            if (hasTotal) {
+              acc.total += total;
+              acc.knownTotal += 1;
+            } else if (hasInput || hasOutput) {
+              acc.total += (hasInput ? input : 0) + (hasOutput ? output : 0);
+              acc.knownTotal += 1;
+            }
             return acc;
           },
-          { count: 0, input: 0, output: 0, total: 0 }
+          { count: 0, input: 0, output: 0, total: 0, knownInput: 0, knownOutput: 0, knownTotal: 0 }
         );
       }
 
@@ -4835,14 +4185,6 @@
         syncCustomSelect(select);
       }
 
-      function healthDisplayLabel(label) {
-        const raw = String(label || "").trim();
-        if (!raw) return "-";
-        const key = `account_status_${raw.replaceAll("-", "_")}`;
-        const localized = t(key);
-        return localized === key ? raw : localized;
-      }
-
       function localizeStrategyName(value) {
         const raw = String(value || "").trim();
         if (!raw) return "-";
@@ -4873,7 +4215,7 @@
         if (label && accountId) return `${label} (${shortId(accountId)})`;
         if (label) return label;
         if (!accountId) return "-";
-        const match = lastAccounts.find(
+        const match = poolFeature.getLastAccounts().find(
           (acc) =>
             String(acc?.entryId || "").trim() === accountId ||
             String(acc?.accountId || "").trim() === accountId
@@ -4918,365 +4260,14 @@
         const safeRows = Array.isArray(rows) ? rows : [];
         const requestTotals = sumRecentRequestTotals(safeRows);
         setTextAndPulse("recentReqCount", String(requestTotals.count), false);
-        setTextAndPulse("recentReqInputTotal", fmtToken(requestTotals.input), false);
-        setTextAndPulse("recentReqOutputTotal", fmtToken(requestTotals.output), false);
-        setTextAndPulse("recentReqGrandTotal", fmtToken(requestTotals.total), false);
+        setTextAndPulse("recentReqInputTotal", requestTotals.knownInput > 0 ? fmtToken(requestTotals.input) : "-", false);
+        setTextAndPulse(
+          "recentReqOutputTotal",
+          requestTotals.knownOutput > 0 ? fmtToken(requestTotals.output) : "-",
+          false
+        );
+        setTextAndPulse("recentReqGrandTotal", requestTotals.knownTotal > 0 ? fmtToken(requestTotals.total) : "-", false);
         recentRequestsUi.renderRows(safeRows);
-      }
-
-      function getAccountIdentity(account) {
-        return String(account?.entryId || account?.accountId || "");
-      }
-
-      function safePercent(value) {
-        if (value === null || value === undefined || value === "") return null;
-        const n = Number(value);
-        if (!Number.isFinite(n)) return null;
-        return Math.max(0, Math.min(100, n));
-      }
-
-      function resolveAccountHealth(account, activeAccountId) {
-        const nowSec = Math.floor(Date.now() / 1000);
-        const enabled = account?.enabled !== false;
-        const isActive = getAccountIdentity(account) === String(activeAccountId || "");
-        const serverStatus = String(account?.healthStatus || "").trim().toLowerCase();
-        if (serverStatus) {
-          if (serverStatus === "healthy") return { label: "healthy", tone: "ok", isActive };
-          if (serverStatus === "limited") {
-            const tone = account?.hardLimited ? "bad" : "warn";
-            const label = account?.hardLimited ? "limited-hard" : "limited";
-            return { label, tone, isActive };
-          }
-          if (serverStatus === "cooldown") return { label: "cooldown", tone: "warn", isActive };
-          if (serverStatus === "expiring") return { label: "expiring", tone: "warn", isActive };
-          if (serverStatus === "expired") return { label: "expired", tone: "bad", isActive };
-          if (serverStatus === "disabled") return { label: "disabled", tone: "bad", isActive };
-        }
-        const cooldownUntil = Number(account?.cooldownUntil || 0);
-        const expiresAt = Number(account?.expiresAt || 0);
-        const inCooldown = cooldownUntil > nowSec;
-        const expired = expiresAt > 0 && expiresAt <= nowSec;
-        const expiringSoon = expiresAt > nowSec && expiresAt - nowSec < 180;
-        const usageView = resolveUsageWindows(account);
-        const planType = String(usageView?.usage?.plan_type || "").trim().toLowerCase();
-        const lowQuotaThreshold =
-          usageView?.singleWindowMode || planType === "free" ? 30 : 20;
-        const primaryRemaining = usageView?.primaryRemaining;
-        const secondaryRemaining = usageView?.secondaryRemaining;
-        const hardLimited =
-          Number.isFinite(primaryRemaining) &&
-          (!Number.isFinite(secondaryRemaining)
-            ? primaryRemaining <= 0
-            : primaryRemaining <= 0 && secondaryRemaining <= 0);
-        const lowQuota =
-          (Number.isFinite(primaryRemaining) && primaryRemaining <= lowQuotaThreshold) ||
-          (Number.isFinite(secondaryRemaining) && secondaryRemaining <= 20);
-
-        if (!enabled) return { label: "disabled", tone: "bad", isActive };
-        if (expired) return { label: "expired", tone: "bad", isActive };
-        if (inCooldown) return { label: "cooldown", tone: "warn", isActive };
-        if (hardLimited) return { label: "limited-hard", tone: "bad", isActive };
-        if (expiringSoon) return { label: "expiring", tone: "warn", isActive };
-        if (lowQuota) return { label: "limited", tone: "warn", isActive };
-        return { label: "healthy", tone: "ok", isActive };
-      }
-
-      function computeAccountScore(account, activeAccountId) {
-        if (Number.isFinite(Number(account?.healthScore))) {
-          return Math.max(0, Math.min(100, Math.round(Number(account.healthScore))));
-        }
-        const nowSec = Math.floor(Date.now() / 1000);
-        const health = resolveAccountHealth(account, activeAccountId);
-        const failureCount = Number(account?.failureCount || 0);
-        const cooldownUntil = Number(account?.cooldownUntil || 0);
-        const expiresAt = Number(account?.expiresAt || 0);
-        const primaryUsed = safePercent(account?.usageSnapshot?.primary?.used_percent);
-        const secondaryUsed = safePercent(account?.usageSnapshot?.secondary?.used_percent);
-
-        let score = 100;
-        if (account?.enabled === false) score -= 90;
-        if (health.label === "expired") score -= 80;
-        if (health.label === "cooldown") score -= 35;
-        if (health.label === "expiring") score -= 15;
-        if (health.label === "limited-hard") score -= 28;
-        if (health.label === "limited") score -= 12;
-        if (primaryUsed !== null) score -= Math.round(primaryUsed * 0.35);
-        if (secondaryUsed !== null) score -= Math.round(secondaryUsed * 0.15);
-        score -= Math.min(55, failureCount * 11);
-        if (cooldownUntil > nowSec) {
-          const remain = cooldownUntil - nowSec;
-          score -= Math.min(18, Math.floor(remain / 20));
-        }
-        if (expiresAt > nowSec && expiresAt - nowSec < 180) {
-          score -= 8;
-        }
-        if (health.isActive) score += 4;
-        return Math.max(0, Math.min(100, Math.round(score)));
-      }
-
-      function scoreTone(score) {
-        if (score >= 80) return "ok";
-        if (score >= 45) return "warn";
-        return "bad";
-      }
-
-      function remainingTone(percentRemaining) {
-        if (!Number.isFinite(percentRemaining)) return "neutral";
-        if (percentRemaining >= 70) return "ok";
-        if (percentRemaining >= 35) return "warn";
-        return "bad";
-      }
-
-      function windowMinutesOrNull(windowObj) {
-        const n = Number(windowObj?.window_minutes);
-        if (!Number.isFinite(n) || n <= 0) return null;
-        return n;
-      }
-
-      function hasUsageWindow(windowObj) {
-        if (!windowObj || typeof windowObj !== "object") return false;
-        const minutes = windowMinutesOrNull(windowObj);
-        if (minutes !== null) return true;
-
-        const resetAt = Number(windowObj.reset_at);
-        if (Number.isFinite(resetAt) && resetAt > 0) return true;
-
-        const resetAfter = Number(windowObj.reset_after_seconds);
-        if (Number.isFinite(resetAfter) && resetAfter > 0) return true;
-
-        const used = safePercent(windowObj.used_percent);
-        if (used !== null && used > 0) return true;
-
-        const remaining = safePercent(windowObj.remaining_percent);
-        if (remaining !== null && remaining < 100) return true;
-
-        return false;
-      }
-
-      function longWindowLabel(minutes, fallbackLabel) {
-        if (!Number.isFinite(minutes) || minutes <= 0) return fallbackLabel;
-        if (minutes >= 9000) return t("limit_weekly");
-        if (minutes >= 295 && minutes <= 305) return t("limit_5h");
-        if (minutes % 60 === 0) {
-          const hours = minutes / 60;
-          if (hours >= 1 && hours <= 24) return tt("limit_hour", { hours });
-        }
-        return tt("limit_minute", { minutes });
-      }
-
-      function shortWindowLabel(minutes, fallbackLabel) {
-        if (!Number.isFinite(minutes) || minutes <= 0) return fallbackLabel;
-        if (minutes >= 9000) return t("limit_short_weekly");
-        if (minutes >= 295 && minutes <= 305) return t("limit_short_5h");
-        if (minutes % 60 === 0) {
-          const hours = minutes / 60;
-          if (hours >= 1 && hours <= 24) return tt("limit_short_hour", { hours });
-        }
-        return tt("limit_short_minute", { minutes });
-      }
-
-      function resolveUsageWindows(account) {
-        const usage = account?.usageSnapshot || null;
-        const primaryHasWindow = hasUsageWindow(usage?.primary) || Number.isFinite(safePercent(account?.primaryRemaining));
-        const secondaryHasWindow =
-          hasUsageWindow(usage?.secondary) || Number.isFinite(safePercent(account?.secondaryRemaining));
-        const primaryUsed = primaryHasWindow ? safePercent(usage?.primary?.used_percent) : null;
-        const secondaryUsed = secondaryHasWindow ? safePercent(usage?.secondary?.used_percent) : null;
-        const primaryRemainingRaw = primaryHasWindow
-          ? safePercent(account?.primaryRemaining ?? usage?.primary?.remaining_percent)
-          : null;
-        const secondaryRemainingRaw = secondaryHasWindow
-          ? safePercent(account?.secondaryRemaining ?? usage?.secondary?.remaining_percent)
-          : null;
-        const primaryRemaining =
-          primaryRemainingRaw !== null
-            ? primaryRemainingRaw
-            : primaryUsed !== null
-              ? Math.max(0, Math.min(100, 100 - primaryUsed))
-              : null;
-        const secondaryRemaining =
-          secondaryRemainingRaw !== null
-            ? secondaryRemainingRaw
-            : secondaryUsed !== null
-              ? Math.max(0, Math.min(100, 100 - secondaryUsed))
-              : null;
-        const primaryWindowMinutes = windowMinutesOrNull(usage?.primary);
-        const secondaryWindowMinutes = windowMinutesOrNull(usage?.secondary);
-        const singleWindowMode = primaryHasWindow && !secondaryHasWindow;
-        const primaryLabel = longWindowLabel(
-          primaryWindowMinutes,
-          singleWindowMode ? t("limit_primary") : t("limit_5h")
-        );
-        const secondaryLabel = longWindowLabel(secondaryWindowMinutes, t("limit_weekly"));
-        const primaryShortLabel = shortWindowLabel(
-          primaryWindowMinutes,
-          singleWindowMode ? t("limit_short_primary") : t("limit_short_5h")
-        );
-        const secondaryShortLabel = shortWindowLabel(secondaryWindowMinutes, t("limit_short_weekly"));
-        return {
-          usage,
-          singleWindowMode,
-          primaryLabel,
-          secondaryLabel,
-          primaryShortLabel,
-          secondaryShortLabel,
-          primaryUsed,
-          secondaryUsed,
-          primaryRemaining,
-          secondaryRemaining
-        };
-      }
-
-      function limitPairTone(primaryRemaining, secondaryRemaining, fallbackScore) {
-        const values = [primaryRemaining, secondaryRemaining].filter(Number.isFinite);
-        if (values.length === 0) return scoreTone(fallbackScore);
-        return remainingTone(Math.min(...values));
-      }
-
-      function fmtLimitPair(usageView) {
-        const p = Number.isFinite(usageView?.primaryRemaining) ? usageView.primaryRemaining : "-";
-        const w = Number.isFinite(usageView?.secondaryRemaining) ? usageView.secondaryRemaining : "-";
-        const asPercent = (value) => (Number.isFinite(value) ? `${value}%` : "-");
-        if (usageView?.singleWindowMode) {
-          if (Number.isFinite(p)) return asPercent(p);
-          if (Number.isFinite(w)) return asPercent(w);
-          return "-";
-        }
-        return `${asPercent(p)}/${asPercent(w)}`;
-      }
-
-      function getAccountSlotNumber(account, fallbackIndex = 0) {
-        const raw = Number(account?.slot || account?._slot || 0);
-        if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
-        const idx = Number(fallbackIndex);
-        return Number.isFinite(idx) && idx >= 0 ? idx + 1 : null;
-      }
-
-      function getNextAccountSlot(minSlot = 2) {
-        const occupied = new Set();
-        for (let i = 0; i < lastAccounts.length; i += 1) {
-          const slot = getAccountSlotNumber(lastAccounts[i], i);
-          if (Number.isFinite(slot) && slot > 0) occupied.add(slot);
-        }
-        let slot = Math.max(1, Number(minSlot) || 1);
-        while (occupied.has(slot)) slot += 1;
-        return slot;
-      }
-
-      function buildAccountCardHtml(account, activeAccountId, compact = false) {
-        const health = resolveAccountHealth(account, activeAccountId);
-        const score = computeAccountScore(account, activeAccountId);
-        const slotNumber = getAccountSlotNumber(account);
-        const accountRef = getAccountIdentity(account);
-        const canSwitchToThis = compact && !health.isActive && account.enabled !== false && Boolean(accountRef);
-        const canLogoutThis = compact && Boolean(accountRef);
-        const pills = [`<span class="pill ${health.tone}">${escapeHtml(healthDisplayLabel(health.label))}</span>`];
-        if (health.isActive) pills.push(`<span class="pill neutral">${escapeHtml(t("account_status_active"))}</span>`);
-        const usageView = resolveUsageWindows(account);
-        const {
-          usage,
-          singleWindowMode,
-          primaryLabel,
-          secondaryLabel,
-          primaryUsed,
-          secondaryUsed,
-          primaryRemaining,
-          secondaryRemaining
-        } = usageView;
-        const primaryTone = remainingTone(primaryRemaining);
-        const secondaryTone = remainingTone(secondaryRemaining);
-        const pairTone = limitPairTone(primaryRemaining, secondaryRemaining, score);
-        const pairText = fmtLimitPair(usageView);
-        const usageHtml =
-          primaryUsed === null && secondaryUsed === null && primaryRemaining === null && secondaryRemaining === null
-            ? `<div class="account-empty account-empty--compact">${escapeHtml(t("account_usage_not_fetched"))}</div>`
-            : `<div class="usage-stack">
-                ${
-                  primaryUsed === null && primaryRemaining === null
-                    ? ""
-                    : `<div class="usage-item">
-                        <div class="label"><span>${escapeHtml(primaryLabel)}</span><span class="v">${
-                          primaryUsed !== null
-                            ? escapeHtml(tt("remaining_used", { remaining: primaryRemaining ?? "-", used: primaryUsed }))
-                            : escapeHtml(tt("remaining_only", { remaining: primaryRemaining ?? "-" }))
-                        }</span></div>
-                        <div class="usage-track"><div class="usage-fill ${primaryTone}" style="width:${primaryRemaining ?? 0}%"></div></div>
-                      </div>`
-                }
-                ${
-                  singleWindowMode || (secondaryUsed === null && secondaryRemaining === null)
-                    ? ""
-                    : `<div class="usage-item">
-                        <div class="label"><span>${escapeHtml(secondaryLabel)}</span><span class="v">${
-                          secondaryUsed !== null
-                            ? escapeHtml(tt("remaining_used", { remaining: secondaryRemaining ?? "-", used: secondaryUsed }))
-                            : escapeHtml(tt("remaining_only", { remaining: secondaryRemaining ?? "-" }))
-                        }</span></div>
-                        <div class="usage-track"><div class="usage-fill ${secondaryTone}" style="width:${secondaryRemaining ?? 0}%"></div></div>
-                      </div>`
-                }
-              </div>`;
-        const errorHtml =
-          typeof account.lastError === "string" && account.lastError.trim().length > 0
-            ? `<div class="account-error">${escapeHtml(t("account_error_prefix"))}: ${escapeHtml(account.lastError)}</div>`
-            : "";
-        const actionHtml =
-          compact
-            ? `<div class="account-card-actions">
-                <button
-                  class="secondary account-switch-btn"
-                  data-switch-entry="${escapeHtml(accountRef || "")}"
-                  ${canSwitchToThis ? "" : "disabled"}
-                  title="${
-                    canSwitchToThis
-                      ? escapeHtml(t("account_title_switch_tooltip_enabled"))
-                      : health.isActive
-                        ? escapeHtml(t("account_title_switch_tooltip_active"))
-                        : account.enabled === false
-                          ? escapeHtml(t("account_title_switch_tooltip_disabled"))
-                          : escapeHtml(t("account_title_switch_tooltip_unresolved"))
-                  }"
-                >${t("switch_to_this_account")}</button>
-                <button
-                  class="secondary account-logout-btn"
-                  data-logout-entry="${escapeHtml(accountRef || "")}"
-                  ${canLogoutThis ? "" : "disabled"}
-                  title="${
-                    canLogoutThis
-                      ? escapeHtml(t("account_title_logout_tooltip_enabled"))
-                      : escapeHtml(t("account_title_logout_tooltip_unresolved"))
-                  }"
-                >${escapeHtml(t("account_logout"))}</button>
-              </div>`
-            : "";
-
-        return `<article class="account-card ${health.isActive ? "active" : ""} ${compact ? "compact" : "account-card--current"}">
-          <div class="account-head">
-            <div class="account-main">
-              <div class="account-name">${escapeHtml(account.label || t("account_name_unknown"))}</div>
-              <div class="account-id" title="${escapeHtml(account.accountId || "-")}">${escapeHtml(shortId(account.accountId || "-"))}</div>
-              <div class="account-id" title="${escapeHtml(account.entryId || "-")}">${escapeHtml(
-                t("account_entry_prefix")
-              )} ${escapeHtml(shortId(account.entryId || "-"))}</div>
-            </div>
-            <div class="pill-row">
-              ${pills.join("")}
-              <span class="pill ${pairTone}" title="${escapeHtml(t("quota_remaining_percent_title"))}">${escapeHtml(pairText)}</span>
-            </div>
-          </div>
-          <div class="account-meta">
-            <div class="meta-item"><div class="k">${escapeHtml(t("account_slot"))}</div><div class="v">${slotNumber ? `#${slotNumber}` : "-"}</div></div>
-            <div class="meta-item"><div class="k">${escapeHtml(t("account_expires"))}</div><div class="v">${fmtUnixSec(Number(account.expiresAt || 0))}</div></div>
-            <div class="meta-item"><div class="k">${escapeHtml(t("account_last_used"))}</div><div class="v">${fmtUnixSec(Number(account.lastUsedAt || 0))}</div></div>
-            <div class="meta-item"><div class="k">${escapeHtml(t("account_failures"))}</div><div class="v">${Number(account.failureCount || 0)}</div></div>
-            <div class="meta-item"><div class="k">${escapeHtml(t("account_cooldown"))}</div><div class="v">${fmtCooldown(Number(account.cooldownUntil || 0))}</div></div>
-            <div class="meta-item"><div class="k">${escapeHtml(t("account_plan"))}</div><div class="v">${escapeHtml(String(usage?.plan_type || "-"))}</div></div>
-            <div class="meta-item"><div class="k">${escapeHtml(t("account_usage_updated"))}</div><div class="v">${fmtUnixSec(Number(account.usageUpdatedAt || usage?.fetched_at || 0))}</div></div>
-          </div>
-          ${usageHtml}
-          ${errorHtml}
-          ${actionHtml}
-        </article>`;
       }
 
       function uniqueSortedModels(items) {
@@ -5348,6 +4339,7 @@
       }
 
       async function loadModelCandidates(forceRefresh = false) {
+        if (dashboardAuthFeature.isLocked()) return;
         try {
           const data = await api(`/admin/model-candidates${forceRefresh ? "?refresh=1" : ""}`);
           modelCandidates = uniqueSortedModels(data?.models);
@@ -5408,12 +4400,14 @@
                 <div class="api-key-item-title mono">${escapeHtml(titleText)}</div>
                 <span class="pill ${tone}">${escapeHtml(statusLabel)}</span>
               </div>
-              <div class="api-key-item-sub">${escapeHtml(
-                `${t("api_keys_created")}: ${createdText} | ${t("api_keys_last_used")}: ${lastUsedText}`
-              )}</div>
-              <div class="api-key-item-sub">${escapeHtml(
-                `${t("api_keys_use_count")}: ${Number(k?.useCount || 0)} | ${t("account_expires")}: ${expiresText}`
-              )}</div>
+              <div class="api-key-item-meta">
+                <div class="api-key-item-sub">${escapeHtml(
+                  `${t("api_keys_created")}: ${createdText} | ${t("api_keys_last_used")}: ${lastUsedText}`
+                )}</div>
+                <div class="api-key-item-sub">${escapeHtml(
+                  `${t("api_keys_use_count")}: ${Number(k?.useCount || 0)} | ${t("account_expires")}: ${expiresText}`
+                )}</div>
+              </div>
               <div class="btns">
                 <button class="secondary" data-api-key-revoke="${escapeHtml(String(k?.id || ""))}" ${
                   canRevoke ? "" : "disabled"
@@ -5424,139 +4418,52 @@
           .join("");
       }
 
-      function updatePublicAccessTokenUI() {
-        const mode = String($("publicAccessMode")?.value || "quick").trim().toLowerCase();
-        const tokenInput = $("publicAccessToken");
-        if (!tokenInput) return;
-        const authMode = mode === "auth";
-        tokenInput.disabled = false;
-        tokenInput.placeholder = authMode ? "Required in auth mode" : "Optional in quick mode";
-      }
-
-      function renderPublicAccessStatus(status) {
-        lastPublicAccessStatus = status || null;
-        const statusEl = $("publicAccessStatus");
-        const urlEl = $("publicAccessUrl");
-        const installBtn = $("publicAccessInstallBtn");
-        const startBtn = $("publicAccessStartBtn");
-        const stopBtn = $("publicAccessStopBtn");
-        if (!statusEl || !urlEl) return;
-        if (!status || typeof status !== "object") {
-          statusEl.textContent = "-";
-          urlEl.textContent = "-";
-          if (installBtn) installBtn.disabled = false;
-          if (startBtn) startBtn.disabled = false;
-          if (stopBtn) stopBtn.disabled = false;
-          return;
-        }
-        const installed = status.installed === true;
-        const running = status.running === true;
-        const installing = status.installInProgress === true;
-        const statusLabel = installing
-          ? t("public_access_status_installing")
-          : installed
-            ? running
-              ? t("public_access_status_running")
-              : t("public_access_status_stopped")
-            : t("public_access_status_not_installed");
-        const mode = String(status.mode || "quick");
-        const localPort = Number(status.localPort || 0) || Number($("publicAccessLocalPort").value || 8787);
-        const useHttp2 = status.useHttp2 === true ? "on" : "off";
-        const version = String(status.version || "-");
-        const pid = Number(status.pid || 0) > 0 ? String(status.pid) : "-";
-        const url = String(status.url || "").trim();
-        const err = String(status.error || "").trim();
-        const segments = [
-          tt("public_access_status_line", { status: statusLabel, mode, port: localPort, http2: useHttp2 }),
-          tt("public_access_status_line_2", {
-            installed: installed ? "yes" : "no",
-            version,
-            pid
-          })
-        ];
-        if (url) segments.push(tt("public_access_status_url", { url }));
-        if (err) segments.push(tt("public_access_status_error", { error: err }));
-        if (String(status.installMessage || "").trim()) {
-          segments.push(String(status.installMessage || "").trim());
-        }
-        statusEl.textContent = segments.join("\n");
-        urlEl.textContent = url || "-";
-        if (installBtn) installBtn.disabled = installing;
-        if (startBtn) startBtn.disabled = installing;
-        if (stopBtn) stopBtn.disabled = installing || !running;
-      }
-
-      function applyPublicAccessConfigFromState(state) {
-        const cfg = state?.config?.publicAccess || {};
-        const status = state?.publicAccess || {};
-        const mode = String(status.mode || cfg.mode || "quick").trim().toLowerCase();
-        const useHttp2 = status.useHttp2 !== false && cfg.useHttp2 !== false;
-        const localPort = Number(status.localPort || cfg.localPort || 8787);
-        $("publicAccessMode").value = mode === "auth" ? "auth" : "quick";
-        $("publicAccessHttp2").checked = useHttp2;
-        $("publicAccessLocalPort").value = String(localPort);
-        syncCustomSelect($("publicAccessMode"));
-        updatePublicAccessTokenUI();
-        renderPublicAccessStatus(status);
-      }
-
-      async function fetchPublicAccessStatus() {
-        const data = await api("/admin/public-access/status");
-        const status = data?.status || null;
-        renderPublicAccessStatus(status);
-        return status;
-      }
-
-      async function waitForPublicAccessReady(initialStatus, { timeoutMs = 15000, intervalMs = 700 } = {}) {
-        let status = initialStatus || null;
-        const hasUrl = (value) => String(value?.url || "").trim().length > 0;
-        if (hasUrl(status)) return status;
-
-        const deadline = Date.now() + timeoutMs;
-        while (Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, intervalMs));
-          status = await fetchPublicAccessStatus();
-          if (hasUrl(status)) return status;
-
-          const running = status?.running === true;
-          const installing = status?.installInProgress === true;
-          const err = String(status?.error || "").trim();
-          if ((!running && !installing) || (err && !installing)) {
-            return status;
-          }
-        }
-        return status;
-      }
-
-      async function startPublicAccess() {
-        const mode = String($("publicAccessMode").value || "quick").trim().toLowerCase();
-        const payload = {
-          mode,
-          useHttp2: $("publicAccessHttp2").checked,
-          localPort: Number($("publicAccessLocalPort").value || 8787),
-          autoInstall: true
-        };
-        const token = String($("publicAccessToken").value || "").trim();
-        if (mode === "auth") {
-          payload.token = token;
-        }
-        const data = await api("/admin/public-access/start", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        const initialStatus = data?.status || null;
-        renderPublicAccessStatus(initialStatus);
-        return await waitForPublicAccessReady(initialStatus);
-      }
-
-      async function stopPublicAccess() {
-        const data = await api("/admin/public-access/stop", {
-          method: "POST"
-        });
-        renderPublicAccessStatus(data?.status || null);
-        return data?.status || null;
-      }
+      const publicAccessFeature = createPublicAccessFeature({
+        $,
+        api,
+        t,
+        tt,
+        syncCustomSelect,
+        copyTextToClipboard
+      });
+      const diagnosticsFeature = createDiagnosticsFeature({
+        $,
+        t,
+        tt,
+        fmtUnixSec,
+        fmtUptime,
+        displayUpstreamMode,
+        pulseElement
+      });
+      const poolFeature = createPoolFeature({
+        $,
+        api,
+        t,
+        tt,
+        escapeHtml,
+        fmtUnixSec,
+        fmtCooldown,
+        shortId,
+        setTextAndPulse
+      });
+      const tempMailFeature = createTempMailFeature({
+        $,
+        api,
+        t,
+        tt,
+        escapeHtml,
+        refreshState: async (force = false) => await refreshState(force),
+        readStoredBool,
+        readStoredNumber,
+        readStoredString,
+        writeStoredString,
+        countStorageKey: TEMP_MAIL_COUNT_STORAGE_KEY,
+        passwordStorageKey: TEMP_MAIL_PASSWORD_STORAGE_KEY,
+        delayStorageKey: TEMP_MAIL_DELAY_STORAGE_KEY,
+        allowParallelStorageKey: TEMP_MAIL_ALLOW_PARALLEL_STORAGE_KEY,
+        workersStorageKey: TEMP_MAIL_WORKERS_STORAGE_KEY,
+        activeRefreshMs: TEMP_MAIL_ACTIVE_REFRESH_MS
+      });
 
       async function generateApiKey() {
         const label = String($("apiKeyLabel").value || "").trim();
@@ -5628,9 +4535,126 @@
 
       function shouldSyncConfigFromServer() {
         if (isConfigFieldFocused()) return false;
+        if ($("runtimePortConfirmBackdrop").hidden === false) return false;
         if (hasPendingConfigSave()) return false;
         if (hasUnsavedConfigChanges()) return false;
         return true;
+      }
+
+      function setRuntimePortApplyButtonsDisabled(disabled) {
+        const applyBtn = $("runtimePortConfirmApplyBtn");
+        const cancelBtn = $("runtimePortConfirmCancelBtn");
+        const closeBtn = $("runtimePortConfirmCloseBtn");
+        if (applyBtn instanceof HTMLButtonElement) applyBtn.disabled = disabled;
+        if (cancelBtn instanceof HTMLButtonElement) cancelBtn.disabled = disabled;
+        if (closeBtn instanceof HTMLButtonElement) closeBtn.disabled = disabled;
+      }
+
+      function closeRuntimePortConfirmDialog({ restoreInput = false } = {}) {
+        if (restoreInput) {
+          const input = $("runtimePort");
+          if (input instanceof HTMLInputElement) {
+            input.value = String(getSavedRuntimePort());
+          }
+        }
+        runtimePortPendingConfirmation = null;
+        setRuntimePortApplyButtonsDisabled(false);
+        $("runtimePortConfirmBackdrop").hidden = true;
+      }
+
+      function openRuntimePortConfirmDialog(port) {
+        if (!isValidPortNumber(port)) return;
+        const activePort = getActiveRuntimePort();
+        const targetPort = Number(port);
+        const bodyKey = canAutoRestartRuntimePort() ? "runtime_port_confirm_body_desktop" : "runtime_port_confirm_body_manual";
+        const noteKey = canAutoRestartRuntimePort() ? "runtime_port_confirm_note_desktop" : "runtime_port_confirm_note_manual";
+        runtimePortPendingConfirmation = {
+          port: targetPort,
+          activePort
+        };
+        $("runtimePortConfirmBody").textContent = tt(bodyKey, {
+          active: activePort,
+          port: targetPort
+        });
+        $("runtimePortConfirmModeNote").textContent = t(noteKey);
+        setRuntimePortApplyButtonsDisabled(false);
+        $("runtimePortConfirmBackdrop").hidden = false;
+        $("runtimePortConfirmApplyBtn").focus();
+      }
+
+      function maybePromptRuntimePortChange() {
+        const input = $("runtimePort");
+        if (!(input instanceof HTMLInputElement)) return;
+        if (runtimePortApplyInFlight) return;
+        const rawValue = String(input.value || "").trim();
+        const savedPort = getSavedRuntimePort();
+        if (!rawValue) {
+          input.value = String(savedPort);
+          syncRuntimePortStatus();
+          return;
+        }
+        const parsed = Number(rawValue);
+        if (!isValidPortNumber(parsed)) {
+          input.value = String(savedPort);
+          setRuntimePortStatus(t("runtime_port_invalid"), "bad");
+          return;
+        }
+        if (parsed === savedPort) {
+          syncRuntimePortStatus();
+          return;
+        }
+        if (
+          runtimePortPendingConfirmation &&
+          runtimePortPendingConfirmation.port === parsed &&
+          $("runtimePortConfirmBackdrop").hidden === false
+        ) {
+          return;
+        }
+        openRuntimePortConfirmDialog(parsed);
+      }
+
+      async function confirmRuntimePortChange() {
+        if (!runtimePortPendingConfirmation || runtimePortApplyInFlight) return;
+        const nextPort = Number(runtimePortPendingConfirmation.port);
+        if (!isValidPortNumber(nextPort)) {
+          closeRuntimePortConfirmDialog({ restoreInput: true });
+          setRuntimePortStatus(t("runtime_port_invalid"), "bad");
+          return;
+        }
+        runtimePortApplyInFlight = true;
+        setRuntimePortApplyButtonsDisabled(true);
+        setRuntimePortStatus(tt("runtime_port_applying", { port: nextPort }), "pending");
+        try {
+          await api("/admin/config", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ runtimePort: nextPort })
+          });
+          const input = $("runtimePort");
+          if (input instanceof HTMLInputElement) {
+            input.value = String(nextPort);
+            input.dataset.lastSavedValue = String(nextPort);
+          }
+          patchAutoSaveSnapshot({ runtimePort: nextPort });
+          closeRuntimePortConfirmDialog();
+
+          if (canAutoRestartRuntimePort()) {
+            setRuntimePortStatus(tt("runtime_port_applied_desktop", { port: nextPort }), "pending");
+            await desktopBridge.restartBackend(nextPort);
+            return;
+          }
+
+          syncRuntimePortStatus(getActiveRuntimePort(), nextPort);
+          setRuntimePortStatus(tt("runtime_port_applied_manual", { port: nextPort }), "pending");
+          await refreshState(true);
+        } catch (err) {
+          closeRuntimePortConfirmDialog({ restoreInput: true });
+          syncRuntimePortStatus();
+          setRuntimePortStatus(tt("runtime_port_apply_failed", { message: err.message }), "bad");
+        } finally {
+          runtimePortApplyInFlight = false;
+          setRuntimePortApplyButtonsDisabled(false);
+        }
       }
 
       function buildConfigPayload() {
@@ -5641,9 +4665,9 @@
           defaultReasoningEffort: $("defaultReasoningEffort").value,
           defaultServiceTier: $("defaultServiceTier").value,
           multiAccountStrategy: $("multiAccountStrategy").value,
+          runtimePort: getSavedRuntimePort(),
           publicAccessMode: $("publicAccessMode").value,
           publicAccessToken: $("publicAccessToken").value,
-          publicAccessLocalPort: Number($("publicAccessLocalPort").value || 0),
           publicAccessUseHttp2: $("publicAccessHttp2").checked,
           autoLogoutExpiredAccounts: $("autoLogoutExpiredAccounts").checked,
           modelRouterEnabled: $("modelRouterEnabled").checked,
@@ -5705,78 +4729,6 @@
         persistAutoSave(false).catch(() => {});
       }
 
-      function renderPreheatStatus(preheat) {
-        const el = $("preheatStatus");
-        if (!el) return;
-        if (!preheat) {
-          el.className = "preheat-status";
-          el.textContent = t("preheat_no_state");
-          return;
-        }
-        const lastRun = fmtUnixSec(Number(preheat.lastRunAt || 0));
-        const completed = fmtUnixSec(Number(preheat.lastCompletedAt || 0));
-        const summary = preheat.lastSummary || null;
-        const summaryText = summary
-          ? tt("preheat_summary_fmt", {
-              status: summary.status || "-",
-              success: summary.success ?? 0,
-              failed: summary.failed ?? 0,
-              models: summary.modelCount ?? 0,
-              accounts: summary.selectedAccounts ?? 0,
-              attempts: summary.attempts ?? summary.selected ?? 0
-            })
-          : t("preheat_summary_none");
-        const runningText = preheat.running ? t("preheat_running_state_running") : t("preheat_running_state_idle");
-        const errorText =
-          typeof preheat.lastError === "string" && preheat.lastError.trim().length > 0
-            ? tt("preheat_error_segment", { error: preheat.lastError.trim() })
-            : "";
-        el.className = `preheat-status ${preheat.lastStatus === "failed" ? "bad" : preheat.lastStatus === "ok" || preheat.lastStatus === "partial" ? "ok" : ""}`;
-        el.textContent = `${tt("preheat_status_line", {
-          status: preheat.lastStatus || "idle",
-          running: runningText,
-          summary: summaryText
-        })}\n${tt("preheat_status_line_2", {
-          run: lastRun,
-          complete: completed,
-          duration: Number(preheat.lastDurationMs || 0),
-          error: errorText
-        })}`;
-      }
-
-      function renderExpiredAccountCleanupState(cleanup) {
-        const el = $("expiredAccountCleanupStatus");
-        if (!el) return;
-        if (!cleanup) {
-          el.className = "preheat-status";
-          el.textContent = t("expired_cleanup_idle");
-          return;
-        }
-        const lastRun = fmtUnixSec(Number(cleanup.lastRunAt || 0));
-        const completed = fmtUnixSec(Number(cleanup.lastCompletedAt || 0));
-        const errorText =
-          typeof cleanup.lastError === "string" && cleanup.lastError.trim().length > 0
-            ? tt("expired_cleanup_error_segment", { error: cleanup.lastError.trim() })
-            : "";
-        const statusClass =
-          cleanup.lastStatus === "failed"
-            ? "bad"
-            : cleanup.lastStatus === "ok" || cleanup.lastStatus === "idle"
-              ? "ok"
-              : "";
-        el.className = statusClass ? `preheat-status ${statusClass}` : "preheat-status";
-        el.textContent = `${tt("expired_cleanup_status_line", {
-          status: cleanup.lastStatus || "idle",
-          running: cleanup.running ? t("preheat_running_state_running") : t("preheat_running_state_idle"),
-          removed: Number(cleanup.lastRemovedCount || 0)
-        })}\n${tt("expired_cleanup_status_line_2", {
-          run: lastRun,
-          complete: completed,
-          reason: cleanup.lastReason || "-",
-          error: errorText
-        })}`;
-      }
-
       function applyServerConfigToForm(state) {
         $("upstreamMode").value = state.config.upstreamMode;
         $("defaultModel").value = state.config.defaultModel;
@@ -5786,26 +4738,24 @@
         $("multiAccountStrategy").value = state.config.multiAccountStrategy || "smart";
         $("autoLogoutExpiredAccounts").checked = state.config.autoLogoutExpiredAccounts === true;
         $("modelRouterEnabled").checked = state.config.modelRouterEnabled !== false;
+        renderRuntimeAddress(state);
         currentMappings = { ...(state.config.modelMappings || {}) };
         renderMappingsTable();
         renderModelOptions();
         renderPreheatModelOptions();
-        applyPublicAccessConfigFromState(state);
+        publicAccessFeature.applyConfigFromState(state);
         syncServiceTierControl();
         syncAllCustomSelects();
       }
 
       function renderState(state, options = {}) {
         const syncConfigFromServer = options.syncConfigFromServer !== false;
-        $("mode").textContent = `${state.config.authMode} | ${displayUpstreamMode(state.config.upstreamMode)}`;
-        $("uptime").textContent = fmtUptime(state.uptimeMs);
         if (syncConfigFromServer) {
           applyServerConfigToForm(state);
           autoSaveSnapshot = JSON.stringify(buildConfigPayload());
         }
-        renderPreheatStatus(state.preheat || null);
-        renderExpiredAccountCleanupState(state.expiredAccountCleanup || null);
-        renderTempMailState(state.tempMail || null);
+        diagnosticsFeature.render(state, { fxEnabled });
+        tempMailFeature.render(state.tempMail || null);
         renderHeadOverview(state);
         if (!autoSaveReady) {
           autoSaveReady = true;
@@ -5813,145 +4763,19 @@
         } else if (!syncConfigFromServer && hasPendingConfigSave()) {
           setAutoSaveStatus(t("autosave_pending"));
         }
-
-        const authOk = Boolean(state.auth?.authenticated);
-        const badge = $("authBadge");
-        badge.className = `status ${authOk ? "ok" : "bad"}`;
-        badge.textContent = authOk ? t("runtime_authenticated") : t("runtime_not_authenticated");
-        const prevBadge = String(badge.dataset.fxBadge || "");
-        if (fxEnabled && prevBadge && prevBadge !== badge.textContent) {
-          pulseElement(badge);
-        }
-        badge.dataset.fxBadge = badge.textContent;
         renderApiKeySummary(state.apiKeys || { keys: [] });
         if (!syncConfigFromServer) {
-          renderPublicAccessStatus(state.publicAccess || null);
+          renderRuntimeAddress(state, { preservePortInput: document.activeElement === $("runtimePort") });
+          publicAccessFeature.render(state.publicAccess || null);
         }
-
-        const accounts = Array.isArray(state.auth?.accounts) ? state.auth.accounts : [];
-        lastAccounts = accounts;
-        const enabledCount = Number(state.auth?.enabledAccountCount || 0);
-        const activeAccount = state.auth?.activeEntryId || state.auth?.activeAccountId || "";
-        lastActiveEntryId = String(activeAccount || "");
-        const poolEnabled = state.auth?.multiAccountEnabled === true;
-        const decorated = accounts
-          .map((a, idx) => {
-            const health = resolveAccountHealth(a, activeAccount);
-            const score = computeAccountScore(a, activeAccount);
-            return { ...a, _health: health, _score: score, _slot: getAccountSlotNumber(a, idx) || 999 };
-          })
-          .sort((a, b) => {
-            if (a._slot !== b._slot) return a._slot - b._slot;
-            return String(a.label || a.accountId || "").localeCompare(String(b.label || b.accountId || ""));
-          });
-        const healthyCount = decorated.filter((x) => x._health.label === "healthy").length;
-        const cooldownCount = decorated.filter((x) => x._health.label === "cooldown").length;
-        const riskCount = decorated.filter((x) =>
-          ["disabled", "expired", "cooldown", "expiring"].includes(x._health.label)
-        ).length;
-        const healthyRatio =
-          enabledCount > 0 ? Math.round((healthyCount / enabledCount) * 100) : 0;
-        const poolMetrics = state.auth?.poolMetrics || {};
-        const avgPrimaryRemaining =
-          Number.isFinite(Number(poolMetrics.avgPrimaryRemaining))
-            ? Math.round(Number(poolMetrics.avgPrimaryRemaining))
-            : null;
-        const avgSecondaryRemaining =
-          Number.isFinite(Number(poolMetrics.avgSecondaryRemaining))
-            ? Math.round(Number(poolMetrics.avgSecondaryRemaining))
-            : null;
-        const lowQuotaCount =
-          Number.isFinite(Number(poolMetrics.lowQuotaCount))
-            ? Number(poolMetrics.lowQuotaCount)
-            : decorated.filter((x) => x.lowQuota === true).length;
-
-        setTextAndPulse("poolTotal", String(accounts.length));
-        setTextAndPulse("poolHealthyRatio", `${healthyRatio}%`);
-        setTextAndPulse("poolPrimaryAvg", avgPrimaryRemaining === null ? "-" : `${avgPrimaryRemaining}%`);
-        setTextAndPulse("poolSecondaryAvg", avgSecondaryRemaining === null ? "-" : `${avgSecondaryRemaining}%`);
-        setTextAndPulse("poolCooldownCount", String(cooldownCount));
-        setTextAndPulse("poolRiskCount", String(riskCount));
-        setTextAndPulse("poolLowQuotaCount", String(lowQuotaCount));
-        $("poolRiskHint").textContent = poolEnabled
-          ? tt("pool_risk_hint_enabled", { enabled: enabledCount, total: accounts.length })
-          : t("pool_risk_hint_disabled");
-        $("allAccountsTitle").textContent = tt("all_accounts_with_count", { count: decorated.length });
-
-        const activeItem =
-          decorated.find((x) => getAccountIdentity(x) === String(activeAccount || "")) ||
-          decorated[0] ||
-          null;
-        const currentCard = $("currentAccountCard");
-        if (activeItem) {
-          currentCard.className = "current-account-shell";
-          currentCard.innerHTML = buildAccountCardHtml(activeItem, activeAccount);
-        } else {
-          currentCard.className = "account-empty";
-          currentCard.textContent = t("account_no_active");
-        }
-
-        const recommendationLimit = Math.min(4, decorated.length);
-        let recommendations = [];
-        if (Array.isArray(poolMetrics.recommendedEntryIds) && poolMetrics.recommendedEntryIds.length > 0) {
-          recommendations = poolMetrics.recommendedEntryIds
-            .map((id) => decorated.find((x) => getAccountIdentity(x) === String(id)))
-            .filter(Boolean);
-          if (recommendations.length < recommendationLimit) {
-            const picked = new Set(recommendations.map((x) => getAccountIdentity(x)));
-            const more = decorated
-              .filter((x) => x.enabled !== false && !picked.has(getAccountIdentity(x)))
-              .sort((a, b) => b._score - a._score)
-              .slice(0, recommendationLimit - recommendations.length);
-            recommendations = recommendations.concat(more);
-          }
-          recommendations = recommendations.slice(0, recommendationLimit);
-        } else {
-          recommendations = decorated
-            .filter((x) => x.enabled !== false)
-            .sort((a, b) => b._score - a._score)
-            .slice(0, recommendationLimit);
-        }
-        $("recommendList").innerHTML =
-          recommendations.length === 0
-                ? `<div class="account-empty">${escapeHtml(t("account_no_recommendation_available"))}</div>`
-                : recommendations
-                .map((acc) => {
-                  const usageView = resolveUsageWindows(acc);
-                  const { primaryRemaining, secondaryRemaining } = usageView;
-                  const tone = limitPairTone(primaryRemaining, secondaryRemaining, acc._score);
-                  const pairText = fmtLimitPair(usageView);
-                  const planTypeRaw = String(acc?.usageSnapshot?.plan_type || "").trim();
-                  const planType = planTypeRaw.length > 0 ? planTypeRaw : null;
-                  const localizedHealth = healthDisplayLabel(acc.healthStatus || "");
-                  const statusLine = acc.healthStatus
-                    ? `${planType ? `${escapeHtml(planType)} · ` : ""}${escapeHtml(localizedHealth)}${
-                        pairText !== "-" ? ` · ${escapeHtml(pairText)}` : ""
-                      }`
-                    : escapeHtml(shortId(acc.accountId || "-"));
-                  return `<div class="recommend-item">
-                    <div>
-                      <div class="recommend-name">${escapeHtml(acc.label || t("account_name_unknown"))}</div>
-                      <div class="recommend-sub">${statusLine}</div>
-                    </div>
-                    <span class="pill ${tone}" title="${escapeHtml(t("quota_remaining_percent_title"))}">${escapeHtml(
-                      pairText
-                    )}</span>
-                  </div>`;
-                })
-                .join("");
-
-        $("accountPoolCards").innerHTML =
-          decorated.length === 0
-            ? `<div class="account-empty">${escapeHtml(t("account_no_pool_accounts"))}</div>`
-            : decorated
-                .map((a) => buildAccountCardHtml(a, activeAccount, true))
-                .join("");
+        poolFeature.render(state);
 
         const rows = (state.stats?.recentRequests || []).slice(0, 80);
         renderRecentRequestsPanel(rows);
       }
 
       async function refreshState(force = false) {
+        if (dashboardAuthFeature.isLocked()) return;
         if (stateRefreshInFlight) {
           stateRefreshQueued = true;
           return;
@@ -5977,35 +4801,23 @@
       }
 
       async function refreshUsage(force = false) {
-        if (usageRefreshInFlight) return false;
-        const now = Date.now();
-        if (!force && now - lastUsageRefreshAtMs < USAGE_AUTO_REFRESH_MIN_MS) {
-          return false;
-        }
-        usageRefreshInFlight = true;
-        syncAccountStatusRefreshControls();
         try {
-          await api("/admin/auth-pool/refresh-usage", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ includeDisabled: true })
+          return await poolFeature.refreshUsage(force, {
+            isLocked: () => dashboardAuthFeature.isLocked(),
+            minIntervalMs: USAGE_AUTO_REFRESH_MIN_MS
           });
-          lastUsageRefreshAtMs = Date.now();
-          return true;
         } catch (err) {
           console.warn("Usage refresh failed:", err.message);
           return false;
-        } finally {
-          usageRefreshInFlight = false;
-          syncAccountStatusRefreshControls();
         }
       }
 
       async function refreshAllAccountStatuses() {
-        const didRefresh = await refreshUsage(true);
-        if (!didRefresh) return false;
-        await refreshState(true);
-        return true;
+        return await poolFeature.refreshAllAccountStatuses({
+          isLocked: () => dashboardAuthFeature.isLocked(),
+          minIntervalMs: USAGE_AUTO_REFRESH_MIN_MS,
+          refreshState
+        });
       }
 
       async function runTest() {
@@ -6024,44 +4836,7 @@
       }
 
       async function toggleTempMailRun() {
-        if (tempMailActionInFlight) return;
-        if (!(lastTempMailState?.running || lastTempMailState?.stopping)) {
-          const payload = buildTempMailPayload();
-          saveTempMailFormToStorage();
-          if (!payload.password) {
-            showTempMailInlineWarning(t("temp_mail_password_missing_warning"));
-            return;
-          }
-        }
-        tempMailActionInFlight = true;
-        renderTempMailState(lastTempMailState);
-        try {
-          if (lastTempMailState?.running || lastTempMailState?.stopping) {
-            await api("/admin/temp-mail/stop", { method: "POST" });
-          } else {
-            const payload = buildTempMailPayload();
-            saveTempMailFormToStorage();
-            await api("/admin/temp-mail/start", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify(payload)
-            });
-          }
-          await refreshState(true);
-        } catch (err) {
-          if (isTempMailPasswordRequiredError(err)) {
-            showTempMailInlineWarning(t("temp_mail_password_missing_warning"));
-            return;
-          }
-          const summaryEl = $("tempMailSummary");
-          summaryEl.className = "result temp-mail-summary bad";
-          summaryEl.textContent = lastTempMailState?.running || lastTempMailState?.stopping
-            ? tt("temp_mail_stop_failed", { message: err.message })
-            : tt("temp_mail_start_failed", { message: err.message });
-        } finally {
-          tempMailActionInFlight = false;
-          renderTempMailState(lastTempMailState);
-        }
+        await tempMailFeature.toggleRun();
       }
 
       async function runPreheatNow() {
@@ -6080,7 +4855,7 @@
               allModels
             })
           });
-          renderPreheatStatus(result.preheat || null);
+          diagnosticsFeature.renderPreheat(result.preheat || null);
           await refreshState(true);
         } catch (err) {
           statusEl.className = "preheat-status bad";
@@ -6089,69 +4864,19 @@
       }
 
       async function switchCurrentAccountTo(targetRef) {
-        const ref = String(targetRef || "").trim();
-        if (!ref) {
-          alert(t("alert_switch_target_missing"));
-          return;
-        }
-        await api("/admin/auth-pool/activate", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ entryId: ref })
-        });
-        await refreshState(true);
+        await poolFeature.switchCurrentAccountTo(targetRef, refreshState);
       }
 
       async function logoutAccountByEntry(targetRef) {
-        const ref = String(targetRef || "").trim();
-        if (!ref) {
-          throw new Error(t("alert_switch_target_missing"));
-        }
-        await api("/admin/auth-pool/remove", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ entryId: ref })
-        });
-        await refreshState(true);
+        await poolFeature.logoutAccountByEntry(targetRef, refreshState);
       }
 
       async function switchCurrentAccount() {
-        const sorted = (Array.isArray(lastAccounts) ? lastAccounts : [])
-          .map((acc, idx) => ({ ...acc, _slot: getAccountSlotNumber(acc, idx) || 999 }))
-          .sort((a, b) => {
-            if (a._slot !== b._slot) return a._slot - b._slot;
-            return String(a.label || a.accountId || "").localeCompare(String(b.label || b.accountId || ""));
-          });
-        const enabled = sorted.filter((acc) => acc.enabled !== false);
-        if (enabled.length === 0) {
-          alert(t("alert_switch_no_enabled"));
-          return;
-        }
-        if (enabled.length === 1) {
-          alert(t("alert_switch_only_one"));
-          return;
-        }
-
-        const currentIdx = enabled.findIndex(
-          (acc) => getAccountIdentity(acc) === String(lastActiveEntryId || "")
-        );
-        const target = enabled[(currentIdx + 1 + enabled.length) % enabled.length];
-        const targetRef = getAccountIdentity(target);
-        if (!targetRef) {
-          alert(t("alert_switch_target_missing"));
-          return;
-        }
-        await switchCurrentAccountTo(targetRef);
+        await poolFeature.switchCurrentAccount(refreshState);
       }
 
       function openAccountLoginFlow() {
-        const hasAccounts = Array.isArray(lastAccounts) && lastAccounts.length > 0;
-        if (!hasAccounts) {
-          window.open("/auth/login?prompt=login", "_blank");
-          return;
-        }
-        const slot = getNextAccountSlot(2);
-        window.open(`/auth/login?slot=${slot}&label=acc${slot}&prompt=login`, "_blank");
+        poolFeature.openAccountLoginFlow(window);
       }
 
       function isAbortLikeError(err) {
@@ -6418,7 +5143,8 @@
       $("logoutBtn").addEventListener("click", async () => {
         try {
           const payload = {};
-          if (lastActiveEntryId) payload.entryId = lastActiveEntryId;
+          const activeEntryId = String(poolFeature.getLastActiveEntryId() || "");
+          if (activeEntryId) payload.entryId = activeEntryId;
           await api("/auth/logout", {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -6474,10 +5200,12 @@
           alert(tt("alert_api_key_revoke_failed", { message: err.message }));
         }
       });
-      $("publicAccessMode").addEventListener("change", updatePublicAccessTokenUI);
+      $("publicAccessMode").addEventListener("change", () => {
+        publicAccessFeature.updateTokenUi();
+      });
       $("publicAccessStartBtn").addEventListener("click", async () => {
         try {
-          await startPublicAccess();
+          await publicAccessFeature.start();
           await refreshState(true);
         } catch (err) {
           alert(tt("alert_public_access_start_failed", { message: err.message }));
@@ -6485,51 +5213,67 @@
       });
       $("publicAccessStopBtn").addEventListener("click", async () => {
         try {
-          await stopPublicAccess();
+          await publicAccessFeature.stop();
           await refreshState(true);
         } catch (err) {
           alert(tt("alert_public_access_stop_failed", { message: err.message }));
         }
       });
       $("publicAccessInstallBtn").addEventListener("click", async () => {
-        const previousStatus =
-          lastPublicAccessStatus && typeof lastPublicAccessStatus === "object" ? { ...lastPublicAccessStatus } : {};
-        renderPublicAccessStatus({
-          ...previousStatus,
-          installInProgress: true,
-          installMessage: t("public_access_status_installing"),
-          error: ""
-        });
         try {
-          const data = await api("/admin/public-access/install", { method: "POST" });
-          renderPublicAccessStatus(data?.status || null);
+          await publicAccessFeature.install();
           await refreshState(true);
         } catch (err) {
-          renderPublicAccessStatus(
-            err?.data?.status || {
-              ...previousStatus,
-              installInProgress: false,
-              error: err.message,
-              installMessage: err.message
-            }
-          );
           alert(tt("alert_public_access_install_failed", { message: err.message }));
         }
       });
       $("publicAccessCopyBtn").addEventListener("click", async () => {
         try {
-          const url = String($("publicAccessUrl").textContent || "").trim();
-          if (!url || url === "-") return;
-          await copyTextToClipboard(url);
+          await publicAccessFeature.copyCurrentUrl();
         } catch (err) {
           alert(tt("alert_public_access_copy_failed", { message: err.message }));
         }
+      });
+      $("dashboardAuthSaveBtn").addEventListener("click", () => {
+        dashboardAuthFeature.saveSettings().catch(() => {});
+      });
+      $("dashboardAuthLogoutBtn").addEventListener("click", () => {
+        dashboardAuthFeature.lockSession().catch(() => {});
+      });
+      $("dashboardAuthLoginBtn").addEventListener("click", () => {
+        dashboardAuthFeature.submitLogin().catch(() => {});
+      });
+      $("dashboardAuthLoginPassword").addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        dashboardAuthFeature.submitLogin().catch(() => {});
+      });
+      window.addEventListener("dashboard-auth-required", () => {
+        dashboardAuthFeature.markUnauthenticated();
       });
       $("reqDetailReqCopyBtn").addEventListener("click", () => {
         recentRequestsUi.copyRequestDetailLog("reqDetailReqCode", "reqDetailReqCopyBtn").catch(() => {});
       });
       $("reqDetailResCopyBtn").addEventListener("click", () => {
         recentRequestsUi.copyRequestDetailLog("reqDetailResCode", "reqDetailResCopyBtn").catch(() => {});
+      });
+      $("runtimePortConfirmApplyBtn").addEventListener("click", () => {
+        confirmRuntimePortChange().catch(() => {});
+      });
+      $("runtimePortConfirmCancelBtn").addEventListener("click", () => {
+        closeRuntimePortConfirmDialog({ restoreInput: true });
+        syncRuntimePortStatus();
+      });
+      $("runtimePortConfirmCloseBtn").addEventListener("click", () => {
+        closeRuntimePortConfirmDialog({ restoreInput: true });
+        syncRuntimePortStatus();
+      });
+      $("runtimePortConfirmBackdrop").addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (target.id !== "runtimePortConfirmBackdrop" || runtimePortApplyInFlight) return;
+        closeRuntimePortConfirmDialog({ restoreInput: true });
+        syncRuntimePortStatus();
       });
       $("accountPoolCards").addEventListener("click", async (event) => {
         const target = event.target;
@@ -6573,13 +5317,20 @@
       const debouncedSaveFields = [
         "defaultModel",
         "defaultInstructions",
-        "publicAccessToken",
-        "publicAccessLocalPort"
+        "publicAccessToken"
       ];
       for (const id of debouncedSaveFields) {
         $(id).addEventListener("input", () => scheduleAutoSave());
         $(id).addEventListener("blur", () => triggerAutoSaveNow());
       }
+
+      $("runtimePort").addEventListener("change", () => maybePromptRuntimePortChange());
+      $("runtimePort").addEventListener("blur", () => maybePromptRuntimePortChange());
+      $("runtimePort").addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        maybePromptRuntimePortChange();
+      });
 
       $("defaultModel").addEventListener("input", () => renderPreheatModelOptions());
       $("defaultModel").addEventListener("blur", () => renderPreheatModelOptions());
@@ -6680,17 +5431,22 @@
       });
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Escape") return;
+        if ($("runtimePortConfirmBackdrop").hidden === false && !runtimePortApplyInFlight) {
+          closeRuntimePortConfirmDialog({ restoreInput: true });
+          syncRuntimePortStatus();
+          return;
+        }
         if (recentRequestsUi.hasOpenDetail()) {
           recentRequestsUi.closeRequestDetailModal();
         }
       });
       for (const id of ["tempMailCount", "tempMailPassword", "tempMailDelay", "tempMailWorkers"]) {
-        $(id).addEventListener("change", saveTempMailFormToStorage);
-        $(id).addEventListener("blur", saveTempMailFormToStorage);
+        $(id).addEventListener("change", () => tempMailFeature.saveFormToStorage());
+        $(id).addEventListener("blur", () => tempMailFeature.saveFormToStorage());
       }
       $("tempMailAllowParallel").addEventListener("change", () => {
-        syncTempMailWorkersDisabled();
-        saveTempMailFormToStorage();
+        tempMailFeature.syncWorkersDisabled();
+        tempMailFeature.saveFormToStorage();
       });
       $("tempMailToggleBtn").addEventListener("click", toggleTempMailRun);
       $("runTestBtn").addEventListener("click", runTest);
@@ -6700,15 +5456,21 @@
       initLanguageControl();
       initInteractiveFx();
       initRuntimeHeartbeatControl();
-      loadTempMailFormFromStorage();
-      renderTempMailState(null);
+      tempMailFeature.loadFormFromStorage();
+      tempMailFeature.render(null);
 
-      Promise.all([loadModelCandidates(), refreshState()]).catch((err) => {
-        $("testResult").textContent = tt("init_failed", { message: err.message });
-      });
-      refreshUsage(true)
-        .then((did) => (did ? refreshState() : null))
-        .catch(() => {});
+      (async () => {
+        try {
+          await dashboardAuthFeature.refreshStatus({ loadProtectedData: true });
+          if (!dashboardAuthFeature.isLocked()) {
+            refreshUsage(true)
+              .then((did) => (did ? refreshState() : null))
+              .catch(() => {});
+          }
+        } catch (err) {
+          $("testResult").textContent = tt("init_failed", { message: err.message });
+        }
+      })();
       setInterval(() => {
         if (document.hidden) return;
         refreshUsage(false)

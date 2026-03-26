@@ -8,7 +8,7 @@ export function registerAdminCoreRoutes(app, context) {
     cloudflaredRuntime,
     tempMailController,
     expiredAccountCleanupController,
-    proxyApiKeyStore,
+    getProxyApiKeyStore,
     getAuthStatus,
     checkCloudflaredInstalled,
     buildApiKeySummary,
@@ -19,12 +19,11 @@ export function registerAdminCoreRoutes(app, context) {
     createProxyApiKey,
     hashProxyApiKey,
     sanitizeProxyApiKeyLabel,
-    saveProxyApiKeyStore,
+    persistProxyApiKeyStore,
     readJsonBody,
     startCloudflaredTunnel,
     stopCloudflaredTunnel,
     validCloudflaredModes,
-    parseNumberEnv,
     getOfficialModelCandidateIds,
     getOfficialCodexModelCandidateIds
   } = context;
@@ -98,9 +97,10 @@ export function registerAdminCoreRoutes(app, context) {
         expires_at: expiresAt
       };
 
+      const proxyApiKeyStore = getProxyApiKeyStore();
       if (!Array.isArray(proxyApiKeyStore.keys)) proxyApiKeyStore.keys = [];
       proxyApiKeyStore.keys.unshift(entry);
-      await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore);
+      await persistProxyApiKeyStore(proxyApiKeyStore);
 
       res.json({
         ok: true,
@@ -131,6 +131,7 @@ export function registerAdminCoreRoutes(app, context) {
       if (!id) {
         throw new Error("id is required.");
       }
+      const proxyApiKeyStore = getProxyApiKeyStore();
       const keys = Array.isArray(proxyApiKeyStore.keys) ? proxyApiKeyStore.keys : [];
       const targetIdx = keys.findIndex((x) => String(x?.id || "") === id);
       if (targetIdx < 0) {
@@ -141,7 +142,7 @@ export function registerAdminCoreRoutes(app, context) {
         return;
       }
       keys.splice(targetIdx, 1);
-      await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore);
+      await persistProxyApiKeyStore(proxyApiKeyStore);
       res.json({
         ok: true,
         id,
@@ -190,20 +191,11 @@ export function registerAdminCoreRoutes(app, context) {
       const token = body?.token === undefined ? undefined : String(body.token || "").trim();
       const useHttp2 = body?.useHttp2 === undefined ? undefined : Boolean(body.useHttp2);
       const autoInstall = body?.autoInstall === undefined ? undefined : Boolean(body.autoInstall);
-      const localPort =
-        body?.localPort === undefined
-          ? undefined
-          : parseNumberEnv(body.localPort, Number(config.port), {
-              min: 1,
-              max: 65535,
-              integer: true
-            });
 
       const status = await startCloudflaredTunnel({
         mode,
         token,
         useHttp2,
-        localPort,
         autoInstall
       });
 

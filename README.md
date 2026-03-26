@@ -189,6 +189,7 @@ Artifacts are written to `dist-electron/`.
 - installer output: `dist-electron/codex-pro-max Setup <version>.exe`
 - standard uninstall entry is included
 - uninstall keeps Electron `userData` by default
+- assisted uninstall now includes an optional checkbox to remove the current user's `AppData\Roaming\codex-pro-max`
 
 ### Linux
 

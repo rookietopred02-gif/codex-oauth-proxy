@@ -5,6 +5,7 @@
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.done",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.incomplete",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.failed",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#error",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.content_part.added",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.content_part.done",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.output_text.delta",
@@ -41,7 +42,8 @@
       }
     ],
     "failure": [
-      "response.failed"
+      "response.failed",
+      "error"
     ]
   },
   "text_events": {

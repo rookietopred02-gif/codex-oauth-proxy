@@ -77,3 +77,41 @@ test("preferred previous_response affinity can still pin a leased account", asyn
     testing.config.codexOAuth.multiAccountStrategy = previousConfig.multiAccountStrategy;
   }
 });
+
+test("manual removal keeps lease protection unless ignoreLease is set", async () => {
+  process.env.CODEX_PRO_MAX_DISABLE_AUTOSTART = "1";
+  const serverModule = await import(`../src/server.js?lease-remove=${Date.now()}`);
+  const testing = serverModule.__testing;
+
+  const store = {
+    accounts: [
+      {
+        identity_id: "entry_a",
+        account_id: "acct_a",
+        token: {
+          access_token: "token_a"
+        },
+        enabled: true
+      }
+    ],
+    active_account_id: "entry_a",
+    token: {
+      access_token: "token_a"
+    },
+    rotation: { next_index: 0 }
+  };
+
+  const blocked = testing.removeCodexPoolAccountFromStore(structuredClone(store), "entry_a", {
+    isAccountLeased: () => true
+  });
+  assert.equal(blocked.removed, false);
+  assert.equal(blocked.blocked, "leased");
+
+  const forced = testing.removeCodexPoolAccountFromStore(structuredClone(store), "entry_a", {
+    ignoreLease: true,
+    isAccountLeased: () => true
+  });
+  assert.equal(forced.removed, true);
+  assert.equal(forced.remainingAccounts, 0);
+  assert.equal(forced.activeEntryId, null);
+});

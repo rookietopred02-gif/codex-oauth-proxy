@@ -16,8 +16,10 @@ export function buildProxyConfigEnvEntries(config) {
     config?.modelRouter?.customMappings && typeof config.modelRouter.customMappings === "object"
       ? config.modelRouter.customMappings
       : {};
+  const runtimePort = Number(config?.runtimePort || config?.port || 8787);
 
   return {
+    PORT: runtimePort,
     UPSTREAM_MODE: String(config?.upstreamMode || "codex-chatgpt").trim().toLowerCase(),
     UPSTREAM_BASE_URL: String(config?.upstreamBaseUrl || "").trim(),
     GEMINI_BASE_URL: String(config?.gemini?.baseUrl || "").trim(),
@@ -35,7 +37,7 @@ export function buildProxyConfigEnvEntries(config) {
     CLOUDFLARED_USE_HTTP2: config?.publicAccess?.defaultUseHttp2 !== false,
     CLOUDFLARED_AUTO_INSTALL: config?.publicAccess?.autoInstall !== false,
     CLOUDFLARED_TUNNEL_TOKEN: String(config?.publicAccess?.defaultTunnelToken || ""),
-    CLOUDFLARED_LOCAL_PORT: Number(config?.publicAccess?.localPort || config?.port || 8787)
+    CLOUDFLARED_LOCAL_PORT: runtimePort
   };
 }
 

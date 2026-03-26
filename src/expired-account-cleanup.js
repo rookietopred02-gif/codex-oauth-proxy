@@ -1,3 +1,5 @@
+import { isCodexTokenInvalidatedError } from "./codex-token-invalidated.js";
+
 function clampInteger(value, fallback, min, max) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -18,22 +20,12 @@ function resolveAccountRef(account) {
   return accountId || "";
 }
 
-function isTokenInvalidatedFailure(statusCode, reason) {
-  if (Number(statusCode || 0) !== 401) return false;
-  const text = String(reason || "").toLowerCase();
-  return (
-    text.includes("token_invalidated") ||
-    text.includes("authentication token has been invalidated") ||
-    text.includes("please try signing in again")
-  );
-}
-
 export function shouldAutoRemoveInvalidatedAccount(account) {
   const invalidatedAt = Number(account?.token_invalidated_at || account?.tokenInvalidatedAt || 0);
   if (Number.isFinite(invalidatedAt) && invalidatedAt > 0) return true;
   const statusCode = Number(account?.last_status_code || account?.lastStatusCode || 0);
   const lastError = String(account?.last_error || account?.lastError || "");
-  return isTokenInvalidatedFailure(statusCode, lastError);
+  return isCodexTokenInvalidatedError(statusCode, lastError);
 }
 
 export function findInvalidatedAccountCleanupCandidates(accounts) {
@@ -174,16 +166,21 @@ export function createExpiredAccountCleanupController(options = {}) {
       let touchedStore = false;
 
       for (const candidate of candidates) {
-        if (isAccountLeased(candidate.ref, candidate.account) === true) {
-          continue;
-        }
+        const invalidated = shouldAutoRemoveInvalidatedAccount(candidate.account);
 
-        if (shouldAutoRemoveInvalidatedAccount(candidate.account)) {
-          const result = await removeAccount(nextStore, candidate.ref);
+        if (invalidated) {
+          const result = await removeAccount(nextStore, candidate.ref, {
+            ignoreLease: true,
+            reason: state.lastReason
+          });
           if (!result?.removed) continue;
           nextStore = result.store ?? nextStore;
           removedRefs.push(candidate.ref);
           touchedStore = true;
+          continue;
+        }
+
+        if (isAccountLeased(candidate.ref, candidate.account) === true) {
           continue;
         }
 
@@ -199,7 +196,10 @@ export function createExpiredAccountCleanupController(options = {}) {
           continue;
         }
 
-        const result = await removeAccount(nextStore, candidate.ref);
+        const result = await removeAccount(nextStore, candidate.ref, {
+          ignoreLease: true,
+          reason: state.lastReason
+        });
         if (!result?.removed) continue;
         nextStore = result.store ?? nextStore;
         removedRefs.push(candidate.ref);

@@ -1,6 +1,7 @@
 import express from "express";
 
 import { isProxyApiPath } from "../http/audit.js";
+import { authorizeProxyApiRequest } from "../http/proxy-api-key-auth.js";
 
 export function registerCommonMiddleware(app, context) {
   const {
@@ -18,80 +19,33 @@ export function registerCommonMiddleware(app, context) {
       return;
     }
 
-    const managedEnabled = hasActiveManagedProxyApiKeys();
-    const legacyKey = String(config.codexOAuth.sharedApiKey || "").trim();
-    if (!managedEnabled && !legacyKey) {
-      next();
-      return;
-    }
-
-    const provided = extractProxyApiKeyFromRequest(req);
-    const managedMatch = findManagedProxyApiKeyByValue(provided);
-    if (managedMatch) {
-      recordManagedProxyApiKeyUsage(managedMatch);
-      res.locals.proxyApiKeyId = managedMatch.id;
-      next();
-      return;
-    }
-    if (!managedEnabled && legacyKey && provided === legacyKey) {
-      next();
-      return;
-    }
-    if (managedEnabled && legacyKey && provided === legacyKey) {
-      next();
-      return;
-    }
-
-    res.status(401).json({
-      error: "invalid_api_key",
-      message:
-        "Invalid API key. Use one of: Authorization: Bearer <your_proxy_api_key>, x-api-key, x-goog-api-key, or ?key=<your_proxy_api_key>."
+    const authorization = authorizeProxyApiRequest(req, {
+      config,
+      hasActiveManagedProxyApiKeys,
+      extractProxyApiKeyFromRequest,
+      findManagedProxyApiKeyByValue,
+      recordManagedProxyApiKeyUsage
     });
+    if (authorization.ok) {
+      res.locals.proxyApiKeyId = authorization.proxyApiKeyId;
+      next();
+      return;
+    }
+
+    res.status(authorization.statusCode).json(authorization.payload);
   });
 }
 
 export function registerSystemRoutes(app, context) {
-  const {
-    publicDir,
-    config,
-    getAuthStatus,
-    getActiveUpstreamBaseUrl,
-    isCodexMultiAccountEnabled
-  } = context;
+  const { publicDir } = context;
 
+  app.use("/dashboard", (req, res, next) => {
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.setHeader("Pragma", "no-cache");
+    next();
+  });
   app.use("/dashboard", express.static(publicDir));
   app.get("/dashboard", (_req, res) => {
     res.redirect("/dashboard/");
-  });
-
-  app.get("/", async (_req, res) => {
-    const status = await getAuthStatus();
-    res.json({
-      name: "codex-pro-max",
-      mode: config.authMode,
-      upstreamMode: config.upstreamMode,
-      upstreamBaseUrl: getActiveUpstreamBaseUrl(),
-      sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
-      multiAccountEnabled: isCodexMultiAccountEnabled(),
-      multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
-      authenticated: status.authenticated,
-      status: "/auth/status",
-      login:
-        config.authMode === "profile-store"
-          ? "login via profile store"
-          : `http://${config.host}:${config.port}/auth/login`,
-      proxyBase: "/v1/*",
-      dashboard: `http://${config.host}:${config.port}/dashboard/`
-    });
-  });
-
-  app.get("/health", (_req, res) => {
-    res.json({
-      ok: true,
-      ts: Date.now(),
-      mode: config.authMode,
-      upstreamMode: config.upstreamMode,
-      upstreamBaseUrl: getActiveUpstreamBaseUrl()
-    });
   });
 }

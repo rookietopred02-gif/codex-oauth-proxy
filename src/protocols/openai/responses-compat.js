@@ -54,14 +54,17 @@ export function createOpenAIResponsesCompatHelpers(context) {
   }
 
   function buildResponsesFailureResult(event) {
+    const responseError = isRecordObject(event?.response?.error) ? event.response.error : null;
+    const rootError = isRecordObject(event?.error) ? event.error : null;
     const message =
-      event?.response?.error?.message ||
-      event?.error?.message ||
+      responseError?.message ||
+      rootError?.message ||
       event?.message ||
       "Upstream response failed.";
     return {
       message: String(message || "Upstream response failed."),
-      statusCode: Number(event?.response?.status_code || event?.status_code || 502) || 502
+      statusCode: Number(event?.response?.status_code || event?.status_code || responseError?.status_code || rootError?.status_code || 502) || 502,
+      code: String(responseError?.code || rootError?.code || event?.code || "")
     };
   }
 
@@ -668,8 +671,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
         typeof parsed?.response?.status === "string" && parsed.response.status.length > 0
           ? parsed.response.status
           : "";
-      const message =
-        type === "response.failed"
+        const message = isResponsesFailureEventType(type)
           ? String(parsed?.response?.error?.message || parsed?.error?.message || parsed?.message || "")
           : "";
       return `${type}:${responseId}:${status}:${message}`;

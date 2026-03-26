@@ -1,26 +1,24 @@
 import "dotenv/config";
 
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
-import fsSync from "node:fs";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import express from "express";
+import { createDashboardAuthController } from "./dashboard-auth.js";
 import { persistProxyConfigEnv } from "./env-config-store.js";
 
 import { importCodexOAuthTokens } from "./codex-auth-pool-import.js";
 import { startConfiguredServer } from "./bootstrap/lifecycle.js";
 import { createCodexAccountLeaseRegistry } from "./codex-account-leases.js";
+import { isCodexTokenInvalidatedError } from "./codex-token-invalidated.js";
 import { createExpiredAccountCleanupController } from "./expired-account-cleanup.js";
 import { createResponseAffinityStore, extractPreviousResponseId } from "./response-affinity.js";
 import {
   buildResponsesChainEntry,
-  createResponsesChainStore,
-  expandResponsesRequestBodyFromChain
+  createResponsesChainStore
 } from "./responses-chain-store.js";
 import { createTempMailController } from "./temp-mail-controller.js";
 import {
@@ -28,12 +26,12 @@ import {
   fetchWithUpstreamRetry,
   isPreviousResponseIdUnsupportedError
 } from "./upstream-transport.js";
-import { createRecentRequestsStore } from "./recent-requests-store.js";
-import { registerAdminCoreRoutes } from "./routes/admin-core.js";
-import { registerAdminPoolRoutes } from "./routes/admin-pool.js";
-import { registerAdminSettingsRoutes } from "./routes/admin-settings.js";
+import { registerAdminRoutes } from "./routes/admin-routes.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerDashboardAuthProtection, registerDashboardAuthRoutes } from "./routes/dashboard-auth.js";
+import { registerHealthRoutes } from "./routes/health-routes.js";
 import { createProxyRouteHandlers } from "./routes/proxy-handlers.js";
+import { registerProviderRoutes } from "./routes/provider-routes.js";
 import {
   formatPayloadForAudit,
   inferProtocolType,
@@ -42,6 +40,7 @@ import {
   sanitizeAuditPath,
   toChunkBuffer
 } from "./http/audit.js";
+import { attachResponsesWebSocketServer } from "./http/responses-websocket-server.js";
 import {
   pipeAnthropicSseAsOpenAIChatCompletions,
   pipeGeminiSseAsOpenAIChatCompletions
@@ -55,329 +54,62 @@ import { createCodexOAuthResponsesHelpers } from "./protocols/codex/oauth-respon
 import { createGeminiLocalCompatHelpers } from "./protocols/gemini/local-compat.js";
 import { createOpenAIRequestNormalizationHelpers } from "./protocols/openai/request-normalization.js";
 import { createOpenAIResponsesCompatHelpers } from "./protocols/openai/responses-compat.js";
-import { registerProxyRoutes } from "./routes/proxy.js";
 import { registerCommonMiddleware, registerSystemRoutes } from "./routes/system.js";
-import { DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS, MAX_UPSTREAM_STREAM_IDLE_TIMEOUT_MS } from "./upstream-timeouts.js";
+import { createAuthService } from "./services/auth-service.js";
+import { createAuditService } from "./services/audit-service.js";
+import { createCloudflaredService } from "./services/cloudflared-service.js";
+import {
+  DEFAULT_CLOUDFLARED_BIN,
+  DEFAULT_CODEX_UPSTREAM_BASE_URL,
+  LOW_QUOTA_THRESHOLD_DUAL_WINDOW,
+  LOW_QUOTA_THRESHOLD_SINGLE_WINDOW,
+  MULTI_ACCOUNT_STRATEGY_LIST,
+  OAUTH_CALLBACK_SUCCESS_HTML,
+  OFFICIAL_ANTHROPIC_MODELS,
+  OFFICIAL_CODEX_MODELS,
+  OFFICIAL_GEMINI_MODELS,
+  OFFICIAL_OPENAI_MODELS,
+  OPENAI_CODEX_CLIENT_ID,
+  OPENAI_CODEX_JWT_CLAIM_PATH,
+  OPENAI_CODEX_TOKEN_URL,
+  VALID_CLOUDFLARED_MODES,
+  VALID_MULTI_ACCOUNT_STRATEGIES,
+  clampReasoningEffortForModel,
+  createServerConfig,
+  getDefaultCodexClientVersion,
+  normalizeCodexServiceTier,
+  normalizeUpstreamMode,
+  parseBooleanEnv,
+  parseNumberEnv,
+  parseReasoningEffortOrFallback,
+  parseSlotValue,
+  resolveBundledCloudflaredBinaryName,
+  resolveBundledCloudflaredTargetNames,
+  resolveServerRuntimePaths,
+  sanitizeModelMappings
+} from "./services/config-service.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
-const appDataDir = String(process.env.CODEX_PRO_MAX_APP_DATA_DIR || "").trim();
-const runtimeDataDir = path.resolve(
-  process.env.CODEX_PRO_MAX_DATA_DIR || (appDataDir ? path.join(appDataDir, "data") : path.join(rootDir, "data"))
-);
-const runtimeBinDir = path.resolve(
-  process.env.CODEX_PRO_MAX_RUNTIME_BIN_DIR || (appDataDir ? path.join(appDataDir, "bin") : path.join(rootDir, "bin"))
-);
-const bundledCloudflaredResourcesDir = String(process.env.CODEX_PRO_MAX_CLOUDFLARED_RESOURCES_DIR || "").trim();
-const publicDir = path.resolve(process.env.CODEX_PRO_MAX_PUBLIC_DIR || path.join(rootDir, "public"));
-const envFilePath = path.resolve(process.env.DOTENV_CONFIG_PATH || path.join(rootDir, ".env"));
-
-function resolveRuntimeDataPath(envName, fileName) {
-  return path.resolve(process.env[envName] || path.join(runtimeDataDir, fileName));
-}
-
-function resolveBundledCloudflaredTargetNames(platform = process.platform, arch = process.arch) {
-  if (platform === "win32" && arch === "x64") return ["win32-x64"];
-  if (platform === "linux" && arch === "x64") return ["linux-x64"];
-  if (platform === "darwin" && arch === "arm64") return ["darwin-arm64", "darwin-x64"];
-  if (platform === "darwin" && arch === "x64") return ["darwin-x64", "darwin-arm64"];
-  return [];
-}
-
-function resolveBundledCloudflaredBinaryName(platform = process.platform) {
-  return platform === "win32" ? "cloudflared.exe" : "cloudflared";
-}
-
-const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const OPENAI_CODEX_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
-const OPENAI_CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token";
-const OPENAI_CODEX_JWT_CLAIM_PATH = "https://api.openai.com/auth";
-const OPENAI_CODEX_SCOPES = ["openid", "profile", "email", "offline_access"];
-const DEFAULT_CODEX_UPSTREAM_BASE_URL = "https://chatgpt.com/backend-api";
-const DEFAULT_GEMINI_UPSTREAM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
-const DEFAULT_ANTHROPIC_UPSTREAM_BASE_URL = "https://api.anthropic.com/v1";
-const DEFAULT_CLOUDFLARED_BIN = process.platform === "win32" ? "cloudflared.exe" : "cloudflared";
-const DEFAULT_CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || "2026.2.26";
-const DEFAULT_PROFILE_STORE_PATH = path.join(os.homedir(), ".codex-pro-max", "auth-profiles.json");
-const LEGACY_PROFILE_STORE_PATH = path.join(os.homedir(), ".codex-oauth-proxy", "auth-profiles.json");
-const RESOLVED_PROFILE_STORE_PATH =
-  fsSync.existsSync(DEFAULT_PROFILE_STORE_PATH) || !fsSync.existsSync(LEGACY_PROFILE_STORE_PATH)
-    ? DEFAULT_PROFILE_STORE_PATH
-    : LEGACY_PROFILE_STORE_PATH;
-const VALID_REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh"]);
-const VALID_REASONING_EFFORT_MODES = new Set(["none", "low", "medium", "high", "xhigh", "adaptive"]);
-const VALID_MULTI_ACCOUNT_STRATEGIES = new Set(["smart", "manual", "round-robin", "random", "sticky"]);
-const MULTI_ACCOUNT_STRATEGY_LIST = [...VALID_MULTI_ACCOUNT_STRATEGIES].join(", ");
-const VALID_CLOUDFLARED_MODES = new Set(["quick", "auth"]);
-const VALID_CODEX_SERVICE_TIERS = new Set(["default", "priority"]);
-const LOW_QUOTA_THRESHOLD_DUAL_WINDOW = 20;
-const LOW_QUOTA_THRESHOLD_SINGLE_WINDOW = 30;
-const OFFICIAL_CODEX_MODELS = [
-  "gpt-5.4",
-  "gpt-5-codex",
-  "gpt-5.3-codex",
-  "gpt-5.2-codex",
-  "gpt-5.1-codex",
-  "gpt-5.1-codex-max",
-  "gpt-5.1-codex-mini",
-  "codex-mini-latest"
-];
-const OFFICIAL_OPENAI_MODELS = [
-  ...OFFICIAL_CODEX_MODELS,
-  "gpt-5.4-pro",
-  "gpt-5",
-  "gpt-5-mini",
-  "gpt-4.1",
-  "gpt-4.1-mini",
-  "gpt-4o",
-  "o3",
-  "o4-mini"
-];
-const OFFICIAL_GEMINI_MODELS = [
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-lite",
-  "gemini-1.5-pro",
-  "gemini-1.5-flash"
-];
-const OFFICIAL_ANTHROPIC_MODELS = [
-  "claude-opus-4-1",
-  "claude-opus-4",
-  "claude-sonnet-4-5",
-  "claude-sonnet-4",
-  "claude-3-7-sonnet-latest",
-  "claude-3-5-haiku-latest"
-];
-const OAUTH_CALLBACK_SUCCESS_HTML = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Authentication successful</title>
-</head>
-<body>
-  <p>Authentication successful. Return to your dashboard to continue.</p>
-</body>
-</html>`;
-
-const authMode = (process.env.AUTH_MODE || "codex-oauth").toLowerCase();
-const defaultUpstreamMode = "codex-chatgpt";
-const defaultUpstreamBaseUrl = DEFAULT_CODEX_UPSTREAM_BASE_URL;
-const hasExplicitCustomOAuthRedirectUri = String(process.env.OAUTH_REDIRECT_URI || "").trim().length > 0;
-const hasExplicitCloudflaredLocalPort = String(process.env.CLOUDFLARED_LOCAL_PORT || "").trim().length > 0;
-
-function normalizeUpstreamMode(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  // Keep backward compatibility with previous UI naming.
-  if (normalized === "openai-v1") return "codex-chatgpt";
-  return normalized;
-}
-
-function normalizeCodexServiceTier(value, fallback = "default") {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (VALID_CODEX_SERVICE_TIERS.has(normalized)) return normalized;
-  return VALID_CODEX_SERVICE_TIERS.has(fallback) ? fallback : "default";
-}
-
-function parseBooleanEnv(value, fallback = false) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const normalized = String(value).trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  return fallback;
-}
-
-function parseSlotValue(value) {
-  if (value === undefined || value === null || value === "") return null;
-  const n = Number(String(value).trim());
-  if (!Number.isFinite(n)) return null;
-  const slot = Math.floor(n);
-  if (slot < 1 || slot > 64) return null;
-  return slot;
-}
-
-function parseNumberEnv(value, fallback, options = {}) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  let out = n;
-  if (Number.isFinite(options.min)) out = Math.max(options.min, out);
-  if (Number.isFinite(options.max)) out = Math.min(options.max, out);
-  if (options.integer) out = Math.floor(out);
-  return out;
-}
-
-function sanitizeModelMappings(input) {
-  const out = {};
-  if (!input || typeof input !== "object" || Array.isArray(input)) return out;
-  for (const [rawKey, rawValue] of Object.entries(input)) {
-    if (typeof rawKey !== "string" || typeof rawValue !== "string") continue;
-    const key = rawKey.trim();
-    const value = rawValue.trim();
-    if (!key || !value) continue;
-    out[key] = value;
-  }
-  return out;
-}
-
-function parseModelMappingsEnv(value) {
-  if (!value || typeof value !== "string" || value.trim().length === 0) return {};
-  try {
-    const parsed = JSON.parse(value);
-    return sanitizeModelMappings(parsed);
-  } catch (err) {
-    console.warn(`[model-router] failed to parse MODEL_ROUTER_MAPPINGS JSON: ${err.message}`);
-    return {};
-  }
-}
-
-const config = {
-  host: process.env.HOST || "127.0.0.1",
-  port: Number(process.env.PORT || 8787),
-  authMode, // profile-store | codex-oauth | custom-oauth
-  upstreamMode: normalizeUpstreamMode(process.env.UPSTREAM_MODE || defaultUpstreamMode), // codex-chatgpt | gemini-v1beta | anthropic-v1
-  upstreamBaseUrl: process.env.UPSTREAM_BASE_URL || defaultUpstreamBaseUrl,
-  gemini: {
-    baseUrl: process.env.GEMINI_BASE_URL || DEFAULT_GEMINI_UPSTREAM_BASE_URL,
-    apiKey: process.env.GEMINI_API_KEY || "",
-    defaultModel: process.env.GEMINI_DEFAULT_MODEL || "gemini-2.5-pro"
-  },
-  anthropic: {
-    baseUrl: process.env.ANTHROPIC_BASE_URL || DEFAULT_ANTHROPIC_UPSTREAM_BASE_URL,
-    apiKey: process.env.ANTHROPIC_API_KEY || "",
-    version: process.env.ANTHROPIC_API_VERSION || "2023-06-01",
-    defaultModel: process.env.ANTHROPIC_DEFAULT_MODEL || "claude-sonnet-4-20250514"
-  },
-  providerUpstream: {
-    // Keep native provider upstream opt-in for request-supplied keys.
-    // Default false avoids accidental 403/Cloudflare challenge when clients send placeholder API keys.
-    allowRequestApiKeys: parseBooleanEnv(process.env.PROVIDER_UPSTREAM_ALLOW_REQUEST_KEYS, false)
-  },
-  profileStore: {
-    authStorePath: path.resolve(process.env.PROFILE_AUTH_STORE_PATH || RESOLVED_PROFILE_STORE_PATH),
-    profileId: process.env.PROFILE_AUTH_ID || "openai-codex:default"
-  },
-  customOAuth: {
-    authorizeUrl: process.env.OAUTH_AUTHORIZE_URL || "",
-    tokenUrl: process.env.OAUTH_TOKEN_URL || "",
-    clientId: process.env.OAUTH_CLIENT_ID || "",
-    clientSecret: process.env.OAUTH_CLIENT_SECRET || "",
-    redirectUri: process.env.OAUTH_REDIRECT_URI || "http://127.0.0.1:8787/auth/callback",
-    scopes: (process.env.OAUTH_SCOPES || "openid profile email offline_access")
-      .split(/[,\s]+/)
-      .map((x) => x.trim())
-      .filter(Boolean),
-    tokenStorePath: resolveRuntimeDataPath("TOKEN_STORE_PATH", "auth-store.json")
-  },
-  codexOAuth: {
-    authorizeUrl: OPENAI_CODEX_AUTHORIZE_URL,
-    tokenUrl: OPENAI_CODEX_TOKEN_URL,
-    clientId: OPENAI_CODEX_CLIENT_ID,
-    clientSecret: "",
-    callbackBindHost: process.env.CODEX_OAUTH_CALLBACK_BIND_HOST || "127.0.0.1",
-    callbackPort: Number(process.env.CODEX_OAUTH_CALLBACK_PORT || 1455),
-    callbackPath: process.env.CODEX_OAUTH_CALLBACK_PATH || "/auth/callback",
-    redirectUri:
-      process.env.CODEX_OAUTH_REDIRECT_URI ||
-      `http://localhost:${process.env.CODEX_OAUTH_CALLBACK_PORT || 1455}${process.env.CODEX_OAUTH_CALLBACK_PATH || "/auth/callback"}`,
-    scopes: OPENAI_CODEX_SCOPES,
-    originator: process.env.CODEX_OAUTH_ORIGINATOR || "pi",
-    multiAccountEnabled: parseBooleanEnv(process.env.CODEX_MULTI_ACCOUNT_ENABLED, true),
-    multiAccountStrategy: String(process.env.CODEX_MULTI_ACCOUNT_STRATEGY || "smart").trim().toLowerCase(),
-    sharedApiKey: String(process.env.LOCAL_API_KEY || process.env.PROXY_API_KEY || "").trim(),
-    usageBaseUrl: process.env.CODEX_USAGE_BASE_URL || DEFAULT_CODEX_UPSTREAM_BASE_URL,
-    tokenStorePath: resolveRuntimeDataPath("CODEX_TOKEN_STORE_PATH", "codex-oauth-store.json")
-  },
-  codexPreheat: {
-    historyPath: resolveRuntimeDataPath("CODEX_PREHEAT_HISTORY_PATH", "codex-preheat-history.json")
-  },
-  expiredAccountCleanup: {
-    enabled: parseBooleanEnv(process.env.CODEX_AUTO_LOGOUT_EXPIRED_ACCOUNTS, false),
-    intervalSeconds: parseNumberEnv(process.env.CODEX_AUTO_LOGOUT_EXPIRED_INTERVAL_SECONDS, 30, {
-      min: 10,
-      max: 3600,
-      integer: true
-    })
-  },
-  upstreamStreamIdleTimeoutMs: parseNumberEnv(
-    process.env.UPSTREAM_STREAM_IDLE_TIMEOUT_MS,
-    DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS,
-    {
-    min: 0,
-    max: MAX_UPSTREAM_STREAM_IDLE_TIMEOUT_MS,
-    integer: true
-    }
-  ),
-  codex: {
-    defaultModel: process.env.CODEX_DEFAULT_MODEL || "gpt-5.4",
-    defaultInstructions: process.env.CODEX_DEFAULT_INSTRUCTIONS || "You are a helpful assistant.",
-    defaultServiceTier: normalizeCodexServiceTier(process.env.CODEX_DEFAULT_SERVICE_TIER, "default"),
-    defaultReasoningEffort: parseReasoningEffortOrFallback(
-      process.env.CODEX_DEFAULT_REASONING_EFFORT,
-      "medium",
-      { allowAdaptive: true }
-    )
-  },
-  modelRouter: {
-    enabled: parseBooleanEnv(process.env.MODEL_ROUTER_ENABLED, true),
-    customMappings: parseModelMappingsEnv(process.env.MODEL_ROUTER_MAPPINGS || process.env.MODEL_MAPPINGS)
-  },
-  apiKeys: {
-    storePath: resolveRuntimeDataPath("API_KEY_STORE_PATH", "api-keys.json"),
-    bootstrapLegacySharedKey: parseBooleanEnv(process.env.API_KEY_BOOTSTRAP_LEGACY, true)
-  },
-  requestAudit: {
-    historyPath: resolveRuntimeDataPath("RECENT_REQUESTS_PATH", "recent-requests.json"),
-    maxEntries: parseNumberEnv(process.env.RECENT_REQUESTS_MAX_ENTRIES, 120, {
-      min: 10,
-      max: 1000,
-      integer: true
-    })
-  },
-  publicAccess: {
-    cloudflaredBinPath: String(process.env.CLOUDFLARED_BIN_PATH || "").trim(),
-    defaultMode: String(process.env.CLOUDFLARED_MODE || "quick").trim().toLowerCase(),
-    defaultUseHttp2: parseBooleanEnv(process.env.CLOUDFLARED_USE_HTTP2, true),
-    autoInstall: parseBooleanEnv(process.env.CLOUDFLARED_AUTO_INSTALL, true),
-    defaultTunnelToken: String(process.env.CLOUDFLARED_TUNNEL_TOKEN || "").trim(),
-    localPort: parseNumberEnv(process.env.CLOUDFLARED_LOCAL_PORT, Number(process.env.PORT || 8787), {
-      min: 1,
-      max: 65535,
-      integer: true
-    })
-  }
-};
-
-if (config.authMode !== "profile-store" && config.authMode !== "codex-oauth" && config.authMode !== "custom-oauth") {
-  console.error("AUTH_MODE must be one of: profile-store, codex-oauth, custom-oauth");
+const runtimePaths = resolveServerRuntimePaths({ rootDir, env: process.env });
+const { runtimeBinDir, bundledCloudflaredResourcesDir, publicDir, envFilePath } = runtimePaths;
+const DEFAULT_CODEX_CLIENT_VERSION = getDefaultCodexClientVersion(process.env);
+let config;
+let hasExplicitCustomOAuthRedirectUri = false;
+let hasExplicitCloudflaredLocalPort = false;
+try {
+  const runtimeConfig = createServerConfig({
+    env: process.env,
+    runtimePaths,
+    logger: console
+  });
+  config = runtimeConfig.config;
+  hasExplicitCustomOAuthRedirectUri = runtimeConfig.flags.hasExplicitCustomOAuthRedirectUri;
+  hasExplicitCloudflaredLocalPort = runtimeConfig.flags.hasExplicitCloudflaredLocalPort;
+} catch (err) {
+  console.error(err?.message || err);
   process.exit(1);
-}
-
-if (
-  config.upstreamMode !== "codex-chatgpt" &&
-  config.upstreamMode !== "gemini-v1beta" &&
-  config.upstreamMode !== "anthropic-v1"
-) {
-  console.error("UPSTREAM_MODE must be one of: codex-chatgpt, gemini-v1beta, anthropic-v1");
-  process.exit(1);
-}
-
-if (config.authMode === "custom-oauth") {
-  if (!config.customOAuth.authorizeUrl || !config.customOAuth.tokenUrl || !config.customOAuth.clientId) {
-    console.error("Missing OAuth config. Set OAUTH_AUTHORIZE_URL, OAUTH_TOKEN_URL, OAUTH_CLIENT_ID.");
-    process.exit(1);
-  }
-}
-
-if (!VALID_MULTI_ACCOUNT_STRATEGIES.has(config.codexOAuth.multiAccountStrategy)) {
-  console.warn(
-    `Invalid CODEX_MULTI_ACCOUNT_STRATEGY="${config.codexOAuth.multiAccountStrategy}", fallback to smart. Supported: ${MULTI_ACCOUNT_STRATEGY_LIST}.`
-  );
-  config.codexOAuth.multiAccountStrategy = "smart";
-}
-if (!VALID_CLOUDFLARED_MODES.has(config.publicAccess.defaultMode)) {
-  config.publicAccess.defaultMode = "quick";
 }
 
 const pendingAuth = new Map();
@@ -413,32 +145,63 @@ if (config.authMode === "codex-oauth") {
   }
 }
 
-let proxyApiKeyStore = await loadProxyApiKeyStore(config.apiKeys.storePath);
-if (bootstrapLegacySharedApiKey(proxyApiKeyStore, config.codexOAuth.sharedApiKey, config.apiKeys.bootstrapLegacySharedKey)) {
-  await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore);
+const authService = createAuthService({
+  config,
+  loadJsonStore,
+  saveJsonStore,
+  extractBearerToken,
+  readHeaderValue,
+  logger: console
+});
+const {
+  bootstrapLegacySharedApiKey,
+  buildApiKeySummary,
+  cacheAuthContext,
+  clearAuthContextCache,
+  createProxyApiKey,
+  extractProxyApiKeyFromRequest,
+  findManagedProxyApiKeyByValue,
+  flushProxyApiKeyStore,
+  getCachedAuthContext,
+  getProxyApiKeyStore,
+  hasActiveManagedProxyApiKeys,
+  hashProxyApiKey,
+  loadProxyApiKeyStore,
+  persistProxyApiKeyStore,
+  recordManagedProxyApiKeyUsage,
+  sanitizeProxyApiKeyLabel
+} = authService;
+await loadProxyApiKeyStore();
+if (bootstrapLegacySharedApiKey(config.codexOAuth.sharedApiKey, config.apiKeys.bootstrapLegacySharedKey)) {
+  await persistProxyApiKeyStore();
 }
+const dashboardAuth = await createDashboardAuthController({
+  storePath: config.dashboardAuth.storePath,
+  sessionTtlSeconds: config.dashboardAuth.sessionTtlSeconds,
+  loginWindowMs: config.dashboardAuth.loginWindowSeconds * 1000,
+  loginMaxAttempts: config.dashboardAuth.loginMaxAttempts,
+  minimumPasswordLength: config.dashboardAuth.minimumPasswordLength
+});
 
-let cloudflaredInstallPromise = null;
-
-const cloudflaredRuntime = {
-  process: null,
-  mode: config.publicAccess.defaultMode,
-  useHttp2: config.publicAccess.defaultUseHttp2,
-  tunnelToken: config.publicAccess.defaultTunnelToken,
-  localPort: config.publicAccess.localPort,
-  url: "",
-  error: "",
-  running: false,
-  installed: false,
-  version: "",
-  lastCheckedAt: 0,
-  installInProgress: false,
-  installMessage: "",
-  installUpdatedAt: 0,
-  pid: null,
-  startedAt: 0,
-  outputTail: []
-};
+const cloudflaredService = createCloudflaredService({
+  config,
+  rootDir,
+  runtimeBinDir,
+  bundledCloudflaredResourcesDir,
+  defaultCloudflaredBin: DEFAULT_CLOUDFLARED_BIN,
+  resolveBundledCloudflaredBinaryName,
+  resolveBundledCloudflaredTargetNames,
+  validCloudflaredModes: VALID_CLOUDFLARED_MODES,
+  parseNumberEnv
+});
+const cloudflaredRuntime = cloudflaredService.runtime;
+const resolveCloudflaredBin = (...args) => cloudflaredService.resolveBin(...args);
+const checkCloudflaredInstalled = (...args) => cloudflaredService.checkInstalled(...args);
+const getCloudflaredStatus = (...args) => cloudflaredService.getStatus(...args);
+const installCloudflaredBinary = (...args) => cloudflaredService.installBinary(...args);
+const startCloudflaredTunnel = (...args) => cloudflaredService.startTunnel(...args);
+const stopCloudflaredTunnel = (...args) => cloudflaredService.stopTunnel(...args);
+let responsesWebSocketRuntime = null;
 
 async function importIntoCodexAuthPool(items, options = {}) {
   const result = await importCodexOAuthTokens({
@@ -484,7 +247,7 @@ const expiredAccountCleanupController = createExpiredAccountCleanupController({
   probeAccount: async (store, ref) =>
     await refreshCodexUsageSnapshotInStore(store, ref, config.codexOAuth, { includeDisabled: true }),
   isAccountLeased: (ref, account) => isCodexAccountLeased(ref, account),
-  removeAccount: (store, ref) => removeCodexPoolAccountFromStore(store, ref),
+  removeAccount: (store, ref, options = {}) => removeCodexPoolAccountFromStore(store, ref, options),
   saveStore: async (store) => {
     codexOAuthStore = store;
     await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore);
@@ -498,21 +261,16 @@ const expiredAccountCleanupController = createExpiredAccountCleanupController({
   }
 });
 
-const runtimeStats = {
-  startedAt: Date.now(),
-  totalRequests: 0,
-  okRequests: 0,
-  errorRequests: 0,
-  recentRequests: []
-};
-let runtimeRequestSeq = 0;
 const RUNTIME_AUDIT_MAX_BODY_BYTES = 96 * 1024;
 const RUNTIME_AUDIT_MAX_TEXT_CHARS = 12000;
-const recentRequestsStore = createRecentRequestsStore({
-  filePath: config.requestAudit.historyPath,
-  maxEntries: config.requestAudit.maxEntries
+const auditService = await createAuditService({
+  historyPath: config.requestAudit.historyPath,
+  maxEntries: config.requestAudit.maxEntries,
+  getCodexOAuthStore: () => codexOAuthStore,
+  ensureCodexOAuthStoreShape,
+  findCodexPoolAccountByRef
 });
-runtimeStats.recentRequests = (await recentRequestsStore.load()).recentRequests;
+const { runtimeStats, recentRequestsStore, resolveAuditAccountLabel, nextRuntimeRequestSeq } = auditService;
 
 let codexPreheatHistory = { accounts: {} };
 try {
@@ -538,14 +296,6 @@ const codexPreheatRuntime = {
   lastSummary: null
 };
 
-const authContextCache = {
-  mode: "",
-  accessToken: "",
-  accountId: null,
-  poolEntryId: null,
-  poolAccountId: null,
-  expiresAt: 0
-};
 const codexResponseAffinity = createResponseAffinityStore();
 const codexResponsesChain = createResponsesChainStore();
 const codexAccountLeaseRegistry = createCodexAccountLeaseRegistry();
@@ -612,659 +362,6 @@ function stopExpiredAccountCleanupTimer() {
   expiredAccountCleanupTimer = null;
 }
 
-function clearAuthContextCache() {
-  authContextCache.mode = "";
-  authContextCache.accessToken = "";
-  authContextCache.accountId = null;
-  authContextCache.poolEntryId = null;
-  authContextCache.poolAccountId = null;
-  authContextCache.expiresAt = 0;
-}
-
-function hashProxyApiKey(value) {
-  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
-}
-
-function normalizeProxyApiKeyStore(raw) {
-  const out = {
-    version: 1,
-    keys: []
-  };
-  let changed = false;
-  const nowSec = Math.floor(Date.now() / 1000);
-  const src = raw && typeof raw === "object" ? raw : {};
-  const sourceKeys = Array.isArray(src.keys) ? src.keys : [];
-  if (!Array.isArray(src.keys)) changed = true;
-
-  for (const item of sourceKeys) {
-    if (!item || typeof item !== "object") {
-      changed = true;
-      continue;
-    }
-    const id = String(item.id || "").trim() || `key_${crypto.randomUUID().replace(/-/g, "")}`;
-    const hash = String(item.hash || "").trim().toLowerCase();
-    if (!/^[a-f0-9]{64}$/.test(hash)) {
-      changed = true;
-      continue;
-    }
-    const label = String(item.label || "").trim() || "unnamed";
-    const prefix = String(item.prefix || "").trim() || "sk-";
-    const value = String(item.value || item.apiKey || "").trim();
-    const createdAt = Number(item.created_at || item.createdAt || nowSec);
-    const lastUsedAt = Number(item.last_used_at || item.lastUsedAt || 0);
-    const useCount = Number(item.use_count || item.useCount || 0);
-    const revokedAt = Number(item.revoked_at || item.revokedAt || 0);
-    const expiresAt = Number(item.expires_at || item.expiresAt || 0);
-    out.keys.push({
-      id,
-      label,
-      prefix,
-      value,
-      hash,
-      created_at: Number.isFinite(createdAt) ? createdAt : nowSec,
-      last_used_at: Number.isFinite(lastUsedAt) ? Math.max(0, Math.floor(lastUsedAt)) : 0,
-      use_count: Number.isFinite(useCount) ? Math.max(0, Math.floor(useCount)) : 0,
-      revoked_at: Number.isFinite(revokedAt) ? Math.max(0, Math.floor(revokedAt)) : 0,
-      expires_at: Number.isFinite(expiresAt) ? Math.max(0, Math.floor(expiresAt)) : 0
-    });
-  }
-  return { store: out, changed };
-}
-
-async function loadProxyApiKeyStore(filePath) {
-  const raw = await loadJsonStore(filePath, { version: 1, keys: [] });
-  const normalized = normalizeProxyApiKeyStore(raw);
-  const prunedRevoked = pruneRevokedProxyApiKeys(normalized.store);
-  if (normalized.changed || prunedRevoked) {
-    await saveProxyApiKeyStore(filePath, normalized.store);
-  }
-  return normalized.store;
-}
-
-async function saveProxyApiKeyStore(filePath, store) {
-  const normalized = normalizeProxyApiKeyStore(store);
-  await saveJsonStore(filePath, normalized.store);
-}
-
-let proxyApiKeyStoreFlushTimer = null;
-function scheduleProxyApiKeyStoreFlush(delayMs = 2000) {
-  if (proxyApiKeyStoreFlushTimer) clearTimeout(proxyApiKeyStoreFlushTimer);
-  proxyApiKeyStoreFlushTimer = setTimeout(() => {
-    proxyApiKeyStoreFlushTimer = null;
-    saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore).catch((err) => {
-      console.warn(`[api-keys] failed to persist usage: ${err.message}`);
-    });
-  }, Math.max(250, Number(delayMs) || 2000));
-}
-
-function createProxyApiKey() {
-  const value = `sk-${crypto.randomBytes(24).toString("base64url")}`;
-  return value;
-}
-
-function sanitizeProxyApiKeyLabel(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return "generated-key";
-  return raw.slice(0, 80);
-}
-
-function listActiveProxyApiKeys(store, nowSec = Math.floor(Date.now() / 1000)) {
-  const keys = Array.isArray(store?.keys) ? store.keys : [];
-  return keys.filter((k) => {
-    if (!k || typeof k !== "object") return false;
-    if (Number(k.revoked_at || 0) > 0) return false;
-    const expiresAt = Number(k.expires_at || 0);
-    if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= nowSec) return false;
-    return true;
-  });
-}
-
-function pruneRevokedProxyApiKeys(store) {
-  if (!store || typeof store !== "object") return false;
-  if (!Array.isArray(store.keys)) {
-    store.keys = [];
-    return false;
-  }
-  const before = store.keys.length;
-  store.keys = store.keys.filter((k) => Number(k?.revoked_at || 0) <= 0);
-  return store.keys.length !== before;
-}
-
-function hasActiveManagedProxyApiKeys() {
-  return listActiveProxyApiKeys(proxyApiKeyStore).length > 0;
-}
-
-function bootstrapLegacySharedApiKey(store, legacyKey, enabled = true) {
-  if (!enabled) return false;
-  const key = String(legacyKey || "").trim();
-  if (!key) return false;
-  const hash = hashProxyApiKey(key);
-  const exists = (Array.isArray(store?.keys) ? store.keys : []).some((k) => String(k?.hash || "") === hash);
-  if (exists) return false;
-  if (!Array.isArray(store.keys)) store.keys = [];
-  const nowSec = Math.floor(Date.now() / 1000);
-  store.keys.unshift({
-    id: "legacy-local-api-key",
-    label: "legacy env LOCAL_API_KEY",
-    prefix: key.slice(0, 10),
-    value: key,
-    hash,
-    created_at: nowSec,
-    last_used_at: 0,
-    use_count: 0,
-    revoked_at: 0,
-    expires_at: 0
-  });
-  return true;
-}
-
-function extractProxyApiKeyFromRequest(req) {
-  const bearer = extractBearerToken(req);
-  if (bearer) return bearer;
-  const xApiKey = readHeaderValue(req, "x-api-key");
-  if (xApiKey) return xApiKey.trim();
-  const xGoogApiKey = readHeaderValue(req, "x-goog-api-key");
-  if (xGoogApiKey) return xGoogApiKey.trim();
-  const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
-  const queryKey = String(
-    incoming.searchParams.get("key") ||
-      incoming.searchParams.get("api_key") ||
-      incoming.searchParams.get("x-api-key") ||
-      ""
-  ).trim();
-  if (queryKey) return queryKey;
-  return "";
-}
-
-function findManagedProxyApiKeyByValue(candidate) {
-  const key = String(candidate || "").trim();
-  if (!key) return null;
-  const hash = hashProxyApiKey(key);
-  const active = listActiveProxyApiKeys(proxyApiKeyStore);
-  return active.find((entry) => String(entry.hash || "") === hash) || null;
-}
-
-function recordManagedProxyApiKeyUsage(entry) {
-  if (!entry || typeof entry !== "object") return;
-  entry.last_used_at = Math.floor(Date.now() / 1000);
-  entry.use_count = Number(entry.use_count || 0) + 1;
-  scheduleProxyApiKeyStoreFlush();
-}
-
-function buildApiKeySummary() {
-  const nowSec = Math.floor(Date.now() / 1000);
-  if (pruneRevokedProxyApiKeys(proxyApiKeyStore)) {
-    scheduleProxyApiKeyStoreFlush(400);
-  }
-  const keys = Array.isArray(proxyApiKeyStore?.keys) ? proxyApiKeyStore.keys : [];
-  const activeKeys = listActiveProxyApiKeys(proxyApiKeyStore, nowSec);
-  const activeIds = new Set(activeKeys.map((k) => String(k.id)));
-  return {
-    enforced: activeKeys.length > 0 || Boolean(String(config.codexOAuth.sharedApiKey || "").trim()),
-    total: keys.length,
-    active: activeKeys.length,
-    keys: keys
-      .map((entry) => {
-        const expiresAt = Number(entry.expires_at || 0);
-        const revokedAt = Number(entry.revoked_at || 0);
-        return {
-          id: String(entry.id || ""),
-          label: String(entry.label || ""),
-          prefix: String(entry.prefix || "sk-"),
-          value: String(entry.value || ""),
-          createdAt: Number(entry.created_at || 0) || null,
-          lastUsedAt: Number(entry.last_used_at || 0) || null,
-          useCount: Number(entry.use_count || 0) || 0,
-          expiresAt: expiresAt > 0 ? expiresAt : null,
-          revokedAt: revokedAt > 0 ? revokedAt : null,
-          active: activeIds.has(String(entry.id || ""))
-        };
-      })
-      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-  };
-}
-
-function resolveCloudflaredBin() {
-  const configured = String(config.publicAccess.cloudflaredBinPath || "").trim();
-  if (configured && fsSync.existsSync(configured)) return configured;
-
-  if (bundledCloudflaredResourcesDir) {
-    const binaryName = resolveBundledCloudflaredBinaryName();
-    const candidates = resolveBundledCloudflaredTargetNames().map((targetName) =>
-      path.join(path.resolve(bundledCloudflaredResourcesDir), targetName, binaryName)
-    );
-    for (const candidate of candidates) {
-      if (fsSync.existsSync(candidate)) return candidate;
-    }
-  }
-
-  const bundledBinDir = path.join(rootDir, "bin");
-  const binDirs = runtimeBinDir === bundledBinDir ? [runtimeBinDir] : [runtimeBinDir, bundledBinDir];
-  for (const binDir of binDirs) {
-    const bundledDefault = path.join(binDir, DEFAULT_CLOUDFLARED_BIN);
-    if (fsSync.existsSync(bundledDefault)) return bundledDefault;
-
-    try {
-      const entries = fsSync
-        .readdirSync(binDir, { withFileTypes: true })
-        .filter((entry) => entry.isFile())
-        .map((entry) => entry.name)
-        .filter((name) => {
-          const lower = name.toLowerCase();
-          if (process.platform === "win32") {
-            return /^cloudflared(?:-\d+)?\.exe$/.test(lower);
-          }
-          return /^cloudflared(?:-\d+)?$/.test(lower);
-        })
-        .map((name) => {
-          const fullPath = path.join(binDir, name);
-          const stat = fsSync.statSync(fullPath);
-          return { fullPath, mtimeMs: Number(stat.mtimeMs || 0) };
-        })
-        .sort((a, b) => b.mtimeMs - a.mtimeMs);
-      if (entries[0]?.fullPath) return entries[0].fullPath;
-    } catch {
-      // ignore local bin discovery failures and fall back to PATH resolution
-    }
-  }
-
-  return DEFAULT_CLOUDFLARED_BIN;
-}
-
-function resolveCloudflaredAssetMeta() {
-  const archMap = {
-    x64: "amd64",
-    ia32: "386",
-    arm64: "arm64",
-    arm: "arm"
-  };
-  const arch = archMap[String(process.arch || "").toLowerCase()];
-  if (!arch) {
-    throw new Error(`Unsupported CPU architecture for cloudflared install: ${process.arch}`);
-  }
-
-  let platform = "";
-  let ext = "";
-  if (process.platform === "win32") {
-    platform = "windows";
-    ext = ".exe";
-  } else if (process.platform === "linux") {
-    platform = "linux";
-  } else if (process.platform === "darwin") {
-    platform = "darwin";
-  } else {
-    throw new Error(`Unsupported OS for cloudflared install: ${process.platform}`);
-  }
-
-  const assetName = `cloudflared-${platform}-${arch}${ext}`;
-  const downloadUrl = `https://github.com/cloudflare/cloudflared/releases/latest/download/${assetName}`;
-  const binaryName = process.platform === "win32" ? "cloudflared.exe" : "cloudflared";
-  return {
-    assetName,
-    downloadUrl,
-    binaryName
-  };
-}
-
-function isLikelyCloudflaredBinaryPayload(bytes) {
-  if (!Buffer.isBuffer(bytes) || bytes.length < 1024) return false;
-  if (process.platform === "win32") {
-    return bytes[0] === 0x4d && bytes[1] === 0x5a;
-  }
-  if (process.platform === "linux") {
-    return bytes[0] === 0x7f && bytes[1] === 0x45 && bytes[2] === 0x4c && bytes[3] === 0x46;
-  }
-  if (process.platform === "darwin") {
-    const magicBE = bytes.readUInt32BE(0);
-    const magicLE = bytes.readUInt32LE(0);
-    return (
-      magicBE === 0xfeedface ||
-      magicBE === 0xfeedfacf ||
-      magicBE === 0xcafebabe ||
-      magicLE === 0xcefaedfe ||
-      magicLE === 0xcffaedfe ||
-      magicLE === 0xbebafeca
-    );
-  }
-  return true;
-}
-
-function resolveCloudflaredInstallPath(assetMeta) {
-  const installDir = runtimeBinDir;
-  const configuredPath = String(config.publicAccess.cloudflaredBinPath || "").trim();
-  let installPath = configuredPath || path.join(installDir, assetMeta.binaryName);
-
-  if (cloudflaredRuntime.running) {
-    const activeBin = path.resolve(resolveCloudflaredBin());
-    const targetBin = path.resolve(installPath);
-    if (activeBin === targetBin) {
-      const parsed = path.parse(assetMeta.binaryName);
-      installPath = path.join(installDir, `${parsed.name}-${Date.now()}${parsed.ext}`);
-    }
-  }
-
-  return { installDir, installPath };
-}
-
-async function installCloudflaredBinary() {
-  if (cloudflaredInstallPromise) {
-    return cloudflaredInstallPromise;
-  }
-
-  cloudflaredInstallPromise = (async () => {
-    cloudflaredRuntime.installInProgress = true;
-    cloudflaredRuntime.installMessage = "installing";
-    cloudflaredRuntime.installUpdatedAt = Math.floor(Date.now() / 1000);
-
-    let tempPath = "";
-    try {
-      const assetMeta = resolveCloudflaredAssetMeta();
-      const { installDir, installPath } = resolveCloudflaredInstallPath(assetMeta);
-      await fs.mkdir(installDir, { recursive: true });
-
-      const downloadAbort = new AbortController();
-      const downloadTimeout = setTimeout(() => downloadAbort.abort(), 120000);
-      let response;
-      try {
-        response = await fetch(assetMeta.downloadUrl, {
-          method: "GET",
-          redirect: "follow",
-          headers: { "user-agent": "codex-pro-max/0.1.0", accept: "application/octet-stream" },
-          signal: downloadAbort.signal
-        });
-      } catch (err) {
-        if (err?.name === "AbortError") {
-          throw new Error("cloudflared download timed out after 120 seconds.");
-        }
-        throw err;
-      } finally {
-        clearTimeout(downloadTimeout);
-      }
-      if (!response.ok) {
-        throw new Error(`cloudflared download failed: HTTP ${response.status} ${response.statusText}`);
-      }
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (!Buffer.isBuffer(bytes) || bytes.length < 64 * 1024 || !isLikelyCloudflaredBinaryPayload(bytes)) {
-        throw new Error("cloudflared download produced invalid payload.");
-      }
-
-      tempPath = `${installPath}.download-${Date.now()}`;
-      await fs.writeFile(tempPath, bytes);
-      if (process.platform !== "win32") {
-        await fs.chmod(tempPath, 0o755);
-      }
-
-      if (fsSync.existsSync(installPath)) {
-        await fs.unlink(installPath).catch(() => {});
-      }
-      await fs.rename(tempPath, installPath);
-      tempPath = "";
-
-      config.publicAccess.cloudflaredBinPath = installPath;
-      cloudflaredRuntime.lastCheckedAt = 0;
-      const probe = await checkCloudflaredInstalled(true);
-      if (!probe.installed) {
-        throw new Error("cloudflared install finished but binary check still failed.");
-      }
-
-      const message = `installed (${assetMeta.assetName})`;
-      cloudflaredRuntime.installMessage = message;
-      cloudflaredRuntime.installUpdatedAt = Math.floor(Date.now() / 1000);
-      cloudflaredRuntime.error = "";
-      updateCloudflaredOutput(`${message} -> ${installPath}`);
-      return {
-        installed: true,
-        path: installPath,
-        asset: assetMeta.assetName,
-        version: probe.version || ""
-      };
-    } catch (err) {
-      cloudflaredRuntime.installMessage = String(err?.message || err || "install_failed");
-      cloudflaredRuntime.installUpdatedAt = Math.floor(Date.now() / 1000);
-      cloudflaredRuntime.error = cloudflaredRuntime.installMessage;
-      updateCloudflaredOutput(`install failed: ${cloudflaredRuntime.installMessage}`);
-      if (tempPath) {
-        await fs.unlink(tempPath).catch(() => {});
-      }
-      throw err;
-    } finally {
-      cloudflaredRuntime.installInProgress = false;
-      cloudflaredInstallPromise = null;
-    }
-  })();
-
-  return cloudflaredInstallPromise;
-}
-
-function updateCloudflaredOutput(line) {
-  const text = String(line || "").trim();
-  if (!text) return;
-  cloudflaredRuntime.outputTail.push(text);
-  if (cloudflaredRuntime.outputTail.length > 120) {
-    cloudflaredRuntime.outputTail.splice(0, cloudflaredRuntime.outputTail.length - 120);
-  }
-}
-
-function extractCloudflaredUrlFromLine(line) {
-  const text = String(line || "");
-  const quick = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/gi);
-  if (quick && quick[0]) return quick[0];
-  if (text.includes("Updated to new configuration") && text.includes("hostname")) {
-    const m = text.match(/\\"hostname\\":\\"([^"\\]+)\\"/);
-    if (m && m[1]) {
-      return `https://${m[1]}`;
-    }
-  }
-  const hostnameField = text.match(/(?:^|[\s{,])hostname["=: ]+["']?([a-z0-9.-]+\.[a-z]{2,})["']?/i);
-  if (hostnameField && hostnameField[1]) {
-    return `https://${hostnameField[1]}`;
-  }
-  return "";
-}
-
-function createCloudflaredLineReader(stream) {
-  let buffer = "";
-  stream.on("data", (chunk) => {
-    buffer += Buffer.from(chunk).toString("utf8");
-    let idx = buffer.indexOf("\n");
-    while (idx >= 0) {
-      const line = buffer.slice(0, idx).replace(/\r$/, "");
-      buffer = buffer.slice(idx + 1);
-      updateCloudflaredOutput(line);
-      const url = extractCloudflaredUrlFromLine(line);
-      if (url) cloudflaredRuntime.url = url;
-      idx = buffer.indexOf("\n");
-    }
-  });
-  stream.on("end", () => {
-    const tail = buffer.replace(/\r$/, "").trim();
-    if (!tail) return;
-    updateCloudflaredOutput(tail);
-    const url = extractCloudflaredUrlFromLine(tail);
-    if (url) cloudflaredRuntime.url = url;
-  });
-}
-
-async function checkCloudflaredInstalled(force = false) {
-  const now = Date.now();
-  if (!force && now - Number(cloudflaredRuntime.lastCheckedAt || 0) < 30000) {
-    return {
-      installed: cloudflaredRuntime.installed,
-      version: cloudflaredRuntime.version
-    };
-  }
-  const bin = resolveCloudflaredBin();
-  const output = await new Promise((resolve) => {
-    const child = spawn(bin, ["--version"], {
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill("SIGKILL");
-      resolve({ ok: false, stdout, stderr });
-    }, 8000);
-    child.stdout?.on("data", (d) => {
-      stdout += Buffer.from(d).toString("utf8");
-    });
-    child.stderr?.on("data", (d) => {
-      stderr += Buffer.from(d).toString("utf8");
-    });
-    child.once("error", () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolve({ ok: false, stdout, stderr });
-    });
-    child.once("exit", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolve({ ok: code === 0, stdout, stderr });
-    });
-  });
-  cloudflaredRuntime.lastCheckedAt = now;
-  cloudflaredRuntime.installed = output.ok === true;
-  cloudflaredRuntime.version = output.ok
-    ? String(output.stdout || output.stderr || "")
-        .split(/\r?\n/)[0]
-        .trim()
-    : "";
-  return {
-    installed: cloudflaredRuntime.installed,
-    version: cloudflaredRuntime.version
-  };
-}
-
-function getCloudflaredStatus() {
-  return {
-    installed: Boolean(cloudflaredRuntime.installed),
-    version: cloudflaredRuntime.version || null,
-    installInProgress: Boolean(cloudflaredRuntime.installInProgress),
-    installMessage: cloudflaredRuntime.installMessage || null,
-    installUpdatedAt: Number(cloudflaredRuntime.installUpdatedAt || 0) || null,
-    running: Boolean(cloudflaredRuntime.running),
-    url: cloudflaredRuntime.url || null,
-    error: cloudflaredRuntime.error || null,
-    mode: cloudflaredRuntime.mode || "quick",
-    useHttp2: cloudflaredRuntime.useHttp2 !== false,
-    autoInstall: config.publicAccess.autoInstall !== false,
-    localPort: Number(cloudflaredRuntime.localPort || config.port),
-    pid: cloudflaredRuntime.pid || null,
-    startedAt: Number(cloudflaredRuntime.startedAt || 0) || null,
-    binaryPath: resolveCloudflaredBin(),
-    outputTail: [...cloudflaredRuntime.outputTail]
-  };
-}
-
-async function startCloudflaredTunnel({ mode, token, useHttp2, localPort, autoInstall } = {}) {
-  if (cloudflaredRuntime.running && cloudflaredRuntime.process) {
-    return getCloudflaredStatus();
-  }
-
-  const normalizedMode = VALID_CLOUDFLARED_MODES.has(String(mode || "").trim().toLowerCase())
-    ? String(mode).trim().toLowerCase()
-    : config.publicAccess.defaultMode;
-  const normalizedAutoInstall =
-    autoInstall === undefined ? config.publicAccess.autoInstall !== false : Boolean(autoInstall);
-  const normalizedToken = String(token || cloudflaredRuntime.tunnelToken || config.publicAccess.defaultTunnelToken || "").trim();
-  const normalizedUseHttp2 = useHttp2 === undefined ? cloudflaredRuntime.useHttp2 !== false : Boolean(useHttp2);
-  const parsedPort = parseNumberEnv(localPort ?? cloudflaredRuntime.localPort ?? config.port, Number(config.port), {
-    min: 1,
-    max: 65535,
-    integer: true
-  });
-
-  if (normalizedMode === "auth" && !normalizedToken) {
-    throw new Error("Cloudflared token is required when mode=auth.");
-  }
-
-  let installed = await checkCloudflaredInstalled(true);
-  if (!installed.installed && normalizedAutoInstall) {
-    await installCloudflaredBinary();
-    installed = await checkCloudflaredInstalled(true);
-  }
-  if (!installed.installed) {
-    throw new Error(
-      `cloudflared binary not found. Install cloudflared and ensure it is on PATH, or set CLOUDFLARED_BIN_PATH.`
-    );
-  }
-
-  const bin = resolveCloudflaredBin();
-  const args =
-    normalizedMode === "auth"
-      ? ["tunnel", "run", "--token", normalizedToken]
-      : ["tunnel", "--url", `http://127.0.0.1:${parsedPort}`];
-  if (normalizedUseHttp2) {
-    args.push("--protocol", "http2");
-  }
-
-  const child = spawn(bin, args, {
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-
-  child.once("error", (err) => {
-    cloudflaredRuntime.running = false;
-    cloudflaredRuntime.error = String(err?.message || err || "cloudflared_start_failed");
-    cloudflaredRuntime.pid = null;
-    cloudflaredRuntime.process = null;
-  });
-  child.once("exit", (code, signal) => {
-    cloudflaredRuntime.running = false;
-    cloudflaredRuntime.pid = null;
-    cloudflaredRuntime.process = null;
-    if (!cloudflaredRuntime.error && code !== 0) {
-      cloudflaredRuntime.error = `cloudflared exited with code=${code ?? "?"} signal=${signal ?? "-"}`;
-    }
-  });
-  if (child.stdout) createCloudflaredLineReader(child.stdout);
-  if (child.stderr) createCloudflaredLineReader(child.stderr);
-
-  cloudflaredRuntime.process = child;
-  cloudflaredRuntime.running = true;
-  cloudflaredRuntime.error = "";
-  cloudflaredRuntime.mode = normalizedMode;
-  cloudflaredRuntime.useHttp2 = normalizedUseHttp2;
-  cloudflaredRuntime.tunnelToken = normalizedToken;
-  cloudflaredRuntime.localPort = parsedPort;
-  cloudflaredRuntime.startedAt = Math.floor(Date.now() / 1000);
-  cloudflaredRuntime.pid = child.pid || null;
-  return getCloudflaredStatus();
-}
-
-async function stopCloudflaredTunnel() {
-  const child = cloudflaredRuntime.process;
-  if (child) {
-    try {
-      const exitPromise =
-        child.exitCode !== null || child.signalCode !== null
-          ? Promise.resolve()
-          : new Promise((resolve) => {
-              child.once("exit", () => resolve());
-            });
-      child.kill("SIGTERM");
-      await new Promise((resolve) => setTimeout(resolve, 450));
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-      }
-      await exitPromise;
-    } catch {
-      // ignore process kill errors
-    }
-  }
-  cloudflaredRuntime.process = null;
-  cloudflaredRuntime.running = false;
-  cloudflaredRuntime.pid = null;
-  cloudflaredRuntime.url = "";
-  cloudflaredRuntime.error = "";
-  return getCloudflaredStatus();
-}
-
 async function stopCodexOAuthCallbackServer() {
   const server = codexCallbackServer;
   codexCallbackServer = null;
@@ -1277,28 +374,6 @@ async function stopCodexOAuthCallbackServer() {
       resolve();
     }
   });
-}
-
-function getCachedAuthContext() {
-  if (!authContextCache.accessToken) return null;
-  if (authContextCache.mode !== config.authMode) return null;
-  if (Date.now() >= authContextCache.expiresAt) return null;
-  return {
-    accessToken: authContextCache.accessToken,
-    accountId: authContextCache.accountId || null,
-    poolEntryId: authContextCache.poolEntryId || null,
-    poolAccountId: authContextCache.poolAccountId || null
-  };
-}
-
-function cacheAuthContext(context, ttlMs = 15000) {
-  if (!context || typeof context.accessToken !== "string" || context.accessToken.length === 0) return;
-  authContextCache.mode = config.authMode;
-  authContextCache.accessToken = context.accessToken;
-  authContextCache.accountId = context.accountId || null;
-  authContextCache.poolEntryId = context.poolEntryId || null;
-  authContextCache.poolAccountId = context.poolAccountId || null;
-  authContextCache.expiresAt = Date.now() + Math.max(1000, Math.floor(ttlMs));
 }
 
 function getActiveUpstreamBaseUrl() {
@@ -1351,17 +426,6 @@ function getCodexUsageProbeBaseUrl() {
   return selected;
 }
 
-function resolveAuditAccountLabel(accountRef = "") {
-  const needle = String(accountRef || "").trim();
-  if (!needle) return "";
-  const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
-  codexOAuthStore = normalized.store;
-  const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], needle);
-  if (!target) return needle;
-  const label = String(target.label || "").trim();
-  return label || target.account_id || needle;
-}
-
 registerCommonMiddleware(app, {
   config,
   hasActiveManagedProxyApiKeys,
@@ -1369,9 +433,16 @@ registerCommonMiddleware(app, {
   findManagedProxyApiKeyByValue,
   recordManagedProxyApiKeyUsage
 });
+registerDashboardAuthRoutes(app, {
+  dashboardAuth,
+  readJsonBody
+});
+registerDashboardAuthProtection(app, {
+  dashboardAuth
+});
 
-registerSystemRoutes(app, {
-  publicDir,
+registerSystemRoutes(app, { publicDir });
+registerHealthRoutes(app, {
   config,
   getAuthStatus,
   getActiveUpstreamBaseUrl,
@@ -1409,33 +480,6 @@ registerAuthRoutes(app, {
   clearAuthContextCache,
   replaceActiveOAuthStore
 });
-registerAdminCoreRoutes(app, {
-  config,
-  runtimeStats,
-  cloudflaredRuntime,
-  tempMailController,
-  expiredAccountCleanupController,
-  proxyApiKeyStore,
-  getAuthStatus,
-  checkCloudflaredInstalled,
-  buildApiKeySummary,
-  getActiveUpstreamBaseUrl,
-  isCodexMultiAccountEnabled,
-  getCloudflaredStatus,
-  getCodexPreheatState,
-  createProxyApiKey,
-  hashProxyApiKey,
-  sanitizeProxyApiKeyLabel,
-  saveProxyApiKeyStore,
-  readJsonBody,
-  startCloudflaredTunnel,
-  stopCloudflaredTunnel,
-  installCloudflaredBinary,
-  validCloudflaredModes: VALID_CLOUDFLARED_MODES,
-  parseNumberEnv,
-  getOfficialModelCandidateIds,
-  getOfficialCodexModelCandidateIds
-});
 function getCodexOAuthStore() {
   return codexOAuthStore;
 }
@@ -1444,47 +488,75 @@ function setCodexOAuthStore(nextStore) {
   codexOAuthStore = nextStore;
 }
 
-registerAdminPoolRoutes(app, {
-  config,
-  readJsonBody,
-  getCodexOAuthStore,
-  setCodexOAuthStore,
-  ensureCodexOAuthStoreShape,
-  saveTokenStore,
-  clearAuthContextCache,
-  buildCodexPoolMetrics,
-  isCodexMultiAccountEnabled,
-  getCodexPoolEntryId,
-  findCodexPoolAccountByRef,
-  removeCodexPoolAccountFromStore,
-  isCodexAccountLeased,
-  importIntoCodexAuthPool,
-  normalizeOpenAICodexPlanType,
-  refreshCodexUsageSnapshotInStore,
-  runCodexPreheat,
-  getCodexPreheatState
-});
-
-registerAdminSettingsRoutes(app, {
-  config,
-  cloudflaredRuntime,
-  runtimeStats,
-  recentRequestsStore,
-  persistProxyConfigEnv: async (nextConfig) => await persistProxyConfigEnv(envFilePath, nextConfig),
-  readJsonBody,
-  normalizeUpstreamMode,
-  setActiveUpstreamBaseUrl,
-  normalizeCodexServiceTier,
-  parseReasoningEffortOrFallback,
-  validMultiAccountStrategies: VALID_MULTI_ACCOUNT_STRATEGIES,
-  multiAccountStrategyList: MULTI_ACCOUNT_STRATEGY_LIST,
-  expiredAccountCleanupController,
-  sanitizeModelMappings,
-  getActiveUpstreamBaseUrl,
-  isCodexMultiAccountEnabled,
-  runDirectChatCompletionTest,
-  tempMailController,
-  parseNumberEnv
+registerAdminRoutes(app, {
+  core: {
+    config,
+    runtimeStats,
+    cloudflaredRuntime,
+    tempMailController,
+    expiredAccountCleanupController,
+    getProxyApiKeyStore,
+    getAuthStatus,
+    checkCloudflaredInstalled,
+    buildApiKeySummary,
+    getActiveUpstreamBaseUrl,
+    isCodexMultiAccountEnabled,
+    getCloudflaredStatus,
+    getCodexPreheatState,
+    createProxyApiKey,
+    hashProxyApiKey,
+    sanitizeProxyApiKeyLabel,
+    persistProxyApiKeyStore,
+    readJsonBody,
+    startCloudflaredTunnel,
+    stopCloudflaredTunnel,
+    installCloudflaredBinary,
+    validCloudflaredModes: VALID_CLOUDFLARED_MODES,
+    parseNumberEnv,
+    getOfficialModelCandidateIds,
+    getOfficialCodexModelCandidateIds
+  },
+  pool: {
+    config,
+    readJsonBody,
+    getCodexOAuthStore,
+    setCodexOAuthStore,
+    ensureCodexOAuthStoreShape,
+    saveTokenStore,
+    clearAuthContextCache,
+    buildCodexPoolMetrics,
+    isCodexMultiAccountEnabled,
+    getCodexPoolEntryId,
+    findCodexPoolAccountByRef,
+    removeCodexPoolAccountFromStore,
+    isCodexAccountLeased,
+    importIntoCodexAuthPool,
+    normalizeOpenAICodexPlanType,
+    refreshCodexUsageSnapshotInStore,
+    runCodexPreheat,
+    getCodexPreheatState
+  },
+  settings: {
+    config,
+    cloudflaredRuntime,
+    runtimeStats,
+    recentRequestsStore,
+    persistProxyConfigEnv: async (nextConfig) => await persistProxyConfigEnv(envFilePath, nextConfig),
+    readJsonBody,
+    normalizeUpstreamMode,
+    setActiveUpstreamBaseUrl,
+    normalizeCodexServiceTier,
+    parseReasoningEffortOrFallback,
+    validMultiAccountStrategies: VALID_MULTI_ACCOUNT_STRATEGIES,
+    multiAccountStrategyList: MULTI_ACCOUNT_STRATEGY_LIST,
+    expiredAccountCleanupController,
+    sanitizeModelMappings,
+    getActiveUpstreamBaseUrl,
+    isCodexMultiAccountEnabled,
+    runDirectChatCompletionTest,
+    tempMailController,
+    parseNumberEnv
+  }
 });
 const upstreamRuntimeHelpers = createUpstreamRuntimeHelpers({
   maxAuditTextChars: RUNTIME_AUDIT_MAX_TEXT_CHARS,
@@ -1647,7 +719,6 @@ const proxyRouteHandlers = createProxyRouteHandlers({
   parseJsonLoose,
   buildResponsesChainEntry,
   codexResponsesChain,
-  expandResponsesRequestBodyFromChain,
   isCodexMultiAccountEnabled,
   isCodexPoolRetryEnabled,
   shouldRotateCodexAccountForStatus,
@@ -1673,14 +744,14 @@ const proxyRouteHandlers = createProxyRouteHandlers({
   isCodexTokenInvalidatedError,
   codexResponseAffinity,
   acquireCodexAccountLease,
-  nextRuntimeRequestSeq: () => (runtimeRequestSeq += 1),
+  nextRuntimeRequestSeq,
   getAuthModeHint: () =>
     config.authMode === "profile-store"
       ? "Run `your external auth tool login flow` first."
       : "Open /auth/login first."
 });
 
-registerProxyRoutes(app, { handlers: proxyRouteHandlers });
+registerProviderRoutes(app, { handlers: proxyRouteHandlers });
 
 function syncResolvedRuntimeAddress({ port, requestedPort }) {
   if (!hasExplicitCustomOAuthRedirectUri) {
@@ -1702,7 +773,19 @@ const serverLifecycle = startConfiguredServer({
   installSignalHandlers: shouldAutostartServer,
   getActiveUpstreamBaseUrl,
   syncResolvedAddress: syncResolvedRuntimeAddress,
-  onStartup: () => {
+  onStartup: ({ server }) => {
+    responsesWebSocketRuntime = attachResponsesWebSocketServer(server, {
+      config,
+      hasActiveManagedProxyApiKeys,
+      extractProxyApiKeyFromRequest,
+      findManagedProxyApiKeyByValue,
+      recordManagedProxyApiKeyUsage,
+      recordRecentProxyRequest: proxyRouteHandlers.recordRecentProxyRequest,
+      openResponsesCreateProxySession: proxyRouteHandlers.openResponsesCreateProxySession,
+      parseResponsesResultFromSse,
+      readUpstreamTextOrThrow,
+      parseJsonLoose
+    });
     startExpiredAccountCleanupTimer();
     if (config.authMode === "profile-store") {
       console.log(`source: ${config.profileStore.authStorePath}`);
@@ -1729,15 +812,14 @@ const serverLifecycle = startConfiguredServer({
     }
   },
   onShutdown: async () => {
-    if (proxyApiKeyStoreFlushTimer) {
-      clearTimeout(proxyApiKeyStoreFlushTimer);
-      proxyApiKeyStoreFlushTimer = null;
-    }
+    const runtime = responsesWebSocketRuntime;
+    responsesWebSocketRuntime = null;
+    await runtime?.close?.().catch(() => {});
     stopExpiredAccountCleanupTimer();
     await stopCodexOAuthCallbackServer().catch(() => {});
     await tempMailController.shutdown().catch(() => {});
     await recentRequestsStore.flush().catch(() => {});
-    await saveProxyApiKeyStore(config.apiKeys.storePath, proxyApiKeyStore).catch(() => {});
+    await flushProxyApiKeyStore().catch(() => {});
     await stopCloudflaredTunnel().catch(() => {});
   }
 });
@@ -2907,16 +1989,6 @@ function getCodexPoolCooldownSeconds(statusCode, failureCount) {
   return Math.min(180, 15 * Math.max(1, failureCount));
 }
 
-function isCodexTokenInvalidatedError(statusCode, reason) {
-  if (Number(statusCode || 0) !== 401) return false;
-  const text = String(reason || "").toLowerCase();
-  return (
-    text.includes("token_invalidated") ||
-    text.includes("authentication token has been invalidated") ||
-    text.includes("please try signing in again")
-  );
-}
-
 function findCodexPoolAccountByRef(accounts, ref) {
   const needle = String(ref || "").trim();
   if (!needle) return null;
@@ -2941,7 +2013,7 @@ function selectCodexAccountForLogout(store, explicitRef = "") {
     if (byActive) return byActive;
   }
 
-  const cacheAccountId = String(authContextCache.accountId || "").trim();
+  const cacheAccountId = String(getCachedAuthContext()?.accountId || "").trim();
   if (cacheAccountId) {
     const byCache = findCodexPoolAccountByRef(accounts, cacheAccountId);
     if (byCache) return byCache;
@@ -2976,7 +2048,8 @@ function removeCodexPoolAccountFromStore(storeInput, accountRef = "", options = 
   const removedAccountId = String(target.account_id || "").trim() || null;
   const isAccountLeased =
     typeof options.isAccountLeased === "function" ? options.isAccountLeased : isCodexAccountLeased;
-  if (isAccountLeased(removedEntryId || accountRef, target) === true) {
+  const ignoreLease = options.ignoreLease === true;
+  if (!ignoreLease && isAccountLeased(removedEntryId || accountRef, target) === true) {
     return {
       removed: false,
       blocked: "leased",
@@ -5476,81 +4549,6 @@ function getCodexOriginator() {
   return "pi";
 }
 
-function parseReasoningEffortOrFallback(value, fallback, options = {}) {
-  const allowAdaptive = options.allowAdaptive === true;
-  if (typeof value !== "string") return fallback;
-  let normalized = value.trim().toLowerCase();
-  if (normalized === "minimal") normalized = "low";
-  const validSet = allowAdaptive ? VALID_REASONING_EFFORT_MODES : VALID_REASONING_EFFORTS;
-  if (validSet.has(normalized)) return normalized;
-  return fallback;
-}
-
-function getGpt5MinorVersionForReasoning(modelId) {
-  const normalized = String(modelId || "").trim().toLowerCase();
-  if (!normalized.startsWith("gpt-5")) return null;
-  const match = normalized.match(/^gpt-5(?:\.(\d+))?(?:[-.].*)?$/);
-  if (!match) return null;
-  const minor = match[1] === undefined ? 0 : Number(match[1]);
-  return Number.isFinite(minor) ? minor : null;
-}
-
-function getSupportedReasoningEffortsForModel(modelId) {
-  const normalized = String(modelId || "").trim().toLowerCase();
-  if (!normalized) return null;
-
-  const minor = getGpt5MinorVersionForReasoning(normalized);
-  if (minor === null) return null;
-
-  // Capability matrix based on OpenAI model docs:
-  // - Base GPT-5.x (non-codex, non-pro): `none` starts from 5.1, `xhigh` starts from 5.2 (incl. 5.4).
-  // - Codex family: generally low/medium/high, with xhigh available from newer codex generations.
-  //   (and no `none`).
-  // - Pro family: gpt-5-pro => high only; gpt-5.2+/5.4-pro => medium/high/xhigh.
-  const isCodex = normalized.includes("-codex");
-  const isPro = normalized.includes("-pro");
-  const isGpt5Pro = normalized.startsWith("gpt-5-pro");
-  const isGpt51CodexMax = normalized.startsWith("gpt-5.1-codex-max");
-
-  if (isGpt5Pro) {
-    return new Set(["high"]);
-  }
-
-  // gpt-5.2+/5.4 pro family
-  if (isPro) {
-    return new Set(["medium", "high", "xhigh"]);
-  }
-
-  const supportsNone = !isCodex && minor >= 1;
-  const supportsXhigh = minor >= 2 || isGpt51CodexMax;
-
-  const supported = isGpt51CodexMax ? new Set(["none", "medium", "high"]) : new Set(["low", "medium", "high"]);
-  if (supportsNone) supported.add("none");
-  if (supportsXhigh) supported.add("xhigh");
-  return supported;
-}
-
-function clampReasoningEffortForModel(effort, modelId) {
-  if (!VALID_REASONING_EFFORTS.has(effort)) return effort;
-
-  const supported = getSupportedReasoningEffortsForModel(modelId);
-  if (!supported || supported.has(effort)) return effort;
-
-  const fallbackOrder = {
-    none: ["low", "medium", "high", "xhigh"],
-    low: ["medium", "high", "xhigh", "none"],
-    medium: ["high", "low", "xhigh", "none"],
-    high: ["medium", "low", "xhigh", "none"],
-    xhigh: ["high", "medium", "low", "none"]
-  };
-
-  const candidates = fallbackOrder[effort] || ["medium"];
-  for (const candidate of candidates) {
-    if (supported.has(candidate)) return candidate;
-  }
-  return "medium";
-}
-
 function resolveReasoningEffort(value, context = null, modelId = null) {
   const requested = parseReasoningEffortOrFallback(value, null, { allowAdaptive: true });
   let resolved = null;
@@ -5993,6 +4991,8 @@ export const __testing = {
   acquireCodexAccountLease,
   isCodexAccountLeased,
   pickCodexAccountCandidates,
+  removeCodexPoolAccountFromStore,
+  isCodexTokenInvalidatedError,
   startExpiredAccountCleanupTimer,
   stopExpiredAccountCleanupTimer,
   getExpiredAccountCleanupTimer: () => expiredAccountCleanupTimer,
