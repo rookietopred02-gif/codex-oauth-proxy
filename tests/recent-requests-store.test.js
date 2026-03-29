@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { createRecentRequestsStore } from "../src/recent-requests-store.js";
 
-test("recent requests store persists rows outside the index file and reloads full packets", async () => {
+test("recent requests store persists rows outside the index file and reloads summaries by default", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-pro-max-recent-requests-"));
   const historyPath = path.join(tempDir, "recent-requests.json");
   const store = createRecentRequestsStore({
@@ -27,9 +27,10 @@ test("recent requests store persists rows outside the index file and reloads ful
 
   const indexRaw = await fs.readFile(historyPath, "utf8");
   const indexJson = JSON.parse(indexRaw);
-  assert.equal(indexJson.storageVersion, 2);
+  assert.equal(indexJson.storageVersion, 3);
   assert.equal(Array.isArray(indexJson.recentRequests), true);
   assert.equal(Object.hasOwn(indexJson.recentRequests[0], "file"), true);
+  assert.equal(Object.hasOwn(indexJson.recentRequests[0], "summary"), true);
   assert.equal(indexRaw.includes(row.responsePacket), false);
 
   const reloadedStore = createRecentRequestsStore({
@@ -39,9 +40,14 @@ test("recent requests store persists rows outside the index file and reloads ful
   const snapshot = await reloadedStore.load();
 
   assert.equal(snapshot.recentRequests.length, 1);
-  assert.equal(snapshot.recentRequests[0].requestPacket, row.requestPacket);
-  assert.equal(snapshot.recentRequests[0].upstreamRequestPacket, row.upstreamRequestPacket);
-  assert.equal(snapshot.recentRequests[0].responsePacket, row.responsePacket);
+  assert.equal(snapshot.recentRequests[0].requestPacket, undefined);
+  assert.equal(snapshot.recentRequests[0].upstreamRequestPacket, undefined);
+  assert.equal(snapshot.recentRequests[0].responsePacket, undefined);
+
+  const detail = await reloadedStore.getById("req_large");
+  assert.equal(detail?.requestPacket, row.requestPacket);
+  assert.equal(detail?.upstreamRequestPacket, row.upstreamRequestPacket);
+  assert.equal(detail?.responsePacket, row.responsePacket);
 });
 
 test("recent requests store still loads the legacy inline JSON format", async () => {
@@ -67,5 +73,8 @@ test("recent requests store still loads the legacy inline JSON format", async ()
 
   assert.equal(snapshot.recentRequests.length, 1);
   assert.equal(snapshot.recentRequests[0].id, "req_legacy");
-  assert.equal(snapshot.recentRequests[0].responsePacket, "legacy-response");
+  assert.equal(snapshot.recentRequests[0].responsePacket, undefined);
+
+  const detail = await store.getById("req_legacy");
+  assert.equal(detail?.responsePacket, "legacy-response");
 });

@@ -321,3 +321,167 @@ test("Anthropic native stream rejects sessions without an SSE body", async () =>
     }
   });
 });
+
+test("Anthropic native stream converts buffered JSON completion into SSE", async () => {
+  const helpers = createHelpers({
+    async openCodexResponsesStreamViaOAuth() {
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        upstream: null,
+        bufferedCompletion: {
+          status: "completed",
+          usage: {
+            input_tokens: 4,
+            output_tokens: 5,
+            total_tokens: 9
+          },
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        },
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    stream: true,
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.match(res.writes.join(""), /event: message_start/);
+  assert.match(res.writes.join(""), /"text":"done"/);
+  assert.match(res.writes.join(""), /event: message_stop/);
+  assert.deepEqual(res.locals.tokenUsage, {
+    prompt_tokens: 4,
+    completion_tokens: 5,
+    total_tokens: 9
+  });
+});
+
+test("Anthropic native non-stream drops explicit sampling parameters for codex-backed local compat", async () => {
+  let captured = null;
+  const helpers = createHelpers({
+    async executeCodexResponsesViaOAuth(options) {
+      captured = options;
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        completed: {
+          status: "completed",
+          usage: {
+            input_tokens: 3,
+            output_tokens: 4
+          },
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        }
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    temperature: 0.25,
+    top_p: 0.8,
+    metadata: { trace_id: "trace_123" },
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(captured?.temperature, undefined);
+  assert.equal(captured?.top_p, undefined);
+  assert.deepEqual(captured?.additionalCreateFields, {
+    metadata: { trace_id: "trace_123" }
+  });
+  assert.equal(res.statusCode, 200);
+});
+
+test("Anthropic native stream drops explicit sampling parameters for codex-backed local compat", async () => {
+  let captured = null;
+  const helpers = createHelpers({
+    async openCodexResponsesStreamViaOAuth(options) {
+      captured = options;
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        upstream: null,
+        bufferedCompletion: {
+          status: "completed",
+          usage: {
+            input_tokens: 4,
+            output_tokens: 5,
+            total_tokens: 9
+          },
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        },
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+      stream: true,
+    temperature: 0.25,
+    top_p: 0.8,
+    metadata: { trace_id: "trace_123" },
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(captured?.temperature, undefined);
+  assert.equal(captured?.top_p, undefined);
+  assert.deepEqual(captured?.additionalCreateFields, {
+    metadata: { trace_id: "trace_123" }
+  });
+  assert.equal(res.statusCode, 200);
+});
+
+test("Anthropic native rejects unsupported documents with an explicit compatibility error", async () => {
+  const helpers = createHelpers();
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    documents: [{ type: "document", source: { type: "text", media_type: "text/plain", data: "hello" } }],
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 502);
+  assert.deepEqual(res.jsonPayload, {
+    type: "error",
+    error: {
+      type: "api_error",
+      message:
+        'Anthropic field "documents" is not supported in local compatibility mode because it cannot be equivalently mapped to Codex/OpenAI Responses upstream.'
+    }
+  });
+});

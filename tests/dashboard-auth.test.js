@@ -162,3 +162,75 @@ test("dashboard password protection locks admin routes and stores only a local h
     await fs.rm(appDataDir, { recursive: true, force: true });
   }
 });
+
+test("dashboard auth sets a secure session cookie when proxied through Cloudflare HTTPS", async () => {
+  const appDataDir = await createTempAppDataDir();
+  const port = await reserveFreePort();
+
+  await writeDesktopEnv(appDataDir, [`PORT=${port}`, "AUTH_MODE=codex-oauth"]);
+
+  try {
+    const backend = await startAppServer({
+      appDataDir,
+      host: "127.0.0.1"
+    });
+
+    const response = await fetch(`${backend.url}/dashboard-auth/config`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-visitor": "{\"scheme\":\"https\"}"
+      },
+      body: JSON.stringify({
+        enabled: true,
+        password: "supersecret123"
+      })
+    });
+
+    assert.equal(response.status, 200);
+    const setCookie =
+      typeof response.headers.getSetCookie === "function"
+        ? response.headers.getSetCookie().join("; ")
+        : String(response.headers.get("set-cookie") || "");
+    assert.match(setCookie, /Secure/i);
+  } finally {
+    await stopAppServer("TEST");
+    await fs.rm(appDataDir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard auth ignores spoofed forwarded client headers during initial password configuration", async () => {
+  const appDataDir = await createTempAppDataDir();
+  const port = await reserveFreePort();
+
+  await writeDesktopEnv(appDataDir, [`PORT=${port}`, "AUTH_MODE=codex-oauth"]);
+
+  try {
+    const backend = await startAppServer({
+      appDataDir,
+      host: "127.0.0.1"
+    });
+
+    const response = await fetch(`${backend.url}/dashboard-auth/config`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": "203.0.113.10",
+        "x-forwarded-for": "198.51.100.44"
+      },
+      body: JSON.stringify({
+        enabled: true,
+        password: "supersecret123"
+      })
+    });
+
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.enabled, true);
+    assert.equal(body.configured, true);
+    assert.equal(body.authenticated, true);
+  } finally {
+    await stopAppServer("TEST");
+    await fs.rm(appDataDir, { recursive: true, force: true });
+  }
+});

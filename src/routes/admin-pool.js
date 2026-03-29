@@ -25,6 +25,7 @@ export function registerAdminPoolRoutes(app, context) {
     findCodexPoolAccountByRef,
     removeCodexPoolAccountFromStore,
     importIntoCodexAuthPool,
+    extractCodexOAuthImportItems,
     normalizeOpenAICodexPlanType,
     refreshCodexUsageSnapshotInStore,
     runCodexPreheat,
@@ -180,7 +181,11 @@ export function registerAdminPoolRoutes(app, context) {
 
     const body = await readJsonBody(req);
     try {
-      const result = await importIntoCodexAuthPool(Array.isArray(body.tokens) ? body.tokens : [], {
+      const importItems = extractCodexOAuthImportItems({
+        items: Array.isArray(body.tokens) ? body.tokens : [],
+        files: Array.isArray(body.files) ? body.files : []
+      });
+      const result = await importIntoCodexAuthPool(importItems, {
         replace: body.replace === true,
         probeUsage: body.probeUsage !== false
       });

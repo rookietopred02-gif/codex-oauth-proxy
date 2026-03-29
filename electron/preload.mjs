@@ -11,6 +11,9 @@ const { contextBridge, ipcRenderer } = electron;
 
 contextBridge.exposeInMainWorld("codexProMaxDesktop", {
   platform: process.platform,
+  async pickTokenImportFiles() {
+    return await ipcRenderer.invoke("desktop:pick-token-import-files");
+  },
   async restartBackend(port) {
     return await ipcRenderer.invoke("desktop:restart-backend", { port });
   }

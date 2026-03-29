@@ -144,12 +144,23 @@ export function createTempMailFeature(deps) {
     const stopping = state.stopping === true;
     const runnerReady = state.runnerReady === true;
     const supported = state.supported !== false;
+    const runnerProbePending =
+      supported &&
+      !runnerReady &&
+      !running &&
+      !stopping &&
+      !state.runnerError &&
+      !state.runnerVersion &&
+      !state.runnerMode;
     const config = state.config || {};
     const effectiveThreads = Number(config.effectiveWorkers || 1) || 1;
 
     if (!supported) {
       summaryEl.className = "result temp-mail-summary bad";
       summaryEl.textContent = tt("temp_mail_runner_missing", { message: state.runnerError || "unsupported mode" });
+    } else if (runnerProbePending) {
+      summaryEl.className = "result temp-mail-summary";
+      summaryEl.textContent = t("temp_mail_idle");
     } else if (!runnerReady) {
       summaryEl.className = "result temp-mail-summary bad";
       summaryEl.textContent = tt("temp_mail_runner_missing", { message: state.runnerError || "go toolchain not found" });
@@ -190,6 +201,13 @@ export function createTempMailFeature(deps) {
     }
     renderConsole(logs);
     syncRefreshLoop();
+  }
+
+  async function fetchStatus() {
+    const data = await api("/admin/temp-mail/status");
+    const nextState = data?.tempMail || null;
+    render(nextState);
+    return nextState;
   }
 
   async function toggleRun() {
@@ -264,6 +282,7 @@ export function createTempMailFeature(deps) {
 
   return {
     getState: () => (lastState && typeof lastState === "object" ? { ...lastState } : null),
+    fetchStatus,
     loadFormFromStorage,
     render,
     saveFormToStorage,

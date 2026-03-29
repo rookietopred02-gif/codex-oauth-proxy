@@ -3,6 +3,24 @@ function setNoStoreHeaders(res) {
   res.setHeader("Pragma", "no-cache");
 }
 
+function extractDashboardClientAddress(req) {
+  return (
+    String(req?.socket?.remoteAddress || "").trim() ||
+    String(req?.connection?.remoteAddress || "").trim() ||
+    "unknown"
+  );
+}
+
+function requestOriginatesLocally(req) {
+  const address = extractDashboardClientAddress(req);
+  return (
+    address === "127.0.0.1" ||
+    address === "::1" ||
+    address === "::ffff:127.0.0.1" ||
+    address.toLowerCase() === "localhost"
+  );
+}
+
 function writeDashboardAuthError(res, authResult) {
   setNoStoreHeaders(res);
   res.status(401).json({
@@ -97,6 +115,13 @@ export function registerDashboardAuthRoutes(app, context) {
   app.post("/dashboard-auth/config", async (req, res) => {
     setNoStoreHeaders(res);
     const authResult = dashboardAuth.authenticateRequest(req);
+    if (!dashboardAuth.isEnabled() && !requestOriginatesLocally(req)) {
+      res.status(403).json({
+        error: "dashboard_auth_local_only",
+        message: "Initial dashboard password configuration is only allowed from the local machine."
+      });
+      return;
+    }
     if (dashboardAuth.isEnabled() && !authResult.ok) {
       dashboardAuth.clearSessionCookie(res, req);
       writeDashboardAuthError(res, authResult);

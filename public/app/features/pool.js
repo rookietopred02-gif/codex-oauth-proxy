@@ -93,7 +93,7 @@ export function createPoolFeature(deps) {
       }
     }
 
-    const recommendationLimit = Math.min(4, decorated.length);
+    const recommendationLimit = Math.min(5, decorated.length);
     let recommendations = [];
     if (Array.isArray(poolMetrics.recommendedEntryIds) && poolMetrics.recommendedEntryIds.length > 0) {
       recommendations = poolMetrics.recommendedEntryIds

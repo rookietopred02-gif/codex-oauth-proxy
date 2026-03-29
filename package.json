@@ -1,11 +1,11 @@
 {
   "name": "codex-pro-max",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Local OAuth reverse proxy for Codex/OpenAI-compatible APIs",
   "author": "fi",
   "type": "module",
-  "main": "electron/main.mjs",
+  "main": "electron/main.cjs",
   "productName": "codex-pro-max",
   "scripts": {
     "start": "node src/server.js",
@@ -13,7 +13,7 @@
     "build:runner": "node scripts/build-temp-mail-runner.mjs",
     "build:cloudflared": "node scripts/build-cloudflared-bundles.mjs",
     "build:desktop-resources": "npm run build:runner && npm run build:cloudflared",
-    "dist:win": "npm run build:desktop-resources && electron-builder --win nsis --x64",
+    "dist:win": "npm run build:desktop-resources && node scripts/dist-electron-win.mjs",
     "dist:mac": "npm run build:desktop-resources && electron-builder --mac dmg --universal",
     "dist:linux": "npm run build:desktop-resources && electron-builder --linux AppImage --x64",
     "lint": "node scripts/lint.mjs",

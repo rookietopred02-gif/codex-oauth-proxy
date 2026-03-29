@@ -5,6 +5,7 @@ export function registerAdminCoreRoutes(app, context) {
   const {
     config,
     runtimeStats,
+    recentRequestsStore,
     cloudflaredRuntime,
     tempMailController,
     expiredAccountCleanupController,
@@ -31,8 +32,8 @@ export function registerAdminCoreRoutes(app, context) {
   app.get("/admin/state", async (_req, res) => {
     try {
       const authStatus = await getAuthStatus();
-      await checkCloudflaredInstalled(false).catch(() => {});
-      await tempMailController.refreshRunner(false).catch(() => {});
+      void checkCloudflaredInstalled(false).catch(() => {});
+      void tempMailController.refreshRunner(false).catch(() => {});
       const apiKeySummary = buildApiKeySummary();
       res.json({
         ok: true,
@@ -62,6 +63,31 @@ export function registerAdminCoreRoutes(app, context) {
     } catch (err) {
       res.status(500).json({ error: "state_failed", message: err.message });
     }
+  });
+
+  app.get("/admin/requests/:requestId", async (req, res) => {
+    const requestId = String(req.params?.requestId || "").trim();
+    if (!requestId) {
+      res.status(400).json({
+        error: "request_id_required",
+        message: "requestId is required."
+      });
+      return;
+    }
+
+    const row = await recentRequestsStore.getById(requestId);
+    if (!row) {
+      res.status(404).json({
+        error: "request_not_found",
+        message: "Recent request detail not found."
+      });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      request: row
+    });
   });
 
   app.get("/admin/api-keys", async (_req, res) => {

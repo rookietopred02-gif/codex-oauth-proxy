@@ -35,6 +35,7 @@ export function createProxyRouteHandlers(context) {
     normalizeChatCompletionsRequestBody,
     parseJsonLoose,
     buildResponsesChainEntry,
+    expandResponsesRequestBodyFromChain,
     codexResponsesChain,
     isCodexMultiAccountEnabled,
     isCodexPoolRetryEnabled,
@@ -44,6 +45,7 @@ export function createProxyRouteHandlers(context) {
     maybeMarkCodexPoolSuccess,
     truncate,
     parseResponsesResultFromSse,
+    extractCompletedResponseFromJson,
     convertResponsesToChatCompletion,
     pipeCodexSseAsChatCompletions,
     pipeSseAndCaptureTokenUsage,
@@ -231,12 +233,85 @@ export function createProxyRouteHandlers(context) {
     return err;
   }
 
+  function prepareCodexResponsesCreateRequest(rawBody, parsedBody) {
+    const previousResponseId = extractPreviousResponseId(rawBody);
+    let requestJson = parsedBody;
+
+    if (previousResponseId) {
+      const previousEntry = codexResponsesChain.lookup(previousResponseId);
+      if (!previousEntry) {
+        throw createRouteError(
+          409,
+          "previous_response_id_chain_missing",
+          "Could not continue this response because the local previous_response_id chain is no longer available. Retry with the full input."
+        );
+      }
+      if (requestJson === undefined) {
+        requestJson = parseJsonLoose(rawBody.toString("utf8"));
+      }
+      if (requestJson && typeof requestJson === "object" && !Array.isArray(requestJson)) {
+        requestJson = expandResponsesRequestBodyFromChain(requestJson, previousEntry);
+      }
+    }
+
+    if (requestJson && typeof requestJson === "object" && !Array.isArray(requestJson)) {
+      const normalizedRawBody = Buffer.from(JSON.stringify(requestJson), "utf8");
+      return {
+        previousResponseId,
+        rawBody: normalizedRawBody,
+        parsedBody: requestJson
+      };
+    }
+
+    return {
+      previousResponseId,
+      rawBody,
+      parsedBody
+    };
+  }
+
+  function sendCompletedResponseAsSse(res, completed) {
+    res.status(200);
+    res.setHeader("content-type", "text/event-stream; charset=utf-8");
+    res.setHeader("cache-control", "no-cache");
+    res.setHeader("connection", "keep-alive");
+    res.setHeader("x-accel-buffering", "no");
+    res.write(`data: ${JSON.stringify({ type: "response.completed", response: completed })}\n\n`);
+    res.end();
+  }
+
+  function sendRawSseResponse(res, rawSse) {
+    res.status(200);
+    res.setHeader("content-type", "text/event-stream; charset=utf-8");
+    res.setHeader("cache-control", "no-cache");
+    res.setHeader("connection", "keep-alive");
+    res.setHeader("x-accel-buffering", "no");
+    res.write(rawSse);
+    res.end();
+  }
+
+  function looksLikeSsePayload(rawText) {
+    return typeof rawText === "string" && /(^|\n)\s*(event:|data:)/.test(rawText);
+  }
+
   function buildForwardHeaders(requestHeaders = {}) {
     const headers = new Headers();
     for (const [key, rawValue] of Object.entries(requestHeaders || {})) {
       const normalizedKey = String(key || "").trim().toLowerCase();
       if (!normalizedKey) continue;
       if (hopByHop.has(normalizedKey)) continue;
+      if (normalizedKey === "accept-encoding") continue;
+      if (normalizedKey === "host") continue;
+      if (normalizedKey === "cookie") continue;
+      if (normalizedKey === "origin") continue;
+      if (normalizedKey === "referer") continue;
+      if (normalizedKey === "forwarded") continue;
+      if (normalizedKey === "x-real-ip") continue;
+      if (normalizedKey === "true-client-ip") continue;
+      if (normalizedKey === "x-api-key") continue;
+      if (normalizedKey === "x-goog-api-key") continue;
+      if (normalizedKey.startsWith("cf-")) continue;
+      if (normalizedKey.startsWith("x-forwarded-")) continue;
       if (normalizedKey.startsWith("sec-websocket-")) continue;
       const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
       if (typeof value !== "string") continue;
@@ -254,6 +329,7 @@ export function createProxyRouteHandlers(context) {
     if (!headers.has("originator")) headers.set("originator", getCodexOriginator());
     if (!headers.has("user-agent")) headers.set("user-agent", "codex-pro-max");
     headers.set("accept", "text/event-stream");
+    headers.set("accept-encoding", "identity");
     return true;
   }
 
@@ -284,7 +360,8 @@ export function createProxyRouteHandlers(context) {
       throw createRouteError(400, "unsupported_endpoint", "WebSocket mode only supports POST /v1/responses.");
     }
 
-    const previousResponseId = extractPreviousResponseId(requestBody);
+    const preparedRequest = prepareCodexResponsesCreateRequest(requestBody, parsedRequestBody);
+    const previousResponseId = preparedRequest.previousResponseId;
     const preferredPoolEntryId = resolvePinnedCodexPoolEntryId(req, target, requestBody, incoming.pathname);
 
     let auth;
@@ -308,8 +385,8 @@ export function createProxyRouteHandlers(context) {
         throw createRouteError(401, "missing_account_id", "Could not extract chatgpt_account_id from OAuth token.");
       }
 
-      const normalized = normalizeCodexResponsesRequestBody(requestBody, {
-        parsedBody: parsedRequestBody
+      const normalized = normalizeCodexResponsesRequestBody(preparedRequest.rawBody, {
+        parsedBody: preparedRequest.parsedBody
       });
       let normalizedResponsesRequest = normalized.json || parseJsonLoose(normalized.body.toString("utf8"));
       let upstreamBody = normalized.body;
@@ -867,7 +944,7 @@ export function createProxyRouteHandlers(context) {
           return;
         }
 
-        const completed = parsedResponse.completed;
+        const completed = parsedResponse.completed || extractCompletedResponseFromJson(raw);
         if (!completed) {
           await markPoolFailure(`Invalid upstream SSE on ${req.method} ${req.originalUrl}`, 502);
           res.status(502).json({
@@ -951,6 +1028,77 @@ export function createProxyRouteHandlers(context) {
         return;
       }
 
+      const upstreamContentType = parseContentType(upstream.headers.get("content-type") || "");
+
+      if (
+        isResponsesCreateRequest &&
+        !collectCompletedResponseAsJson &&
+        upstream.ok &&
+        !upstreamContentType.includes("event-stream")
+      ) {
+        let raw;
+        try {
+          raw = await readUpstreamTextOrThrow(upstream);
+        } catch (err) {
+          const details = extractUpstreamTransportError(err);
+          noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          await markPoolFailure(`Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`, 502);
+          res.status(502).json({
+            error: "upstream_body_read_failed",
+            message: err.message,
+            code: details.code || details.name || null,
+            detail: details.detail || null,
+            retry_count: Number(res.locals?.upstreamRetryCount || 0)
+          });
+          return;
+        }
+
+        if (looksLikeSsePayload(raw)) {
+          const parsedResponse = parseResponsesResultFromSse(raw);
+          if (parsedResponse.failed) {
+            await markPoolFailure(
+              `Upstream SSE response failed on ${req.method} ${req.originalUrl}: ${truncate(parsedResponse.failed.message, 200)}`,
+              parsedResponse.failed.statusCode
+            );
+            sendRawSseResponse(res, raw);
+            return;
+          }
+
+          if (!parsedResponse.completed) {
+            await markPoolFailure(`Invalid upstream SSE on ${req.method} ${req.originalUrl}`, 502);
+            res.status(502).json({
+              error: "invalid_upstream_sse",
+              message: "Upstream SSE ended before a terminal response event."
+            });
+            return;
+          }
+
+          parsedResponse.completed.model = responseModel;
+          res.locals.tokenUsage = parsedResponse.completed.usage || null;
+          rememberCompletion(parsedResponse.completed);
+          await markPoolSuccess();
+          sendRawSseResponse(res, raw);
+          return;
+        }
+
+        const completed = extractCompletedResponseFromJson(raw);
+        if (!completed) {
+          await markPoolFailure(`Invalid upstream SSE on ${req.method} ${req.originalUrl}`, 502);
+          res.status(502).json({
+            error: "invalid_upstream_sse",
+            message: "Stream request returned a non-SSE body without a completed response payload."
+          });
+          return;
+        }
+
+        completed.model = responseModel;
+        res.locals.tokenUsage = completed.usage || null;
+        rememberCompletion(completed);
+        await markPoolSuccess();
+        sendCompletedResponseAsSse(res, completed);
+        return;
+      }
+
       res.status(upstream.status);
       if (!upstream.ok) {
         await markPoolFailure(`Upstream HTTP ${upstream.status} on ${req.method} ${req.originalUrl}`, upstream.status);
@@ -966,7 +1114,6 @@ export function createProxyRouteHandlers(context) {
         return;
       }
 
-      const upstreamContentType = parseContentType(upstream.headers.get("content-type") || "");
       if (upstream.ok && upstreamContentType.includes("event-stream")) {
         try {
           const streamResult = await pipeSseAndCaptureTokenUsage(upstream, res);

@@ -232,6 +232,9 @@ function createHandlers({ normalizeResponsesImpl, fetchImpl, configOverrides = {
     parseResponsesResultFromSse() {
       return { completed: null, failed: null };
     },
+    extractCompletedResponseFromJson() {
+      return null;
+    },
     convertResponsesToChatCompletion(value) {
       return value;
     },
@@ -386,9 +389,10 @@ test("Responses WebSocket session helper rejects non-codex upstream modes", asyn
   );
 });
 
-test("Responses create proxy session forwards previous_response_id without local replay", async () => {
+test("Responses create proxy session replays local chain and strips previous_response_id before forwarding", async () => {
   let capturedInit = null;
   let chainLookupCalls = 0;
+  let expandCalls = 0;
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
       const json = JSON.parse(rawBody.toString("utf8"));
@@ -413,9 +417,27 @@ test("Responses create proxy session forwards previous_response_id without local
       codexResponsesChain: {
         lookup() {
           chainLookupCalls += 1;
-          return null;
+          return {
+            responseId: "resp_prev_123",
+            inputHistory: [
+              { role: "user", content: [{ type: "input_text", text: "first turn" }] },
+              { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] }
+            ]
+          };
         },
         remember() {}
+      },
+      expandResponsesRequestBodyFromChain(body, entry) {
+        expandCalls += 1;
+        assert.equal(body.previous_response_id, "resp_prev_123");
+        assert.equal(entry.responseId, "resp_prev_123");
+        return {
+          model: body.model,
+          input: [
+            ...entry.inputHistory,
+            ...body.input
+          ]
+        };
       }
     }
   });
@@ -441,11 +463,158 @@ test("Responses create proxy session forwards previous_response_id without local
     }
   );
 
-  assert.equal(chainLookupCalls, 0);
-  assert.deepEqual(session.normalizedResponsesRequest, payload);
-  assert.equal(Buffer.from(capturedInit.body).toString("utf8"), JSON.stringify(payload));
+  assert.equal(chainLookupCalls, 1);
+  assert.equal(expandCalls, 1);
+  assert.deepEqual(session.normalizedResponsesRequest, {
+    model: "gpt-5.4",
+    input: [
+      { role: "user", content: [{ type: "input_text", text: "first turn" }] },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+      { role: "user", content: [{ type: "input_text", text: "next turn" }] }
+    ]
+  });
+  assert.equal(
+    Buffer.from(capturedInit.body).toString("utf8"),
+    JSON.stringify({
+      model: "gpt-5.4",
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "first turn" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+        { role: "user", content: [{ type: "input_text", text: "next turn" }] }
+      ]
+    })
+  );
+  assert.equal(capturedInit.headers.get("accept-encoding"), "identity");
   assert.equal(session.compatibilityHint, "");
   session.release();
+});
+
+test("Responses create proxy session strips Cloudflare and forwarded headers before upstream fetch", async () => {
+  let capturedHeaders = null;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      const json = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: Buffer.from(JSON.stringify(json), "utf8"),
+        json,
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl(_url, init) {
+      capturedHeaders = init.headers;
+      return new Response("", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" }
+      });
+    }
+  });
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {
+        authorization: "Bearer caller",
+        "x-api-key": "proxy-key",
+        "x-goog-api-key": "proxy-key",
+        "cf-ray": "test-ray",
+        "cf-connecting-ip": "203.0.113.10",
+        "x-forwarded-for": "203.0.113.10",
+        "x-forwarded-proto": "https",
+        host: "example.trycloudflare.com",
+        cookie: "a=b",
+        origin: "https://example.trycloudflare.com",
+        referer: "https://example.trycloudflare.com/"
+      }
+    },
+    createMockResponse(),
+    {
+      originalUrl: "/v1/responses",
+      requestBody: Buffer.from(JSON.stringify({ model: "gpt-5.4", input: "hello" }), "utf8"),
+      parsedRequestBody: { model: "gpt-5.4", input: "hello" }
+    }
+  );
+
+  assert.equal(capturedHeaders.get("cf-ray"), null);
+  assert.equal(capturedHeaders.get("cf-connecting-ip"), null);
+  assert.equal(capturedHeaders.get("x-forwarded-for"), null);
+  assert.equal(capturedHeaders.get("x-forwarded-proto"), null);
+  assert.equal(capturedHeaders.get("host"), null);
+  assert.equal(capturedHeaders.get("cookie"), null);
+  assert.equal(capturedHeaders.get("origin"), null);
+  assert.equal(capturedHeaders.get("referer"), null);
+  assert.equal(capturedHeaders.get("x-api-key"), null);
+  assert.equal(capturedHeaders.get("x-goog-api-key"), null);
+  assert.match(String(capturedHeaders.get("authorization") || ""), /^Bearer token$/);
+  session.release();
+});
+
+test("Responses create proxy session fails locally when previous_response_id chain is missing", async () => {
+  let fetchCalls = 0;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      const json = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: Buffer.from(JSON.stringify(json), "utf8"),
+        json,
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      return new Response("", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" }
+      });
+    },
+    contextOverrides: {
+      extractPreviousResponseId(rawBody) {
+        return JSON.parse(rawBody.toString("utf8")).previous_response_id || "";
+      },
+      codexResponsesChain: {
+        lookup() {
+          return null;
+        },
+        remember() {}
+      }
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      handlers.openResponsesCreateProxySession(
+        {
+          method: "POST",
+          originalUrl: "/v1/responses",
+          url: "/v1/responses",
+          headers: {}
+        },
+        createMockResponse(),
+        {
+          originalUrl: "/v1/responses",
+          requestBody: Buffer.from(JSON.stringify({
+            model: "gpt-5.4",
+            previous_response_id: "resp_missing",
+            input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
+          }), "utf8"),
+          parsedRequestBody: {
+            model: "gpt-5.4",
+            previous_response_id: "resp_missing",
+            input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
+          }
+        }
+      ),
+    (err) => {
+      assert.equal(err?.statusCode, 409);
+      assert.equal(err?.error, "previous_response_id_chain_missing");
+      assert.match(err?.message || "", /full input/);
+      return true;
+    }
+  );
+  assert.equal(fetchCalls, 0);
 });
 
 test("audit middleware preserves full packets without truncation even if limits are small", () => {
@@ -493,6 +662,325 @@ test("audit middleware preserves full packets without truncation even if limits 
 
   assert.equal(capturedRow?.requestPacket, JSON.stringify({ prompt: "abcdefghijklmnopqrstuvwxyz" }));
   assert.equal(capturedRow?.responsePacket, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+});
+
+test("Responses create JSON fallback accepts completed non-SSE upstream payloads", async () => {
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      return {
+        body: rawBody,
+        json: JSON.parse(rawBody.toString("utf8")),
+        collectCompletedResponseAsJson: true,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      return new Response(
+        JSON.stringify({
+          status: "completed",
+          usage: {
+            input_tokens: 4,
+            output_tokens: 5,
+            total_tokens: 9
+          },
+          output: [
+            {
+              type: "message",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" }
+        }
+      );
+    },
+    contextOverrides: {
+      parseResponsesResultFromSse() {
+        return { completed: null, failed: null };
+      },
+      extractCompletedResponseFromJson(raw) {
+        return JSON.parse(raw);
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { model: "gpt-5.4", input: "hello" }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.jsonPayload, {
+    status: "completed",
+    usage: {
+      input_tokens: 4,
+      output_tokens: 5,
+      total_tokens: 9
+    },
+    output: [
+      {
+        type: "message",
+        content: [{ type: "output_text", text: "done" }]
+      }
+    ],
+    model: "gpt-5.4"
+  });
+});
+
+test("Responses create stream fallback converts completed JSON payloads into SSE", async () => {
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      return {
+        body: rawBody,
+        json: JSON.parse(rawBody.toString("utf8")),
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      return new Response(
+        JSON.stringify({
+          id: "resp_stream_fallback",
+          status: "completed",
+          usage: {
+            input_tokens: 4,
+            output_tokens: 5,
+            total_tokens: 9
+          },
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" }
+        }
+      );
+    },
+    contextOverrides: {
+      extractCompletedResponseFromJson(raw) {
+        return JSON.parse(raw);
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { model: "gpt-5.4", stream: true, input: "hello" }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.match(String(res.getHeader("content-type") || ""), /text\/event-stream/i);
+  assert.match(res.body, /"type":"response.completed"/);
+  assert.match(res.body, /"id":"resp_stream_fallback"/);
+  assert.deepEqual(res.locals.tokenUsage, {
+    input_tokens: 4,
+    output_tokens: 5,
+    total_tokens: 9
+  });
+});
+
+test("Responses create stream accepts upstream SSE without content-type header", async () => {
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      return {
+        body: rawBody,
+        json: JSON.parse(rawBody.toString("utf8")),
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      return new Response(
+        'event: response.completed\n' +
+          'data: {"type":"response.completed","response":{"id":"resp_sse_no_header","status":"completed","usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n',
+        {
+          status: 200,
+          headers: {}
+        }
+      );
+    },
+    contextOverrides: {
+      parseResponsesResultFromSse() {
+        return {
+          completed: {
+            id: "resp_sse_no_header",
+            status: "completed",
+            usage: {
+              input_tokens: 4,
+              output_tokens: 5,
+              total_tokens: 9
+            },
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: "done" }]
+              }
+            ]
+          },
+          failed: null
+        };
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { model: "gpt-5.4", stream: true, store: false, input: "hello" }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.match(String(res.getHeader("content-type") || ""), /text\/event-stream/i);
+  assert.match(res.body, /response\.completed/);
+  assert.match(res.body, /resp_sse_no_header/);
+  assert.deepEqual(res.locals.tokenUsage, {
+    input_tokens: 4,
+    output_tokens: 5,
+    total_tokens: 9
+  });
+});
+
+test("Responses create stream rejects truncated upstream SSE without content-type header", async () => {
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      return {
+        body: rawBody,
+        json: JSON.parse(rawBody.toString("utf8")),
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      return new Response(
+        'event: response.output_text.delta\n' +
+          'data: {"type":"response.output_text.delta","delta":"hel"}\n\n',
+        {
+          status: 200,
+          headers: {}
+        }
+      );
+    },
+    contextOverrides: {
+      parseResponsesResultFromSse() {
+        return {
+          completed: null,
+          failed: null
+        };
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { model: "gpt-5.4", stream: true, store: false, input: "hello" }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(res.statusCode, 502);
+  assert.deepEqual(res.jsonPayload, {
+    error: "invalid_upstream_sse",
+    message: "Upstream SSE ended before a terminal response event."
+  });
+});
+
+test("Responses create normalization preserves temperature on non-stream requests", async () => {
+  let capturedInit = null;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      const json = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: Buffer.from(JSON.stringify(json), "utf8"),
+        json,
+        collectCompletedResponseAsJson: true,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl(_url, init) {
+      capturedInit = init;
+      return new Response(
+        JSON.stringify({
+          status: "completed",
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          output: [{ type: "message", content: [{ type: "output_text", text: "done" }] }]
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" }
+        }
+      );
+    },
+    contextOverrides: {
+      extractCompletedResponseFromJson(raw) {
+        return JSON.parse(raw);
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { model: "gpt-5.4", input: "hello", temperature: 0.25 }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  const forwarded = JSON.parse(Buffer.from(capturedInit.body).toString("utf8"));
+  assert.equal(forwarded.temperature, 0.25);
+});
+
+test("Responses create normalization preserves temperature on stream requests", async () => {
+  let capturedInit = null;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      const json = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: Buffer.from(JSON.stringify(json), "utf8"),
+        json,
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl(_url, init) {
+      capturedInit = init;
+      return new Response(
+        'event: response.completed\n' +
+          'data: {"type":"response.completed","response":{"id":"resp_temp_stream","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n',
+        {
+          status: 200,
+          headers: { "content-type": "text/event-stream; charset=utf-8" }
+        }
+      );
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { model: "gpt-5.4", stream: true, input: "hello", temperature: 0.25 }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  const forwarded = JSON.parse(Buffer.from(capturedInit.body).toString("utf8"));
+  assert.equal(forwarded.temperature, 0.25);
 });
 
 for (const route of responsesOpenApiContract.methods.filter((entry) => entry.expects_create_normalization === false)) {

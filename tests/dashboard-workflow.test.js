@@ -14,6 +14,14 @@ test("dashboard fallback picker only resolves cancel after focus returns with no
   assert.match(html, /\}, 200\);/);
 });
 
+test("token import no longer prompts for file vs directory source", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.doesNotMatch(html, /confirm\(t\("confirm_token_import_source"\)\)/);
+  assert.match(html, /function canPickTokenImportFilesWithDesktopBridge\(\)/);
+  assert.match(html, /await desktopBridge\.pickTokenImportFiles\(\)/);
+});
+
 test("dashboard copy buttons reuse clipboard fallback helper", async () => {
   const html = await fs.readFile(dashboardHtmlPath, "utf8");
   const publicAccessFeature = await fs.readFile(publicAccessFeaturePath, "utf8");
@@ -24,6 +32,23 @@ test("dashboard copy buttons reuse clipboard fallback helper", async () => {
   assert.match(publicAccessFeature, /async function copyCurrentUrl\(\)[\s\S]*await copyTextToClipboard\(url\)/);
   assert.doesNotMatch(html, /\$\("apiKeyCopyBtn"\)[\s\S]*navigator\.clipboard\.writeText/);
   assert.doesNotMatch(publicAccessFeature, /navigator\.clipboard\.writeText/);
+});
+
+test("dashboard auth boot renders state before slow secondary hydration", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.match(
+    html,
+    /loadProtectedData:\s*async \(\)\s*=> \{\s*await refreshState\(true\);\s*void hydrateDashboardSecondaryData\(\{ forceUsage: true \}\);\s*\}/
+  );
+  assert.match(
+    html,
+    /setInterval\(\(\) => \{\s*if \(document\.hidden\) return;\s*hydrateDashboardSecondaryData\(\{[\s\S]*refreshModels: false/
+  );
+  assert.doesNotMatch(
+    html,
+    /loadProtectedData:\s*async \(\)\s*=> \{\s*await loadModelCandidates\(\);\s*await refreshState\(true\);\s*\}/
+  );
 });
 
 test("public access start reuses persisted auto-install setting", async () => {

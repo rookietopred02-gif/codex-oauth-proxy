@@ -125,8 +125,21 @@ function serializeCookie(name, value, options = {}) {
 function requestIsSecure(req) {
   if (req?.secure === true) return true;
   const forwardedProto = String(req?.headers?.["x-forwarded-proto"] || "").trim().toLowerCase();
-  if (!forwardedProto) return false;
-  return forwardedProto.split(",").some((value) => value.trim() === "https");
+  if (forwardedProto) {
+    if (forwardedProto.split(",").some((value) => value.trim() === "https")) return true;
+  }
+  const forwarded = String(req?.headers?.forwarded || "").trim().toLowerCase();
+  if (/(^|;|\s)proto=https($|;|\s)/.test(forwarded)) return true;
+  const cfVisitor = String(req?.headers?.["cf-visitor"] || "").trim();
+  if (cfVisitor) {
+    try {
+      const parsed = JSON.parse(cfVisitor);
+      if (String(parsed?.scheme || "").trim().toLowerCase() === "https") return true;
+    } catch {
+      // Ignore malformed CF-Visitor headers.
+    }
+  }
+  return false;
 }
 
 function appendSetCookie(res, cookieValue) {

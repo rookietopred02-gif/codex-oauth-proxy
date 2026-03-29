@@ -175,6 +175,19 @@ export function registerAdminSettingsRoutes(app, context) {
     }
   });
 
+  app.get("/admin/temp-mail/status", async (_req, res) => {
+    try {
+      const result = await tempMailController.refreshRunner(false);
+      res.json({ ok: true, tempMail: result });
+    } catch (err) {
+      res.status(400).json({
+        error: "temp_mail_status_failed",
+        message: String(err?.message || err || "Failed to refresh Temp Mail status."),
+        tempMail: tempMailController.getState()
+      });
+    }
+  });
+
   app.post("/admin/temp-mail/start", async (req, res) => {
     try {
       const body = await readJsonBody(req);

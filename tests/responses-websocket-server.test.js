@@ -413,3 +413,231 @@ test("Responses WebSocket preserves non-JSON upstream error bodies without trunc
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("Responses WebSocket converts completed JSON fallback into response.completed", async () => {
+  const server = createServer();
+  const helpers = createResponsesHelpers();
+  let rememberedCompletion = null;
+
+  const runtime = attachResponsesWebSocketServer(server, {
+    ...createAuthContext(),
+    async openResponsesCreateProxySession() {
+      return {
+        upstream: new Response(
+          JSON.stringify({
+            id: "resp_ws_json",
+            status: "completed",
+            usage: {
+              input_tokens: 4,
+              output_tokens: 5,
+              total_tokens: 9
+            },
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: "done" }]
+              }
+            ]
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json; charset=utf-8"
+            }
+          }
+        ),
+        release() {},
+        async markFailure() {},
+        async markSuccess() {},
+        authAccountId: "acct_ws_json",
+        compatibilityHint: "",
+        rememberCompletion(completed) {
+          rememberedCompletion = completed;
+        },
+        modelRoute: {
+          requestedModel: "gpt-5.4",
+          mappedModel: "gpt-5.4"
+        },
+        forgetPinnedAffinity() {}
+      };
+    },
+    parseResponsesResultFromSse: helpers.parseResponsesResultFromSse,
+    readUpstreamTextOrThrow: async (response) => await response.text(),
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+  });
+
+  let ws;
+  try {
+    const baseUrl = await listen(server);
+    ws = await connectSocket(`${baseUrl}/v1/responses`, {
+      Authorization: "Bearer test-proxy-key"
+    });
+    const queue = createJsonMessageQueue(ws);
+
+    ws.send(
+      JSON.stringify({
+        type: "response.create",
+        model: "gpt-5.4",
+        input: "hello"
+      })
+    );
+
+    const completed = await queue.next();
+    assert.equal(completed.type, "response.completed");
+    assert.equal(completed.response?.id, "resp_ws_json");
+    assert.equal(rememberedCompletion?.id, "resp_ws_json");
+  } finally {
+    ws?.close();
+    await runtime.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Responses WebSocket accepts upstream SSE without content-type header", async () => {
+  const server = createServer();
+  const helpers = createResponsesHelpers();
+  let rememberedCompletion = null;
+
+  const runtime = attachResponsesWebSocketServer(server, {
+    ...createAuthContext(),
+    async openResponsesCreateProxySession() {
+      return {
+        upstream: new Response(
+          'event: response.completed\n' +
+            'data: {"type":"response.completed","response":{"id":"resp_ws_sse_no_header","status":"completed","usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n',
+          {
+            status: 200,
+            headers: {}
+          }
+        ),
+        release() {},
+        async markFailure() {},
+        async markSuccess() {},
+        authAccountId: "acct_ws_json",
+        compatibilityHint: "",
+        rememberCompletion(completed) {
+          rememberedCompletion = completed;
+        },
+        modelRoute: {
+          requestedModel: "gpt-5.4",
+          mappedModel: "gpt-5.4"
+        },
+        forgetPinnedAffinity() {}
+      };
+    },
+    parseResponsesResultFromSse: helpers.parseResponsesResultFromSse,
+    readUpstreamTextOrThrow: async (response) => await response.text(),
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+  });
+
+  let ws;
+  try {
+    const baseUrl = await listen(server);
+    ws = await connectSocket(`${baseUrl}/v1/responses`, {
+      Authorization: "Bearer test-proxy-key"
+    });
+    const queue = createJsonMessageQueue(ws);
+
+    ws.send(
+      JSON.stringify({
+        type: "response.create",
+        model: "gpt-5.4",
+        input: "hello"
+      })
+    );
+
+    const completed = await queue.next();
+    assert.equal(completed.type, "response.completed");
+    assert.equal(completed.response?.id, "resp_ws_sse_no_header");
+    assert.equal(rememberedCompletion?.id, "resp_ws_sse_no_header");
+  } finally {
+    ws?.close();
+    await runtime.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Responses WebSocket rejects truncated SSE without content-type header", async () => {
+  const server = createServer();
+
+  const runtime = attachResponsesWebSocketServer(server, {
+    ...createAuthContext(),
+    async openResponsesCreateProxySession() {
+      return {
+        upstream: new Response(
+          'event: response.output_text.delta\n' +
+            'data: {"type":"response.output_text.delta","delta":"hel"}\n\n',
+          {
+            status: 200,
+            headers: {}
+          }
+        ),
+        release() {},
+        async markFailure() {},
+        async markSuccess() {},
+        authAccountId: "acct_ws_json",
+        compatibilityHint: "",
+        rememberCompletion() {},
+        modelRoute: {
+          requestedModel: "gpt-5.4",
+          mappedModel: "gpt-5.4"
+        },
+        forgetPinnedAffinity() {}
+      };
+    },
+    parseResponsesResultFromSse() {
+      return {
+        completed: null,
+        failed: null
+      };
+    },
+    readUpstreamTextOrThrow: async (response) => await response.text(),
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+  });
+
+  let ws;
+  try {
+    const baseUrl = await listen(server);
+    ws = await connectSocket(`${baseUrl}/v1/responses`, {
+      Authorization: "Bearer test-proxy-key"
+    });
+    const queue = createJsonMessageQueue(ws);
+
+    ws.send(
+      JSON.stringify({
+        type: "response.create",
+        model: "gpt-5.4",
+        input: "hello"
+      })
+    );
+
+    const failed = await queue.next();
+    assert.equal(failed.type, "response.failed");
+    assert.equal(failed.response?.status_code, 502);
+    assert.equal(failed.response?.error?.code, "invalid_upstream_sse");
+    assert.equal(failed.response?.error?.message, "Upstream SSE ended before a terminal response event.");
+  } finally {
+    ws?.close();
+    await runtime.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

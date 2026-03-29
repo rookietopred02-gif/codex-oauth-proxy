@@ -187,6 +187,7 @@ Artifacts are written to `dist-electron/`.
 
 - packaging target: NSIS
 - installer output: `dist-electron/codex-pro-max Setup <version>.exe`
+- unpacked Windows validation build: `dist-electron/win-builds/<timestamp>/win-unpacked/`
 - standard uninstall entry is included
 - uninstall keeps Electron `userData` by default
 - assisted uninstall now includes an optional checkbox to remove the current user's `AppData\Roaming\codex-pro-max`

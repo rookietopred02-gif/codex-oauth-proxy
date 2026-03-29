@@ -873,6 +873,22 @@
         max-height: min(86vh, 560px);
       }
 
+      .dashboard-auth-modal {
+        width: min(460px, 96vw);
+        max-height: min(86vh, 560px);
+      }
+
+      .dashboard-auth-modal-copy {
+        margin: 0;
+        color: #d6e4ff;
+        font-size: 12px;
+        line-height: 1.65;
+      }
+
+      .dashboard-auth-modal-hint {
+        margin: 0;
+      }
+
       .runtime-port-modal-copy {
         margin: 0;
         color: #d6e4ff;
@@ -1500,7 +1516,7 @@
 
       .pool-layout {
         display: grid;
-        grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
         gap: 10px;
         align-items: stretch;
       }
@@ -1586,7 +1602,7 @@
 
       .recommend-list {
         display: grid;
-        gap: 6px;
+        gap: 5px;
         margin-bottom: 8px;
         min-height: 0;
         flex: 1 1 auto;
@@ -1987,7 +2003,7 @@
         border: 1px solid rgba(255, 255, 255, 0.16);
         border-radius: 8px;
         background: rgba(25, 37, 73, 0.62);
-        padding: 8px;
+        padding: 7px 8px;
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
@@ -2005,14 +2021,14 @@
       }
 
       .recommend-name {
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 600;
       }
 
       .recommend-sub {
         margin-top: 2px;
         color: var(--muted);
-        font-size: 10px;
+        font-size: 9.5px;
         font-family: "JetBrains Mono", monospace;
       }
 
@@ -2573,14 +2589,10 @@
       <div class="dashboard-auth-gate__card">
         <h2 data-i18n="dashboard_auth_gate_title">Dashboard Locked</h2>
         <p data-i18n="dashboard_auth_gate_subtitle">
-          Enter the local dashboard password before using public admin and account controls.
+          Use the password dialog before accessing protected dashboard controls.
         </p>
-        <div class="field field--full">
-          <label for="dashboardAuthLoginPassword" data-i18n="dashboard_auth_password">Password</label>
-          <input id="dashboardAuthLoginPassword" type="password" autocomplete="current-password" />
-        </div>
         <div class="btns">
-          <button id="dashboardAuthLoginBtn" class="button-strong" data-i18n="dashboard_auth_login">
+          <button id="dashboardAuthGateActionBtn" class="button-strong" data-i18n="dashboard_auth_action_unlock">
             Unlock Dashboard
           </button>
         </div>
@@ -2642,7 +2654,8 @@
             <button id="exportTokensBtn" class="secondary" data-i18n="runtime_export_tokens">Export Tokens</button>
             <button id="importTokensBtn" class="secondary" data-i18n="runtime_import_tokens">Import Tokens</button>
           </div>
-          <input id="tokenImportDirectoryInput" type="file" accept=".json,application/json" webkitdirectory directory multiple hidden />
+          <input id="tokenImportDirectoryInput" type="file" accept=".json,.csv,.txt,.cpa,.sub2api,text/plain,text/csv,application/json" webkitdirectory directory multiple hidden />
+          <input id="tokenImportFileInput" type="file" accept=".json,.csv,.txt,.cpa,.sub2api,text/plain,text/csv,application/json" multiple hidden />
           <div id="tokenImportProgressWrap" class="runtime-subcard runtime-subcard--import-progress" hidden>
             <div class="runtime-import-progress-head">
               <h4 data-i18n="runtime_import_progress">Import Progress</h4>
@@ -2718,20 +2731,12 @@
               <input id="dashboardAuthEnabled" type="checkbox" />
               <span data-i18n="dashboard_auth_enable">Require a password before exposing admin controls through Cloudflare.</span>
             </label>
-            <label for="dashboardAuthPassword" data-i18n="dashboard_auth_password">Password</label>
-            <input
-              id="dashboardAuthPassword"
-              type="password"
-              autocomplete="new-password"
-              placeholder="Leave blank to keep the current password"
-            />
             <div class="hint" data-i18n="dashboard_auth_hint">
-              Passwords are stored locally as a hash. Leave the field blank to keep the current password.
+              Recommended for externally exposed dashboards.
             </div>
             <div class="btns">
-              <button id="dashboardAuthSaveBtn" data-i18n="dashboard_auth_save">Save Dashboard Password</button>
-              <button id="dashboardAuthLogoutBtn" class="secondary" data-i18n="dashboard_auth_logout">
-                Lock This Browser Session
+              <button id="dashboardAuthActionBtn" class="button-strong" data-i18n="dashboard_auth_action_set">
+                Set Dashboard Password
               </button>
             </div>
             <div id="dashboardAuthStatus" class="result">-</div>
@@ -3139,6 +3144,38 @@
       </div>
     </div>
 
+    <div id="dashboardAuthModalBackdrop" class="req-detail-backdrop" hidden>
+      <div
+        class="req-detail-modal runtime-port-modal dashboard-auth-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dashboardAuthModalTitle"
+        aria-describedby="dashboardAuthModalSubtitle"
+      >
+        <div class="req-detail-head">
+          <h3 id="dashboardAuthModalTitle" class="req-detail-title" data-i18n="dashboard_auth_title">Dashboard Password</h3>
+          <button id="dashboardAuthModalCloseBtn" class="secondary req-detail-close" data-i18n="request_detail_close">
+            Close
+          </button>
+        </div>
+        <p id="dashboardAuthModalSubtitle" class="dashboard-auth-modal-copy">-</p>
+        <div class="hint dashboard-auth-modal-hint" data-i18n="dashboard_auth_hint">
+          Recommended for externally exposed dashboards.
+        </div>
+        <div id="dashboardAuthModalPasswordField" class="field field--full">
+          <label for="dashboardAuthModalPassword" data-i18n="dashboard_auth_password">Password</label>
+          <input id="dashboardAuthModalPassword" type="password" autocomplete="current-password" />
+        </div>
+        <div id="dashboardAuthModalStatus" class="result">-</div>
+        <div class="runtime-port-modal-actions">
+          <button id="dashboardAuthModalCancelBtn" class="secondary" data-i18n="runtime_port_confirm_cancel">Cancel</button>
+          <button id="dashboardAuthModalSubmitBtn" class="button-strong" data-i18n="dashboard_auth_action_unlock">
+            Unlock Dashboard
+          </button>
+        </div>
+      </div>
+    </div>
+
     <script type="module">
       import { api } from "./dashboard/api.js";
       import { createDashboardAuthFeature } from "./dashboard/auth.js";
@@ -3160,6 +3197,7 @@
       let modelCandidates = [];
       let codexModelCandidates = [];
       let wildcardPresets = [];
+      let secondaryHydrationPromise = null;
       let stateRefreshInFlight = false;
       let stateRefreshQueued = false;
       let lastStateRefreshAtMs = 0;
@@ -3405,8 +3443,8 @@
         setResultMessage,
         minimumPasswordLength: DASHBOARD_AUTH_MIN_PASSWORD_LENGTH,
         loadProtectedData: async () => {
-          await loadModelCandidates();
           await refreshState(true);
+          void hydrateDashboardSecondaryData({ forceUsage: true });
         }
       });
 
@@ -3436,7 +3474,7 @@
         publicAccessFeature.render(publicAccessFeature.getStatusSnapshot());
         recentRequestsUi.renderRecordingToggle();
         tempMailFeature.render(tempMailFeature.getState());
-        recentRequestsUi.reopenActiveDetail();
+        void recentRequestsUi.reopenActiveDetail();
       }
 
       function initLanguageControl() {
@@ -4237,6 +4275,7 @@
 
       const recentRequestsUi = createRecentRequestsUi({
         $,
+        api,
         t,
         tt,
         escapeHtml,
@@ -4350,6 +4389,60 @@
         }
         renderModelOptions();
         renderPreheatModelOptions();
+      }
+
+      async function hydrateDashboardSecondaryData(options = {}) {
+        if (dashboardAuthFeature.isLocked()) return false;
+
+        const forceUsage = options.forceUsage === true;
+        const refreshUsageEnabled = options.refreshUsage !== false;
+        const refreshModels = options.refreshModels !== false;
+        const refreshPublicAccess = options.refreshPublicAccess !== false;
+        const refreshTempMail = options.refreshTempMail !== false;
+
+        if (!forceUsage && secondaryHydrationPromise) {
+          return await secondaryHydrationPromise;
+        }
+
+        const run = (async () => {
+          const backgroundTasks = [];
+          if (refreshModels) {
+            backgroundTasks.push(
+              loadModelCandidates().catch((err) => {
+                console.warn("Model candidate refresh failed:", err.message);
+              })
+            );
+          }
+          if (refreshPublicAccess) {
+            backgroundTasks.push(
+              publicAccessFeature.fetchStatus().catch((err) => {
+                console.warn("Public access status refresh failed:", err.message);
+              })
+            );
+          }
+          if (refreshTempMail) {
+            backgroundTasks.push(
+              tempMailFeature.fetchStatus().catch((err) => {
+                console.warn("Temp Mail status refresh failed:", err.message);
+              })
+            );
+          }
+
+          const didUsageRefresh = refreshUsageEnabled ? await refreshUsage(forceUsage) : false;
+          await Promise.all(backgroundTasks);
+          if (didUsageRefresh) {
+            await refreshState(true);
+          }
+          return didUsageRefresh;
+        })();
+
+        const pending = run.finally(() => {
+          if (secondaryHydrationPromise === pending) {
+            secondaryHydrationPromise = null;
+          }
+        });
+        secondaryHydrationPromise = pending;
+        return await pending;
       }
 
       function renderMappingsTable() {
@@ -4938,68 +5031,31 @@
         setTimeout(() => URL.revokeObjectURL(url), 1500);
       }
 
-      function collectTokenCandidatesFromParsedJson(parsed) {
-        const candidates = [];
-        const pushObject = (value) => {
-          if (value && typeof value === "object" && !Array.isArray(value)) {
-            candidates.push(value);
-          }
-        };
-
-        if (!parsed || typeof parsed !== "object") return candidates;
-        if (Array.isArray(parsed)) {
-          for (const item of parsed) pushObject(item);
-          return candidates;
-        }
-
-        if (Array.isArray(parsed.tokens)) {
-          for (const tokenItem of parsed.tokens) pushObject(tokenItem);
-        }
-        if (Array.isArray(parsed.files)) {
-          for (const fileItem of parsed.files) {
-            if (fileItem && typeof fileItem === "object" && fileItem.payload && typeof fileItem.payload === "object") {
-              candidates.push(fileItem.payload);
-            } else {
-              pushObject(fileItem);
-            }
-          }
-        }
-        if (parsed.payload && typeof parsed.payload === "object") {
-          candidates.push(parsed.payload);
-        }
-        pushObject(parsed);
-        return candidates;
+      function isSupportedTokenImportFileName(name) {
+        const normalized = String(name || "").trim();
+        if (!normalized) return false;
+        if (!/\.[a-z0-9]+$/i.test(normalized)) return true;
+        return /\.(json|csv|txt|cpa|sub2api)$/i.test(normalized);
       }
 
-      async function parseTokenCandidatesFromFiles(fileList, onProgress) {
-        const tokens = [];
-        const files = Array.from(fileList || []).filter((file) => file instanceof File && /\.json$/i.test(file.name));
+      async function readTokenImportFiles(fileList, onProgress) {
+        const files = Array.from(fileList || []).filter(
+          (file) => file instanceof File && isSupportedTokenImportFileName(file.name)
+        );
+        const payloadFiles = [];
         const total = files.length;
         if (typeof onProgress === "function") {
           onProgress({ processed: 0, total });
         }
         for (let index = 0; index < files.length; index += 1) {
           const file = files[index];
-          let text = "";
           try {
-            text = await file.text();
-          } catch {
-            if (typeof onProgress === "function") {
-              onProgress({ processed: index + 1, total, file });
-            }
-            continue;
-          }
-          if (!text.trim()) {
-            if (typeof onProgress === "function") {
-              onProgress({ processed: index + 1, total, file });
-            }
-            continue;
-          }
-          try {
-            const parsed = JSON.parse(text);
-            const candidates = collectTokenCandidatesFromParsedJson(parsed);
-            for (const candidate of candidates) {
-              tokens.push(candidate);
+            const content = await file.text();
+            if (content.trim()) {
+              payloadFiles.push({
+                name: file.name,
+                content
+              });
             }
           } catch {
           } finally {
@@ -5008,10 +5064,10 @@
             }
           }
         }
-        return tokens;
+        return payloadFiles;
       }
 
-      async function pickJsonFilesFromDirectoryInput() {
+      async function pickFilesFromDirectoryInput() {
         const input = $("tokenImportDirectoryInput");
         if (!(input instanceof HTMLInputElement)) return [];
         input.value = "";
@@ -5037,16 +5093,42 @@
         });
       }
 
-      async function collectJsonFilesFromDirectoryHandle(dirHandle, outputFiles) {
+      async function pickFilesFromFileInput() {
+        const input = $("tokenImportFileInput");
+        if (!(input instanceof HTMLInputElement)) return [];
+        input.value = "";
+        return new Promise((resolve) => {
+          let settled = false;
+          const finalize = () => {
+            if (settled) return;
+            settled = true;
+            window.removeEventListener("focus", handleWindowFocus, true);
+            const files = Array.from(input.files || []).filter((file) => file instanceof File);
+            resolve(files);
+          };
+          const handleWindowFocus = () => {
+            setTimeout(() => {
+              if (!settled && (!input.files || input.files.length === 0)) {
+                finalize();
+              }
+            }, 200);
+          };
+          input.addEventListener("change", finalize, { once: true });
+          window.addEventListener("focus", handleWindowFocus, { once: true, capture: true });
+          input.click();
+        });
+      }
+
+      async function collectImportFilesFromDirectoryHandle(dirHandle, outputFiles) {
         if (!dirHandle || typeof dirHandle.values !== "function") return;
         for await (const handle of dirHandle.values()) {
           if (!handle) continue;
           if (handle.kind === "directory") {
-            await collectJsonFilesFromDirectoryHandle(handle, outputFiles);
+            await collectImportFilesFromDirectoryHandle(handle, outputFiles);
             continue;
           }
           if (handle.kind !== "file") continue;
-          if (!/\.json$/i.test(handle.name || "")) continue;
+          if (!isSupportedTokenImportFileName(handle.name || "")) continue;
           try {
             const file = await handle.getFile();
             if (file instanceof File) outputFiles.push(file);
@@ -5054,6 +5136,69 @@
             continue;
           }
         }
+      }
+
+      async function pickFilesWithSystemPicker() {
+        const handles = await window.showOpenFilePicker({
+          multiple: true,
+          id: "codex-oauth-token-import-files",
+          types: [
+            {
+              description: "Token import files",
+              accept: {
+                "application/json": [".json", ".sub2api"],
+                "text/csv": [".csv"],
+                "text/plain": [".txt", ".cpa"]
+              }
+            }
+          ]
+        });
+        const files = [];
+        for (const handle of Array.isArray(handles) ? handles : []) {
+          try {
+            const file = await handle.getFile();
+            if (file instanceof File) files.push(file);
+          } catch {
+          }
+        }
+        return files;
+      }
+
+      function canPickTokenImportFilesWithDesktopBridge() {
+        return Boolean(desktopBridge && typeof desktopBridge.pickTokenImportFiles === "function");
+      }
+
+      async function pickImportPayloadFilesWithDesktopBridge() {
+        if (!canPickTokenImportFilesWithDesktopBridge()) return null;
+        const files = await desktopBridge.pickTokenImportFiles();
+        return Array.isArray(files)
+          ? files.filter(
+              (file) =>
+                file &&
+                typeof file === "object" &&
+                typeof file.name === "string" &&
+                typeof file.content === "string"
+            )
+          : [];
+      }
+
+      async function pickImportFilesWithBrowserFallback() {
+        if (typeof window.showOpenFilePicker === "function") {
+          return await pickFilesWithSystemPicker();
+        }
+        if ($("tokenImportFileInput") instanceof HTMLInputElement) {
+          return await pickFilesFromFileInput();
+        }
+        if (typeof window.showDirectoryPicker === "function") {
+          const dir = await window.showDirectoryPicker({ mode: "read", id: "codex-oauth-token-import" });
+          const fromDir = [];
+          await collectImportFilesFromDirectoryHandle(dir, fromDir);
+          return fromDir;
+        }
+        if ($("tokenImportDirectoryInput") instanceof HTMLInputElement) {
+          return await pickFilesFromDirectoryInput();
+        }
+        throw new Error(t("alert_token_import_picker_unavailable"));
       }
 
       async function exportTokensToFolder() {
@@ -5088,50 +5233,51 @@
         alert(tt("alert_token_export_success", { count: files.length }));
       }
 
-      async function importTokensFromFolder() {
+      async function importTokensFromSelection() {
         if (tokenImportInFlight) return;
         tokenImportInFlight = true;
         $("importTokensBtn").disabled = true;
         setTokenImportProgress(2, t("runtime_import_preparing"));
         try {
-          let files = [];
+          let importFiles = [];
           setTokenImportProgress(10, t("runtime_import_scanning"));
-          if (typeof window.showDirectoryPicker === "function") {
-            const dir = await window.showDirectoryPicker({ mode: "read", id: "codex-oauth-token-import" });
-            const fromDir = [];
-            await collectJsonFilesFromDirectoryHandle(dir, fromDir);
-            files = fromDir;
+          const desktopImportFiles = await pickImportPayloadFilesWithDesktopBridge();
+          if (desktopImportFiles !== null) {
+            importFiles = desktopImportFiles;
+            setTokenImportProgress(
+              importFiles.length > 0 ? 78 : 16,
+              tt("runtime_import_uploading", { count: importFiles.length })
+            );
           } else {
-            files = await pickJsonFilesFromDirectoryInput();
+            const files = await pickImportFilesWithBrowserFallback();
+            const totalFiles = Array.from(files || []).filter(
+              (file) => file instanceof File && isSupportedTokenImportFileName(file.name)
+            ).length;
+            setTokenImportProgress(
+              totalFiles > 0 ? 18 : 16,
+              tt("runtime_import_parsing", { current: 0, total: totalFiles })
+            );
+            importFiles = await readTokenImportFiles(files, ({ processed, total }) => {
+              const safeTotal = Math.max(total, 1);
+              const percent = 18 + (processed / safeTotal) * 60;
+              setTokenImportProgress(percent, tt("runtime_import_parsing", { current: processed, total }));
+            });
           }
-
-          const totalJsonFiles = Array.from(files || []).filter(
-            (file) => file instanceof File && /\.json$/i.test(file.name)
-          ).length;
-          setTokenImportProgress(
-            totalJsonFiles > 0 ? 18 : 16,
-            tt("runtime_import_parsing", { current: 0, total: totalJsonFiles })
-          );
-          const tokens = await parseTokenCandidatesFromFiles(files, ({ processed, total }) => {
-            const safeTotal = Math.max(total, 1);
-            const percent = 18 + (processed / safeTotal) * 60;
-            setTokenImportProgress(percent, tt("runtime_import_parsing", { current: processed, total }));
-          });
-          if (tokens.length === 0) {
-            alert(t("alert_token_import_no_json"));
+          if (importFiles.length === 0) {
+            alert(t("alert_token_import_no_files"));
             return;
           }
 
-          setTokenImportProgress(86, tt("runtime_import_uploading", { count: tokens.length }));
+          setTokenImportProgress(86, tt("runtime_import_uploading", { count: importFiles.length }));
           const data = await api("/admin/auth-pool/import", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ tokens, replace: false })
+            body: JSON.stringify({ files: importFiles, replace: false })
           });
           setTokenImportProgress(96, t("runtime_import_refreshing"));
           await refreshState(true);
           setTokenImportProgress(100, t("runtime_import_done"));
-          alert(tt("alert_token_import_success", { count: Number(data?.imported || tokens.length) }));
+          alert(tt("alert_token_import_success", { count: Number(data?.imported || 0) }));
         } finally {
           tokenImportInFlight = false;
           $("importTokensBtn").disabled = false;
@@ -5165,7 +5311,7 @@
       });
       $("importTokensBtn").addEventListener("click", async () => {
         try {
-          await importTokensFromFolder();
+          await importTokensFromSelection();
         } catch (err) {
           if (isAbortLikeError(err)) return;
           alert(tt("alert_token_import_failed", { message: err.message }));
@@ -5234,19 +5380,36 @@
           alert(tt("alert_public_access_copy_failed", { message: err.message }));
         }
       });
-      $("dashboardAuthSaveBtn").addEventListener("click", () => {
-        dashboardAuthFeature.saveSettings().catch(() => {});
+      $("dashboardAuthEnabled").addEventListener("change", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        dashboardAuthFeature.handleEnabledToggle(target.checked).catch(() => {});
       });
-      $("dashboardAuthLogoutBtn").addEventListener("click", () => {
-        dashboardAuthFeature.lockSession().catch(() => {});
+      $("dashboardAuthActionBtn").addEventListener("click", () => {
+        dashboardAuthFeature.openDialog();
       });
-      $("dashboardAuthLoginBtn").addEventListener("click", () => {
-        dashboardAuthFeature.submitLogin().catch(() => {});
+      $("dashboardAuthGateActionBtn").addEventListener("click", () => {
+        dashboardAuthFeature.openDialog();
       });
-      $("dashboardAuthLoginPassword").addEventListener("keydown", (event) => {
+      $("dashboardAuthModalSubmitBtn").addEventListener("click", () => {
+        dashboardAuthFeature.submitDialog().catch(() => {});
+      });
+      $("dashboardAuthModalCancelBtn").addEventListener("click", () => {
+        dashboardAuthFeature.closeDialog({ restoreDesiredEnabled: true });
+      });
+      $("dashboardAuthModalCloseBtn").addEventListener("click", () => {
+        dashboardAuthFeature.closeDialog({ restoreDesiredEnabled: true });
+      });
+      $("dashboardAuthModalBackdrop").addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        if (target.id !== "dashboardAuthModalBackdrop") return;
+        dashboardAuthFeature.closeDialog({ restoreDesiredEnabled: true });
+      });
+      $("dashboardAuthModalPassword").addEventListener("keydown", (event) => {
         if (event.key !== "Enter") return;
         event.preventDefault();
-        dashboardAuthFeature.submitLogin().catch(() => {});
+        dashboardAuthFeature.submitDialog().catch(() => {});
       });
       window.addEventListener("dashboard-auth-required", () => {
         dashboardAuthFeature.markUnauthenticated();
@@ -5411,7 +5574,7 @@
         const row = target.closest("tr[data-req-id]");
         if (!(row instanceof HTMLElement)) return;
         const id = row.getAttribute("data-req-id");
-        recentRequestsUi.openRequestDetailModal(id);
+        recentRequestsUi.openRequestDetailModal(id).catch(() => {});
       });
       $("reqTable").addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -5421,7 +5584,7 @@
         if (!(row instanceof HTMLElement)) return;
         event.preventDefault();
         const id = row.getAttribute("data-req-id");
-        recentRequestsUi.openRequestDetailModal(id);
+        recentRequestsUi.openRequestDetailModal(id).catch(() => {});
       });
       $("reqDetailCloseBtn").addEventListener("click", () => recentRequestsUi.closeRequestDetailModal());
       $("reqDetailBackdrop").addEventListener("click", (event) => {
@@ -5434,6 +5597,10 @@
         if ($("runtimePortConfirmBackdrop").hidden === false && !runtimePortApplyInFlight) {
           closeRuntimePortConfirmDialog({ restoreInput: true });
           syncRuntimePortStatus();
+          return;
+        }
+        if ($("dashboardAuthModalBackdrop").hidden === false) {
+          dashboardAuthFeature.closeDialog({ restoreDesiredEnabled: true });
           return;
         }
         if (recentRequestsUi.hasOpenDetail()) {
@@ -5462,30 +5629,30 @@
       (async () => {
         try {
           await dashboardAuthFeature.refreshStatus({ loadProtectedData: true });
-          if (!dashboardAuthFeature.isLocked()) {
-            refreshUsage(true)
-              .then((did) => (did ? refreshState() : null))
-              .catch(() => {});
-          }
         } catch (err) {
           $("testResult").textContent = tt("init_failed", { message: err.message });
         }
       })();
       setInterval(() => {
         if (document.hidden) return;
-        refreshUsage(false)
-          .then((did) => {
-            if (did) return refreshState();
-            return null;
-          })
-          .catch(() => {});
+        hydrateDashboardSecondaryData({
+          refreshModels: false,
+          forceUsage: false,
+          refreshUsage: true,
+          refreshPublicAccess: true,
+          refreshTempMail: true
+        }).catch(() => {});
       }, 45000);
       document.addEventListener("visibilitychange", () => {
         if (!document.hidden) {
           refreshState(true).catch(() => {});
-          refreshUsage(false)
-            .then((did) => (did ? refreshState(true) : null))
-            .catch(() => {});
+          hydrateDashboardSecondaryData({
+            refreshModels: false,
+            forceUsage: false,
+            refreshUsage: true,
+            refreshPublicAccess: true,
+            refreshTempMail: true
+          }).catch(() => {});
         }
       });
     </script>

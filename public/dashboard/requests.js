@@ -3,6 +3,7 @@
 export function createRecentRequestsUi(deps) {
   const {
     $,
+    api,
     t,
     tt,
     escapeHtml,
@@ -20,6 +21,7 @@ export function createRecentRequestsUi(deps) {
 
   const requestDetailCopyResetTimers = new Map();
   let requestDetailMap = new Map();
+  let requestDetailCache = new Map();
   let activeRequestDetailId = "";
   let recordingEnabled = readStoredBool(recordingStorageKey) !== false;
 
@@ -107,7 +109,23 @@ export function createRecentRequestsUi(deps) {
     return items;
   }
 
-  function openRequestDetailModal(requestId) {
+  function renderRequestDetailPackets(row) {
+    const reqCt = String(row?.requestContentType || "").trim();
+    const resCt = String(row?.responseContentType || "").trim();
+    $("reqDetailReqMeta").textContent = tt("request_detail_content_type", { type: reqCt || "-" });
+    $("reqDetailResMeta").textContent = tt("request_detail_content_type", { type: resCt || "-" });
+    $("reqDetailReqCode").textContent = safeCodeText(row?.requestPacket);
+    $("reqDetailResCode").textContent = safeCodeText(row?.responsePacket);
+  }
+
+  function renderRequestDetailLoading() {
+    $("reqDetailReqMeta").textContent = tt("request_detail_content_type", { type: "-" });
+    $("reqDetailResMeta").textContent = tt("request_detail_content_type", { type: "-" });
+    $("reqDetailReqCode").textContent = t("request_detail_loading");
+    $("reqDetailResCode").textContent = t("request_detail_loading");
+  }
+
+  async function openRequestDetailModal(requestId) {
     const id = String(requestId || "").trim();
     if (!id) return;
     const row = requestDetailMap.get(id);
@@ -128,18 +146,32 @@ export function createRecentRequestsUi(deps) {
       )
       .join("");
 
-    const reqCt = String(row?.requestContentType || "").trim();
-    const resCt = String(row?.responseContentType || "").trim();
-    $("reqDetailReqMeta").textContent = tt("request_detail_content_type", { type: reqCt || "-" });
-    $("reqDetailResMeta").textContent = tt("request_detail_content_type", { type: resCt || "-" });
-    $("reqDetailReqCode").textContent = safeCodeText(row?.requestPacket);
-    $("reqDetailResCode").textContent = safeCodeText(row?.responsePacket);
     resetRequestDetailCopyButton("reqDetailReqCopyBtn");
     resetRequestDetailCopyButton("reqDetailResCopyBtn");
 
     const backdrop = $("reqDetailBackdrop");
     backdrop.hidden = false;
     document.body.style.overflow = "hidden";
+
+    const cachedRow = requestDetailCache.get(id);
+    const hasCachedRow = Boolean(cachedRow);
+    if (hasCachedRow) {
+      renderRequestDetailPackets(cachedRow);
+    } else {
+      renderRequestDetailLoading();
+    }
+    try {
+      const data = await api(`/admin/requests/${encodeURIComponent(id)}`);
+      const detail = data?.request && typeof data.request === "object" ? data.request : null;
+      if (!detail || activeRequestDetailId !== id) return;
+      requestDetailCache.set(id, detail);
+      renderRequestDetailPackets(detail);
+    } catch (err) {
+      if (activeRequestDetailId !== id) return;
+      if (hasCachedRow) return;
+      $("reqDetailReqCode").textContent = tt("request_detail_load_failed", { message: err.message });
+      $("reqDetailResCode").textContent = tt("request_detail_load_failed", { message: err.message });
+    }
   }
 
   function closeRequestDetailModal() {
@@ -170,9 +202,11 @@ export function createRecentRequestsUi(deps) {
 
   function renderRows(rows) {
     requestDetailMap = new Map();
+    const visibleIds = new Set();
     $("reqTable").innerHTML = rows
       .map((row, index) => {
         const requestId = String(row?.id || `${row?.ts || Date.now()}-${index}`);
+        visibleIds.add(requestId);
         requestDetailMap.set(requestId, row);
         const requestTime = new Date(row.ts).toLocaleTimeString();
         const statusClass = row.status >= 400 ? "req-status-bad" : "req-status-ok";
@@ -192,6 +226,9 @@ export function createRecentRequestsUi(deps) {
         </tr>`;
       })
       .join("");
+    requestDetailCache = new Map(
+      Array.from(requestDetailCache.entries()).filter(([requestId]) => visibleIds.has(requestId))
+    );
   }
 
   return {
@@ -207,9 +244,9 @@ export function createRecentRequestsUi(deps) {
     hasOpenDetail() {
       return activeRequestDetailId.length > 0;
     },
-    reopenActiveDetail() {
+    async reopenActiveDetail() {
       if (activeRequestDetailId) {
-        openRequestDetailModal(activeRequestDetailId);
+        await openRequestDetailModal(activeRequestDetailId);
       }
     }
   };

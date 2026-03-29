@@ -10,7 +10,7 @@ import express from "express";
 import { createDashboardAuthController } from "./dashboard-auth.js";
 import { persistProxyConfigEnv } from "./env-config-store.js";
 
-import { importCodexOAuthTokens } from "./codex-auth-pool-import.js";
+import { extractCodexOAuthImportItems, importCodexOAuthTokens } from "./codex-auth-pool-import.js";
 import { startConfiguredServer } from "./bootstrap/lifecycle.js";
 import { createCodexAccountLeaseRegistry } from "./codex-account-leases.js";
 import { isCodexTokenInvalidatedError } from "./codex-token-invalidated.js";
@@ -18,6 +18,7 @@ import { createExpiredAccountCleanupController } from "./expired-account-cleanup
 import { createResponseAffinityStore, extractPreviousResponseId } from "./response-affinity.js";
 import {
   buildResponsesChainEntry,
+  expandResponsesRequestBodyFromChain,
   createResponsesChainStore
 } from "./responses-chain-store.js";
 import { createTempMailController } from "./temp-mail-controller.js";
@@ -52,6 +53,8 @@ import { createAnthropicLocalCompatHelpers } from "./protocols/anthropic/local-c
 import { createAnthropicOpenAICompatHelpers } from "./protocols/anthropic/openai-compat.js";
 import { createCodexOAuthResponsesHelpers } from "./protocols/codex/oauth-responses.js";
 import { createGeminiLocalCompatHelpers } from "./protocols/gemini/local-compat.js";
+import { applyAdditionalResponsesCreateFields } from "./protocols/openai/responses-create-compat.js";
+import { assertResponsesCreateFieldSupported } from "./protocols/openai/responses-create-compat.js";
 import { createOpenAIRequestNormalizationHelpers } from "./protocols/openai/request-normalization.js";
 import { createOpenAIResponsesCompatHelpers } from "./protocols/openai/responses-compat.js";
 import { registerCommonMiddleware, registerSystemRoutes } from "./routes/system.js";
@@ -271,6 +274,14 @@ const auditService = await createAuditService({
   findCodexPoolAccountByRef
 });
 const { runtimeStats, recentRequestsStore, resolveAuditAccountLabel, nextRuntimeRequestSeq } = auditService;
+
+async function runBoundedShutdownStep(label, task, timeoutMs = 2500) {
+  try {
+    await withTimeout(Promise.resolve().then(task), timeoutMs, `${label} timed out`);
+  } catch (err) {
+    console.warn(`[shutdown] ${label}: ${err?.message || err}`);
+  }
+}
 
 let codexPreheatHistory = { accounts: {} };
 try {
@@ -492,6 +503,7 @@ registerAdminRoutes(app, {
   core: {
     config,
     runtimeStats,
+    recentRequestsStore,
     cloudflaredRuntime,
     tempMailController,
     expiredAccountCleanupController,
@@ -531,6 +543,7 @@ registerAdminRoutes(app, {
     removeCodexPoolAccountFromStore,
     isCodexAccountLeased,
     importIntoCodexAuthPool,
+    extractCodexOAuthImportItems,
     normalizeOpenAICodexPlanType,
     refreshCodexUsageSnapshotInStore,
     runCodexPreheat,
@@ -627,7 +640,9 @@ const codexOAuthResponsesHelpers = createCodexOAuthResponsesHelpers({
   maybeMarkCodexPoolFailure,
   maybeMarkCodexPoolSuccess,
   maybeCaptureCodexUsageFromHeaders,
-  toResponsesInputFromChatMessages
+  toResponsesInputFromChatMessages,
+  applyAdditionalResponsesCreateFields,
+  assertResponsesCreateFieldSupported
 });
 const {
   buildCodexResponsesRequestBody,
@@ -718,6 +733,7 @@ const proxyRouteHandlers = createProxyRouteHandlers({
   normalizeChatCompletionsRequestBody,
   parseJsonLoose,
   buildResponsesChainEntry,
+  expandResponsesRequestBodyFromChain,
   codexResponsesChain,
   isCodexMultiAccountEnabled,
   isCodexPoolRetryEnabled,
@@ -728,6 +744,7 @@ const proxyRouteHandlers = createProxyRouteHandlers({
   truncate,
   parseResponsesResultFromSse,
   extractCompletedResponseFromSse,
+  extractCompletedResponseFromJson,
   convertResponsesToChatCompletion,
   pipeCodexSseAsChatCompletions,
   pipeSseAndCaptureTokenUsage,
@@ -814,13 +831,27 @@ const serverLifecycle = startConfiguredServer({
   onShutdown: async () => {
     const runtime = responsesWebSocketRuntime;
     responsesWebSocketRuntime = null;
-    await runtime?.close?.().catch(() => {});
     stopExpiredAccountCleanupTimer();
-    await stopCodexOAuthCallbackServer().catch(() => {});
-    await tempMailController.shutdown().catch(() => {});
-    await recentRequestsStore.flush().catch(() => {});
-    await flushProxyApiKeyStore().catch(() => {});
-    await stopCloudflaredTunnel().catch(() => {});
+    await Promise.allSettled([
+      runBoundedShutdownStep("responses websocket runtime", async () => {
+        await runtime?.close?.();
+      }, 1500),
+      runBoundedShutdownStep("codex oauth callback server", async () => {
+        await stopCodexOAuthCallbackServer();
+      }, 1500),
+      runBoundedShutdownStep("temp mail controller", async () => {
+        await tempMailController.shutdown();
+      }, 2500),
+      runBoundedShutdownStep("recent requests flush", async () => {
+        await recentRequestsStore.flush();
+      }, 1500),
+      runBoundedShutdownStep("proxy api key flush", async () => {
+        await flushProxyApiKeyStore();
+      }, 1500),
+      runBoundedShutdownStep("cloudflared tunnel", async () => {
+        await stopCloudflaredTunnel();
+      }, 2500)
+    ]);
   }
 });
 let mainServer = serverLifecycle.mainServer;
@@ -1730,7 +1761,7 @@ function buildCodexPoolMetrics(accounts, activeEntryId = "") {
   const hardLimitedCount = decorated.filter((x) => x.hardLimited).length;
   const recommended = [...enabled]
     .sort(compareCodexSmartDecorated)
-    .slice(0, 3)
+    .slice(0, 5)
     .map((x) => x.entryId);
   return {
     decorated,
@@ -2107,6 +2138,31 @@ function removeCodexPoolAccountFromStore(storeInput, accountRef = "", options = 
   };
 }
 
+function applyCodexInvalidatedAccountState(store, target, nowSec = Math.floor(Date.now() / 1000)) {
+  if (!store || !target) return;
+  const targetEntryId = getCodexPoolEntryId(target);
+  target.enabled = false;
+  target.cooldown_until = 0;
+  target.token_invalidated_at = nowSec;
+
+  const currentTokenEntryId = deriveCodexPoolEntryIdFromToken(store.token || null);
+  const currentTokenMatchesTarget =
+    currentTokenEntryId === targetEntryId ||
+    (typeof store?.token?.access_token === "string" &&
+      typeof target?.token?.access_token === "string" &&
+      store.token.access_token === target.token.access_token);
+  if (currentTokenMatchesTarget) {
+    const fallbackAccount =
+      (store.accounts || []).find((account) => account && account.enabled !== false && getCodexPoolEntryId(account) !== targetEntryId) ||
+      null;
+    store.token = fallbackAccount?.token || null;
+  }
+
+  if (store.active_account_id === targetEntryId) {
+    store.active_account_id = null;
+  }
+}
+
 async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
   if (!isCodexMultiAccountEnabled()) return;
   const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
@@ -2119,12 +2175,9 @@ async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
   const cooldownSeconds = getCodexPoolCooldownSeconds(statusCode, target.failure_count);
   const nowSec = Math.floor(Date.now() / 1000);
   const tokenInvalidated = isCodexTokenInvalidatedError(statusCode, target.last_error);
-  const targetEntryId = getCodexPoolEntryId(target);
   if (tokenInvalidated) {
     // Hard-disable invalidated identities to stop poisoning account rotation.
-    target.enabled = false;
-    target.cooldown_until = 0;
-    target.token_invalidated_at = nowSec;
+    applyCodexInvalidatedAccountState(codexOAuthStore, target, nowSec);
   } else {
     target.cooldown_until = nowSec + cooldownSeconds;
     target.token_invalidated_at = 0;
@@ -2140,13 +2193,7 @@ async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
       target.usage_updated_at = Number(fallbackSnapshot.fetched_at || nowSec) || nowSec;
     }
   }
-  const currentTokenEntryId = deriveCodexPoolEntryIdFromToken(codexOAuthStore.token || null);
-  if (tokenInvalidated && currentTokenEntryId === targetEntryId) {
-    const fallbackAccount =
-      (codexOAuthStore.accounts || []).find((x) => x && x.enabled !== false && getCodexPoolEntryId(x) !== targetEntryId) ||
-      null;
-    codexOAuthStore.token = fallbackAccount?.token || null;
-  }
+  const targetEntryId = getCodexPoolEntryId(target);
   if (
     codexOAuthStore.active_account_id === targetEntryId &&
     (tokenInvalidated ||
@@ -2829,6 +2876,7 @@ async function getValidAuthContextFromCodexOAuthStore(store, oauthConfig, option
 
   const nowSec = Math.floor(Date.now() / 1000);
   const errors = [];
+  let sawInvalidatedFailure = false;
   for (const account of candidates) {
     try {
       if (!account.token?.access_token) {
@@ -2874,13 +2922,27 @@ async function getValidAuthContextFromCodexOAuthStore(store, oauthConfig, option
     } catch (err) {
       account.failure_count = Number(account.failure_count || 0) + 1;
       account.last_error = String(err.message || err);
-      const cooldownSeconds = Math.min(120, 10 * account.failure_count);
-      account.cooldown_until = nowSec + cooldownSeconds;
+      account.last_status_code = Number(err?.statusCode || 0) || 0;
+      const tokenInvalidated = isCodexTokenInvalidatedError(account.last_status_code, account.last_error);
+      if (tokenInvalidated) {
+        applyCodexInvalidatedAccountState(store, account, nowSec);
+        sawInvalidatedFailure = true;
+      } else {
+        const cooldownSeconds = Math.min(120, 10 * account.failure_count);
+        account.cooldown_until = nowSec + cooldownSeconds;
+        account.token_invalidated_at = 0;
+      }
       errors.push(`${getCodexPoolEntryId(account) || account.account_id}: ${account.last_error}`);
     }
   }
 
   await saveTokenStore(oauthConfig.tokenStorePath, store);
+  clearAuthContextCache();
+  if (sawInvalidatedFailure && config.expiredAccountCleanup.enabled) {
+    await expiredAccountCleanupController.run("token_invalidated").catch((err) => {
+      console.warn(`[auth-pool] account auto-rm failed after refresh failure: ${err?.message || err}`);
+    });
+  }
   throw new Error(`All pooled OAuth accounts failed. ${errors.join(" | ")}`);
 }
 
@@ -3501,6 +3563,37 @@ function parseGeminiErrorMessage(rawText, fallbackMessage) {
   return fallbackMessage;
 }
 
+function parseGeminiGenerateContentPayload(rawText) {
+  const parsed = JSON.parse(rawText);
+  if (Array.isArray(parsed)) {
+    const lastPayload = [...parsed].reverse().find((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+    return lastPayload && typeof lastPayload === "object" ? lastPayload : null;
+  }
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+}
+
+function buildOpenAIChatCompletionFromGeminiPayload(payload, requestedModel) {
+  const candidate = Array.isArray(payload?.candidates) && payload.candidates.length > 0 ? payload.candidates[0] : null;
+  const contentParts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+  const text = contentParts
+    .map((p) => (typeof p?.text === "string" ? p.text : ""))
+    .filter(Boolean)
+    .join("");
+
+  const usage = {
+    prompt_tokens: Number(payload?.usageMetadata?.promptTokenCount || 0),
+    completion_tokens: Number(payload?.usageMetadata?.candidatesTokenCount || 0),
+    total_tokens: Number(payload?.usageMetadata?.totalTokenCount || 0)
+  };
+  const finishReason = mapGeminiFinishReasonToOpenAI(candidate?.finishReason);
+  return buildOpenAIChatCompletion({
+    model: requestedModel,
+    text,
+    finishReason,
+    usage
+  });
+}
+
 function mapHttpStatusToAnthropicErrorType(httpStatus) {
   const code = Number(httpStatus || 400);
   if (code === 401 || code === 403) return "authentication_error";
@@ -3570,6 +3663,14 @@ async function handleGeminiNativeProxy(req, res) {
   const isOpenAICompatPath = incoming.pathname.startsWith("/v1beta/openai/");
   const mappedPath = mapGeminiNativePath(incoming.pathname, res);
   const target = new URL(`${mappedPath}${incoming.search}`, config.gemini.baseUrl);
+  const isGeminiSseRequest =
+    mappedPath.includes(":streamGenerateContent") ||
+    String(incoming.searchParams.get("alt") || "").toLowerCase() === "sse" ||
+    String(req.headers?.accept || "").toLowerCase().includes("text/event-stream");
+
+  if (mappedPath.includes(":streamGenerateContent") && !target.searchParams.has("alt")) {
+    target.searchParams.set("alt", "sse");
+  }
 
   if (!isOpenAICompatPath && !target.searchParams.has("key")) {
     target.searchParams.set("key", apiKey);
@@ -3587,6 +3688,12 @@ async function handleGeminiNativeProxy(req, res) {
   } else {
     headers.delete("authorization");
     headers.set("x-goog-api-key", apiKey);
+  }
+  if (isGeminiSseRequest) {
+    headers.set("accept", "text/event-stream");
+    headers.set("accept-encoding", "identity");
+  } else {
+    headers.delete("accept-encoding");
   }
 
   const init = {
@@ -3689,6 +3796,7 @@ async function handleAnthropicNativeProxy(req, res) {
     headers,
     redirect: "manual"
   };
+  let anthropicStreamRequest = String(req.headers?.accept || "").toLowerCase().includes("text/event-stream");
   if (req.method !== "GET" && req.method !== "HEAD") {
     const rawBody = await readRawBody(req);
     let requestBody = rawBody;
@@ -3703,6 +3811,7 @@ async function handleAnthropicNativeProxy(req, res) {
         const parsed = await readJsonBody(req);
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
           const mappedRequest = { ...parsed };
+          anthropicStreamRequest = anthropicStreamRequest || mappedRequest.stream === true;
           const route = resolveModelRoute(mappedRequest.model || config.anthropic.defaultModel, "anthropic-v1");
           mappedRequest.model = route.mappedModel;
           if (res && res.locals) res.locals.modelRoute = route;
@@ -3719,6 +3828,12 @@ async function handleAnthropicNativeProxy(req, res) {
       auditRequestBody,
       headers.get("content-type") || req.headers?.["content-type"] || ""
     );
+  }
+  if (anthropicStreamRequest) {
+    headers.set("accept", "text/event-stream");
+    headers.set("accept-encoding", "identity");
+  } else {
+    headers.delete("accept-encoding");
   }
 
   let upstream;
@@ -3859,17 +3974,23 @@ async function handleGeminiProtocol(req, res) {
   const upstreamModel = modelRoute.mappedModel;
   res.locals.modelRoute = modelRoute;
   const geminiAction = chatReq.stream === true ? ":streamGenerateContent" : ":generateContent";
-  const url = `${config.gemini.baseUrl.replace(/\/+$/, "")}/models/${encodeURIComponent(upstreamModel)}${geminiAction}`;
+  const url = new URL(
+    `${config.gemini.baseUrl.replace(/\/+$/, "")}/models/${encodeURIComponent(upstreamModel)}${geminiAction}`
+  );
+  if (chatReq.stream === true) {
+    url.searchParams.set("alt", "sse");
+  }
   noteUpstreamRequestAudit(res, body, "application/json");
   let upstream;
   try {
     upstream = await fetchUpstreamWithRetry(
-      url,
+      url.toString(),
       {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-goog-api-key": String(apiKey)
+        "x-goog-api-key": String(apiKey),
+        ...(chatReq.stream === true ? { accept: "text/event-stream", "accept-encoding": "identity" } : {})
       },
       body: JSON.stringify(body)
       },
@@ -3896,6 +4017,38 @@ async function handleGeminiProtocol(req, res) {
         httpStatus: upstream.status,
         message: parseGeminiErrorMessage(raw, `Gemini upstream request failed with HTTP ${upstream.status}.`)
       });
+      return;
+    }
+
+    const upstreamContentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+    if (!upstreamContentType.includes("text/event-stream")) {
+      let raw;
+      try {
+        raw = await readUpstreamTextOrThrow(upstream);
+      } catch (err) {
+        sendGeminiError(res, {
+          httpStatus: 502,
+          message: err.message,
+          status: "UNAVAILABLE"
+        });
+        return;
+      }
+
+      let payload;
+      try {
+        payload = parseGeminiGenerateContentPayload(raw);
+      } catch {
+        sendGeminiError(res, {
+          httpStatus: 502,
+          message: `Gemini stream request returned non-SSE content-type: ${upstreamContentType || "unknown"}`,
+          status: "INTERNAL"
+        });
+        return;
+      }
+
+      const completion = buildOpenAIChatCompletionFromGeminiPayload(payload, requestedModel);
+      res.locals.tokenUsage = completion.usage;
+      sendOpenAICompletionAsSse(res, completion, { heartbeatMs: 0 });
       return;
     }
 
@@ -3948,7 +4101,7 @@ async function handleGeminiProtocol(req, res) {
 
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    parsed = parseGeminiGenerateContentPayload(raw);
   } catch {
     sendGeminiError(res, {
       httpStatus: 502,
@@ -3958,25 +4111,7 @@ async function handleGeminiProtocol(req, res) {
     return;
   }
 
-  const candidate = Array.isArray(parsed.candidates) && parsed.candidates.length > 0 ? parsed.candidates[0] : null;
-  const contentParts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
-  const text = contentParts
-    .map((p) => (typeof p?.text === "string" ? p.text : ""))
-    .filter(Boolean)
-    .join("");
-
-  const usage = {
-    prompt_tokens: Number(parsed?.usageMetadata?.promptTokenCount || 0),
-    completion_tokens: Number(parsed?.usageMetadata?.candidatesTokenCount || 0),
-    total_tokens: Number(parsed?.usageMetadata?.totalTokenCount || 0)
-  };
-  const finishReason = mapGeminiFinishReasonToOpenAI(candidate?.finishReason);
-  const completion = buildOpenAIChatCompletion({
-    model: requestedModel,
-    text,
-    finishReason,
-    usage
-  });
+  const completion = buildOpenAIChatCompletionFromGeminiPayload(parsed, requestedModel);
   res.locals.tokenUsage = completion.usage;
   res.status(200).json(completion);
 }
@@ -4989,6 +5124,7 @@ export { app, mainServer };
 export const __testing = {
   config,
   acquireCodexAccountLease,
+  applyCodexInvalidatedAccountState,
   isCodexAccountLeased,
   pickCodexAccountCandidates,
   removeCodexPoolAccountFromStore,

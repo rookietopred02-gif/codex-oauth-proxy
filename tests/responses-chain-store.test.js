@@ -271,3 +271,171 @@ test("responses chain replay does not inherit prior request defaults", () => {
     }
   ]);
 });
+
+test("responses chain replay does not carry over prior developer or system messages", () => {
+  const entry = buildResponsesChainEntry(
+    {
+      input: [
+        {
+          role: "developer",
+          content: [{ type: "input_text", text: "You are in Plan Mode." }]
+        },
+        {
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text: "Use request_user_input." }]
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Continue." }]
+        }
+      ]
+    },
+    {
+      id: "resp_plan_mode",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Working on it." }]
+        }
+      ]
+    }
+  );
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_plan_mode",
+      instructions: "New turn instructions",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Next turn." }]
+        }
+      ]
+    },
+    entry
+  );
+
+  assert.deepEqual(expanded.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Continue." }]
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Working on it." }]
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Next turn." }]
+    }
+  ]);
+  assert.equal(expanded.instructions, "New turn instructions");
+});
+
+test("responses chain replay drops prior assistant plan-mode scaffolding", () => {
+  const entry = buildResponsesChainEntry(
+    {
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Ship the release." }]
+        }
+      ]
+    },
+    {
+      id: "resp_plan_scaffold",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "output_text",
+              text:
+                "<proposed_plan>\n- check README\n</proposed_plan>\nI am still under Plan Mode constraints and must use request_user_input."
+            }
+          ]
+        }
+      ]
+    }
+  );
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_plan_scaffold",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Continue now." }]
+        }
+      ]
+    },
+    entry
+  );
+
+  assert.deepEqual(expanded.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Ship the release." }]
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Continue now." }]
+    }
+  ]);
+});
+
+test("responses chain replay keeps normal assistant replies in follow-up context", () => {
+  const entry = buildResponsesChainEntry(
+    {
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Summarize the fix." }]
+        }
+      ]
+    },
+    {
+      id: "resp_normal_assistant",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "The port restart flow is fixed." }]
+        }
+      ]
+    }
+  );
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_normal_assistant",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Add tests too." }]
+        }
+      ]
+    },
+    entry
+  );
+
+  assert.deepEqual(expanded.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Summarize the fix." }]
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "The port restart flow is fixed." }]
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Add tests too." }]
+    }
+  ]);
+});

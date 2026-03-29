@@ -129,6 +129,21 @@ function createHelpers(overrides = {}) {
     buildOpenAIChatCompletion() {
       throw new Error("Not used in Gemini native tests.");
     },
+    sendOpenAICompletionAsSse(res, completion) {
+      res.status(200);
+      res.setHeader("content-type", "text/event-stream; charset=utf-8");
+      res.write(
+        `data: ${JSON.stringify({
+          id: completion?.id || "chatcmpl_test",
+          object: "chat.completion.chunk",
+          created: completion?.created || 0,
+          model: completion?.model || "",
+          choices: [{ index: 0, delta: { role: "assistant", content: completion?.choices?.[0]?.message?.content || "" }, finish_reason: completion?.choices?.[0]?.finish_reason || "stop" }],
+          usage: completion?.usage || null
+        })}\n\n`
+      );
+      res.end("data: [DONE]\n\n");
+    },
     async openCodexConversationStreamViaOAuth() {
       throw new Error("openCodexConversationStreamViaOAuth must be stubbed for stream tests.");
     },
@@ -314,5 +329,49 @@ test("Gemini native stream rejects sessions without an SSE body", async () => {
       message: "Upstream stream request did not return an SSE body.",
       status: "INTERNAL"
     }
+  });
+});
+
+test("Gemini native stream converts buffered JSON completion into SSE", async () => {
+  const helpers = createHelpers({
+    async openCodexConversationStreamViaOAuth() {
+      return {
+        authAccountId: "acct_123",
+        upstream: null,
+        bufferedCompletion: {
+          status: "completed",
+          usage: {
+            input_tokens: 4,
+            output_tokens: 5,
+            total_tokens: 9
+          },
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        },
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    contents: [{ role: "user", parts: [{ text: "hello" }] }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleGeminiNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.match(res.writes.join(""), /"text":"done"/);
+  assert.match(res.writes.join(""), /"finishReason":"STOP"/);
+  assert.deepEqual(res.locals.tokenUsage, {
+    prompt_tokens: 4,
+    completion_tokens: 5,
+    total_tokens: 9
   });
 });

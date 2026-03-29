@@ -11,6 +11,7 @@ const responsesOpenApiContract = JSON.parse(
 function createHelpers() {
   return createOpenAIRequestNormalizationHelpers({
     config: {
+      upstreamMode: "codex-chatgpt",
       codex: {
         defaultModel: "gpt-5.4",
         defaultInstructions: "Default instructions",
@@ -92,7 +93,7 @@ test("normalizeCodexResponsesRequestBody adds encrypted reasoning include for st
   assert.deepEqual(normalized.json.include, ["reasoning.encrypted_content"]);
 });
 
-test("normalizeCodexResponsesRequestBody preserves store default when client omits it", () => {
+test("normalizeCodexResponsesRequestBody forces store false when client omits it", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
     Buffer.from(JSON.stringify({
@@ -102,8 +103,24 @@ test("normalizeCodexResponsesRequestBody preserves store default when client omi
     }), "utf8")
   );
 
-  assert.equal(Object.hasOwn(normalized.json, "store"), false);
-  assert.equal(normalized.json.include, undefined);
+  assert.equal(normalized.json.store, false);
+  assert.deepEqual(normalized.json.include, ["reasoning.encrypted_content"]);
+});
+
+test("normalizeCodexResponsesRequestBody drops explicit sampling parameters for codex upstream", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "hello",
+      temperature: 0.2,
+      top_p: 0.9
+    }), "utf8")
+  );
+
+  assert.equal(Object.hasOwn(normalized.json, "temperature"), false);
+  assert.equal(Object.hasOwn(normalized.json, "top_p"), false);
 });
 
 test("normalizeCodexResponsesRequestBody preserves covered official create fields", () => {
@@ -120,6 +137,30 @@ test("normalizeCodexResponsesRequestBody preserves covered official create field
     const normalized = helpers.normalizeCodexResponsesRequestBody(Buffer.from(JSON.stringify(request), "utf8"));
 
     for (const [fieldName, fieldValue] of Object.entries(passthroughCase.sample)) {
+      if (fieldName === "store") {
+        assert.equal(
+          normalized.json[fieldName],
+          false,
+          `expected ${fieldName} to be coerced to false for codex upstream in case ${passthroughCase.id}`
+        );
+        continue;
+      }
+      if (fieldName === "include" && Array.isArray(fieldValue)) {
+        assert.deepEqual(
+          normalized.json[fieldName],
+          [...fieldValue, "reasoning.encrypted_content"],
+          `expected ${fieldName} to include codex-required encrypted reasoning for case ${passthroughCase.id}`
+        );
+        continue;
+      }
+      if (fieldName === "temperature" || fieldName === "top_p") {
+        assert.equal(
+          Object.hasOwn(normalized.json, fieldName),
+          false,
+          `expected ${fieldName} to be dropped for case ${passthroughCase.id}`
+        );
+        continue;
+      }
       assert.deepEqual(
         normalized.json[fieldName],
         fieldValue,
@@ -209,4 +250,31 @@ test("normalizeCodexResponsesRequestBody flattens typed assistant refusal parts 
       ]
     }
   ]);
+});
+
+test("normalizeChatCompletionsRequestBody does not inject the configured default temperature for codex upstream", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeChatCompletionsRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      messages: [{ role: "user", content: "hello" }]
+    }), "utf8")
+  );
+
+  assert.equal(Object.hasOwn(normalized.json, "temperature"), false);
+});
+
+test("normalizeChatCompletionsRequestBody drops explicit sampling parameters for codex upstream", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeChatCompletionsRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      messages: [{ role: "user", content: "hello" }],
+      temperature: 0.2,
+      top_p: 0.9
+    }), "utf8")
+  );
+
+  assert.equal(Object.hasOwn(normalized.json, "temperature"), false);
+  assert.equal(Object.hasOwn(normalized.json, "top_p"), false);
 });

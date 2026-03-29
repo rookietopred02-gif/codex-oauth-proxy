@@ -1,5 +1,10 @@
 const DEFAULT_CHAIN_TTL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_CHAIN_MAX_ENTRIES = 1024;
+const ASSISTANT_CONTROL_SCAFFOLDING_PATTERNS = [
+  /<\s*\/?\s*proposed_plan\b/i,
+  /\bPlan Mode\b/i,
+  /\brequest_user_input\b/i
+];
 
 function normalizeId(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -20,6 +25,55 @@ function stableStringify(value) {
   return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
 }
 
+function textContainsAssistantControlScaffolding(text) {
+  if (typeof text !== "string" || text.length === 0) return false;
+  return ASSISTANT_CONTROL_SCAFFOLDING_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function normalizeReplayableAssistantContentPart(part) {
+  if (!part || typeof part !== "object" || Array.isArray(part)) return null;
+
+  const cloned = cloneJson(part);
+  const partType = normalizeId(part.type);
+  if (!partType) return cloned;
+
+  if (partType === "output_text" || partType === "text" || partType === "input_text") {
+    return textContainsAssistantControlScaffolding(part.text) ? null : cloned;
+  }
+
+  if (partType === "refusal") {
+    if (
+      textContainsAssistantControlScaffolding(part.refusal) ||
+      textContainsAssistantControlScaffolding(part.text)
+    ) {
+      return null;
+    }
+    return cloned;
+  }
+
+  return cloned;
+}
+
+function normalizeReplayableAssistantItem(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+
+  const cloned = cloneJson(item);
+  if (typeof item.content === "string") {
+    return textContainsAssistantControlScaffolding(item.content) ? null : cloned;
+  }
+  if (!Array.isArray(item.content)) {
+    return cloned;
+  }
+
+  const normalizedContent = item.content.map((part) => normalizeReplayableAssistantContentPart(part)).filter(Boolean);
+  if (normalizedContent.length === 0) {
+    return null;
+  }
+
+  cloned.content = normalizedContent;
+  return cloned;
+}
+
 function normalizeReplayableItem(item) {
   if (typeof item === "string") {
     return {
@@ -30,11 +84,17 @@ function normalizeReplayableItem(item) {
   if (!item || typeof item !== "object" || Array.isArray(item)) return null;
 
   const itemType = normalizeId(item.type);
+  const role = normalizeId(item.role);
+  if (role === "system" || role === "developer") {
+    return null;
+  }
+  if (role === "assistant") {
+    return normalizeReplayableAssistantItem(item);
+  }
   if (itemType) {
     return cloneJson(item);
   }
 
-  const role = normalizeId(item.role);
   if (role) {
     return cloneJson(item);
   }

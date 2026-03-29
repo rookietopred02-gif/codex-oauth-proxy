@@ -326,7 +326,7 @@ export function createCloudflaredService({
           response = await fetch(assetMeta.downloadUrl, {
             method: "GET",
             redirect: "follow",
-            headers: { "user-agent": "codex-pro-max/0.1.0", accept: "application/octet-stream" },
+            headers: { "user-agent": "codex-pro-max/0.1.1", accept: "application/octet-stream" },
             signal: downloadAbort.signal
           });
         } catch (err) {

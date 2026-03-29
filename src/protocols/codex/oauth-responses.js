@@ -20,7 +20,8 @@ export function createCodexOAuthResponsesHelpers(context) {
     maybeMarkCodexPoolFailure,
     maybeMarkCodexPoolSuccess,
     maybeCaptureCodexUsageFromHeaders,
-    toResponsesInputFromChatMessages
+    toResponsesInputFromChatMessages,
+    applyAdditionalResponsesCreateFields
   } = context;
   const getAssistantDisplayTextFromResponse =
     typeof extractAssistantDisplayTextFromResponse === "function"
@@ -49,7 +50,23 @@ export function createCodexOAuthResponsesHelpers(context) {
     return err;
   }
 
+  function extractCompletedResponseFromBufferedPayload(raw, contentType = "") {
+    const normalizedContentType = String(contentType || "").toLowerCase();
+    if (normalizedContentType.includes("text/event-stream") || /(^|\n)\s*(event:|data:)/.test(String(raw || ""))) {
+      const parsedSse = parseResponsesResultFromSse(raw);
+      if (parsedSse.failed) {
+        const upstreamErr = new Error(parsedSse.failed.message);
+        upstreamErr.statusCode = Number(parsedSse.failed.statusCode || 502) || 502;
+        throw upstreamErr;
+      }
+      return parsedSse.completed || null;
+    }
+
+    return extractCompletedResponseFromJson(raw) || null;
+  }
+
   async function sendCodexResponsesRequest(currentAuth, url, body, acceptHeader) {
+    const normalizedAcceptHeader = String(acceptHeader || "").trim();
     const requestInit = {
       method: "POST",
       headers: {
@@ -57,8 +74,11 @@ export function createCodexOAuthResponsesHelpers(context) {
         "chatgpt-account-id": currentAuth.accountId,
         "openai-beta": "responses=experimental",
         originator: getCodexOriginator(),
-        accept: acceptHeader,
+        accept: normalizedAcceptHeader,
         "content-type": "application/json",
+        ...(normalizedAcceptHeader.toLowerCase().includes("text/event-stream")
+          ? { "accept-encoding": "identity" }
+          : {}),
         "user-agent": "codex-pro-max-local-compat"
       },
       body: JSON.stringify(body)
@@ -83,7 +103,8 @@ export function createCodexOAuthResponsesHelpers(context) {
     top_p,
     reasoningSummary,
     reasoningEffort,
-    reasoningContext = null
+    reasoningContext = null,
+    additionalCreateFields = null
   }) {
     const route =
       typeof upstreamModel === "string" && upstreamModel.trim().length > 0
@@ -136,8 +157,7 @@ export function createCodexOAuthResponsesHelpers(context) {
     if (toolChoice !== undefined) body.tool_choice = toolChoice;
     if (Array.isArray(include) && include.length > 0) body.include = include;
     if (max_tokens !== undefined) body.max_output_tokens = max_tokens;
-    if (temperature !== undefined) body.temperature = temperature;
-    if (top_p !== undefined) body.top_p = top_p;
+    applyAdditionalResponsesCreateFields?.(body, additionalCreateFields);
 
     return {
       route: {
@@ -163,7 +183,8 @@ export function createCodexOAuthResponsesHelpers(context) {
     top_p,
     reasoningSummary,
     reasoningEffort,
-    reasoningContext = null
+    reasoningContext = null,
+    additionalCreateFields = null
   }) {
     let auth = await getValidAuthContext({ retainLease: true });
     let releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
@@ -187,7 +208,8 @@ export function createCodexOAuthResponsesHelpers(context) {
         top_p,
         reasoningSummary,
         reasoningEffort,
-        reasoningContext
+        reasoningContext,
+        additionalCreateFields
       });
       const resolvedRequestedModel = route.requestedModel;
       const url = getCodexResponsesUrl();
@@ -207,13 +229,10 @@ export function createCodexOAuthResponsesHelpers(context) {
           if (!expectSse) {
             return extractCompletedResponseFromJson(result.raw);
           }
-          const parsedSse = parseResponsesResultFromSse(result.raw);
-          if (parsedSse.failed) {
-            const upstreamErr = new Error(parsedSse.failed.message);
-            upstreamErr.statusCode = Number(parsedSse.failed.statusCode || 502) || 502;
-            throw upstreamErr;
-          }
-          return parsedSse.completed;
+          return extractCompletedResponseFromBufferedPayload(
+            result.raw,
+            result.response?.headers?.get?.("content-type") || ""
+          );
         };
 
         let activeBody = { ...baseBody, stream: true };
@@ -334,7 +353,8 @@ export function createCodexOAuthResponsesHelpers(context) {
     top_p,
     reasoningSummary,
     reasoningEffort,
-    reasoningContext = null
+    reasoningContext = null,
+    additionalCreateFields = null
   }) {
     let auth = await getValidAuthContext({ retainLease: true });
     let releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
@@ -366,7 +386,8 @@ export function createCodexOAuthResponsesHelpers(context) {
         top_p,
         reasoningSummary,
         reasoningEffort,
-        reasoningContext
+        reasoningContext,
+        additionalCreateFields
       });
       const resolvedRequestedModel = route.requestedModel;
       const url = getCodexResponsesUrl();
@@ -408,6 +429,14 @@ export function createCodexOAuthResponsesHelpers(context) {
         }
 
         const raw = await readUpstreamTextOrThrow(response);
+        const bufferedCompletion = extractCompletedResponseFromBufferedPayload(raw, contentType);
+        if (bufferedCompletion) {
+          return {
+            upstream: null,
+            bufferedCompletion
+          };
+        }
+
         const unsupportedStreamErr = new Error(
           `Upstream stream request returned non-SSE content-type: ${contentType || "unknown"}`
         );

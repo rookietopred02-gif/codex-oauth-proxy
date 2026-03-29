@@ -19,6 +19,7 @@ export function createAuthService({
 
   let proxyApiKeyStore = { version: 1, keys: [] };
   let proxyApiKeyStoreFlushTimer = null;
+  const PROXY_API_KEY_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789";
 
   function clearAuthContextCache() {
     authContextCache.mode = "";
@@ -152,7 +153,12 @@ export function createAuthService({
   }
 
   function createProxyApiKey() {
-    return `sk-${crypto.randomBytes(24).toString("base64url")}`;
+    let out = "sk-";
+    const bytes = crypto.randomBytes(32);
+    for (let i = 0; i < bytes.length; i += 1) {
+      out += PROXY_API_KEY_ALPHABET[bytes[i] % PROXY_API_KEY_ALPHABET.length];
+    }
+    return out;
   }
 
   function sanitizeProxyApiKeyLabel(value) {
@@ -213,7 +219,13 @@ export function createAuthService({
     const key = String(candidate || "").trim();
     if (!key) return null;
     const hash = hashProxyApiKey(key);
-    return listActiveProxyApiKeys(proxyApiKeyStore).find((entry) => String(entry.hash || "") === hash) || null;
+    const activeKeys = listActiveProxyApiKeys(proxyApiKeyStore);
+    const exact = activeKeys.find((entry) => String(entry.hash || "") === hash) || null;
+    if (exact) return exact;
+
+    const folded = key.toLowerCase();
+    const nearMatches = activeKeys.filter((entry) => String(entry.value || "").trim().toLowerCase() === folded);
+    return nearMatches.length === 1 ? nearMatches[0] : null;
   }
 
   function recordManagedProxyApiKeyUsage(entry) {

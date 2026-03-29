@@ -119,6 +119,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
       const json = {
         model: modelRoute.mappedModel,
         stream: true,
+        store: false,
         instructions: fallbackInstructions,
         reasoning: {
           effort: resolveReasoningEffort(undefined, {
@@ -128,6 +129,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
         },
         input: [{ role: "user", content: [{ type: "input_text", text: "" }] }]
       };
+      ensureResponsesInclude(json, "reasoning.encrypted_content");
       if (config.codex.defaultServiceTier === "priority") {
         json.service_tier = "priority";
       }
@@ -168,6 +170,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     const modelRoute = resolveCodexCompatibleRoute(normalized.model || config.codex.defaultModel);
     normalized.model = modelRoute.mappedModel;
     normalized.stream = true;
+    normalized.store = false;
     if (!normalized.instructions || String(normalized.instructions).trim() === "") {
       normalized.instructions = config.codex.defaultInstructions;
     }
@@ -176,9 +179,9 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     } else {
       normalized.input = normalizeResponsesInput(normalized.input);
     }
-    if (normalized.store === false) {
-      ensureResponsesInclude(normalized, "reasoning.encrypted_content");
-    }
+    delete normalized.temperature;
+    delete normalized.top_p;
+    ensureResponsesInclude(normalized, "reasoning.encrypted_content");
     applyReasoningEffortDefaults(normalized, normalized.reasoning_effort, {
       input: normalized.input,
       tools: normalized.tools,
@@ -244,8 +247,6 @@ export function createOpenAIRequestNormalizationHelpers(context) {
       input: toResponsesInputFromChatMessages(messages)
     };
 
-    if (parsed.temperature !== undefined) upstreamBody.temperature = parsed.temperature;
-    if (parsed.top_p !== undefined) upstreamBody.top_p = parsed.top_p;
     if (parsed.max_completion_tokens !== undefined) upstreamBody.max_output_tokens = parsed.max_completion_tokens;
     else if (parsed.max_tokens !== undefined) upstreamBody.max_output_tokens = parsed.max_tokens;
     if (parsed.tool_choice !== undefined) upstreamBody.tool_choice = normalizeChatToolChoice(parsed.tool_choice);

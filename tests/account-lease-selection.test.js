@@ -115,3 +115,48 @@ test("manual removal keeps lease protection unless ignoreLease is set", async ()
   assert.equal(forced.remainingAccounts, 0);
   assert.equal(forced.activeEntryId, null);
 });
+
+test("invalidated account state disables the account and clears active token selection", async () => {
+  process.env.CODEX_PRO_MAX_DISABLE_AUTOSTART = "1";
+  const serverModule = await import(`../src/server.js?invalidated-state=${Date.now()}`);
+  const testing = serverModule.__testing;
+
+  const store = {
+    accounts: [
+      {
+        identity_id: "entry_a",
+        account_id: "acct_a",
+        token: {
+          access_token: "token_a"
+        },
+        enabled: true,
+        cooldown_until: 999,
+        token_invalidated_at: 0
+      },
+      {
+        identity_id: "entry_b",
+        account_id: "acct_b",
+        token: {
+          access_token: "token_b"
+        },
+        enabled: true,
+        cooldown_until: 0,
+        token_invalidated_at: 0
+      }
+    ],
+    active_account_id: "entry_a",
+    token: {
+      access_token: "token_a"
+    },
+    rotation: { next_index: 0 }
+  };
+
+  const target = store.accounts[0];
+  testing.applyCodexInvalidatedAccountState(store, target, 12345);
+
+  assert.equal(target.enabled, false);
+  assert.equal(target.cooldown_until, 0);
+  assert.equal(target.token_invalidated_at, 12345);
+  assert.equal(store.active_account_id, null);
+  assert.equal(store.token, store.accounts[1].token);
+});

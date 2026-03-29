@@ -788,32 +788,10 @@ export function createAnthropicLocalCompatHelpers(context) {
       metadata: isRecordObject(parsed?.metadata) ? parsed.metadata : undefined
     };
 
-    if (parsed?.temperature !== undefined) {
-      const temperature = Number(parsed.temperature);
-      if (!Number.isFinite(temperature)) {
-        throw new Error("Anthropic temperature must be a finite number in local compatibility mode.");
-      }
-      if (Math.abs(temperature - 1) > 1e-9) {
-        throw new Error(
-          "Anthropic temperature is not supported in local compatibility mode with the configured Codex upstream."
-        );
-      }
-    }
-
-    if (parsed?.top_p !== undefined) {
-      const topP = Number(parsed.top_p);
-      if (!Number.isFinite(topP)) {
-        throw new Error("Anthropic top_p must be a finite number in local compatibility mode.");
-      }
-      if (Math.abs(topP - 1) > 1e-9) {
-        throw new Error(
-          "Anthropic top_p is not supported in local compatibility mode with the configured Codex upstream."
-        );
-      }
-    }
-
     if (Array.isArray(parsed?.documents) && parsed.documents.length > 0) {
-      throw new Error("Anthropic documents are not yet supported in local compatibility mode.");
+      throw new Error(
+        'Anthropic field "documents" is not supported in local compatibility mode because it cannot be equivalently mapped to Codex/OpenAI Responses upstream.'
+      );
     }
 
     return normalized;
@@ -2370,6 +2348,7 @@ export function createAnthropicLocalCompatHelpers(context) {
     if (parsedReq.stream === true) {
       let streamSession;
       try {
+        const executionConfig = normalizeAnthropicNativeExecutionConfig(parsedReq);
         const input = toResponsesInputFromAnthropicMessages(parsedReq.messages);
         const tools = normalizeAnthropicNativeTools(parsedReq.tools);
         const toolChoice = normalizeAnthropicNativeToolChoice(parsedReq.tool_choice, tools);
@@ -2397,9 +2376,38 @@ export function createAnthropicLocalCompatHelpers(context) {
           tools,
           toolChoice: resolvedToolChoice,
           include,
-          reasoningSummary
+          reasoningSummary,
+          additionalCreateFields: {
+            metadata: executionConfig.metadata
+          }
         });
         res.locals.authAccountId = streamSession.authAccountId || null;
+
+        if (streamSession.bufferedCompletion) {
+          const emissionPlan = planAnthropicFunctionCallEmission(streamSession.bufferedCompletion.output);
+          const message = buildAnthropicMessageFromResponsesResponse(
+            {
+              ...streamSession.bufferedCompletion,
+              output: emissionPlan.immediateOutput
+            },
+            codexRoute.requestedModel || parsedReq.model || config.anthropic.defaultModel
+          );
+          if (emissionPlan.pendingFunctionCalls.length > 0) {
+            rememberAnthropicPendingToolBatch(
+              emissionPlan.emittedFunctionCallId,
+              emissionPlan.pendingFunctionCalls,
+              message.model
+            );
+          }
+          res.locals.tokenUsage = {
+            prompt_tokens: Number(message?.usage?.input_tokens || 0),
+            completion_tokens: Number(message?.usage?.output_tokens || 0),
+            total_tokens: Number(message?.usage?.input_tokens || 0) + Number(message?.usage?.output_tokens || 0)
+          };
+          sendAnthropicMessageAsSse(res, message);
+          await streamSession.markSuccess();
+          return;
+        }
 
         if (streamSession.upstream?.body) {
           const streamResult = await pipeCodexSseAsAnthropicMessages(streamSession.upstream, res, {
@@ -2443,6 +2451,7 @@ export function createAnthropicLocalCompatHelpers(context) {
 
     let result;
     try {
+      const executionConfig = normalizeAnthropicNativeExecutionConfig(parsedReq);
       const input = toResponsesInputFromAnthropicMessages(parsedReq.messages);
       const tools = normalizeAnthropicNativeTools(parsedReq.tools);
       const toolChoice = normalizeAnthropicNativeToolChoice(parsedReq.tool_choice, tools);
@@ -2469,7 +2478,10 @@ export function createAnthropicLocalCompatHelpers(context) {
         tools,
         toolChoice: resolvedToolChoice,
         include,
-        reasoningSummary
+        reasoningSummary,
+        additionalCreateFields: {
+          metadata: executionConfig.metadata
+        }
       });
     } catch (err) {
       const statusCode = resolveCompatErrorStatusCode(err, 502);

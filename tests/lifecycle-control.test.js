@@ -18,6 +18,7 @@ test("stopAppServer is a no-op before the embedded server is started", async () 
 test("admin config accepts a live cloudflared process and persists autoInstall=false", async () => {
   const routes = new Map();
   const app = {
+    get() {},
     post(path, handler) {
       routes.set(`POST ${path}`, handler);
     }
@@ -134,6 +135,7 @@ test("admin config accepts a live cloudflared process and persists autoInstall=f
 test("admin config persists runtimePort without changing the active port", async () => {
   const routes = new Map();
   const app = {
+    get() {},
     post(path, handler) {
       routes.set(`POST ${path}`, handler);
     }
@@ -302,4 +304,27 @@ test("stopServer closes the Codex callback server during shutdown", async () => 
 
   assert.equal(serverModule.__testing.getCodexOAuthCallbackServer(), null);
   assert.equal(callbackServer.listening, false);
+});
+
+test("stopServer does not hang forever when cloudflared shutdown stalls", async () => {
+  process.env.CODEX_PRO_MAX_DISABLE_AUTOSTART = "1";
+  const serverModule = await import(`../src/server.js?shutdown-timeout=${Date.now()}`);
+  const runtime = serverModule.__testing.getCloudflaredRuntime();
+  const child = new EventEmitter();
+
+  child.exitCode = null;
+  child.signalCode = null;
+  child.pid = 9876;
+  child.kill = () => true;
+  child.once = child.once.bind(child);
+
+  runtime.process = child;
+  runtime.running = true;
+  runtime.pid = child.pid;
+
+  const startedAt = Date.now();
+  await serverModule.stopServer("TEST");
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.ok(elapsedMs < 6000, `expected stopServer to remain bounded, got ${elapsedMs}ms`);
 });

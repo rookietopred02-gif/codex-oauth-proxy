@@ -3,7 +3,8 @@ import path from "node:path";
 
 const DEFAULT_MAX_ENTRIES = 120;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 50;
-const RECENT_REQUESTS_STORAGE_VERSION = 2;
+const RECENT_REQUESTS_STORAGE_VERSION = 3;
+const REQUEST_PACKET_FIELDS = ["requestPacket", "upstreamRequestPacket", "responsePacket"];
 
 function clampMaxEntries(value) {
   const parsed = Number(value);
@@ -16,6 +17,22 @@ function normalizeRow(row) {
   return { ...row };
 }
 
+function summarizeRow(row) {
+  const normalized = normalizeRow(row);
+  if (!normalized) return null;
+  for (const field of REQUEST_PACKET_FIELDS) {
+    delete normalized[field];
+  }
+  return normalized;
+}
+
+function normalizeSummary(summary) {
+  const normalized = summarizeRow(summary);
+  if (!normalized) return null;
+  normalized.id = typeof normalized.id === "string" ? normalized.id.trim() : "";
+  return normalized.id ? normalized : null;
+}
+
 function sanitizeRowFileSegment(value, fallback = "request") {
   const text = String(value || "").trim();
   const normalized = text.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
@@ -26,9 +43,15 @@ function getRowsDirectory(filePath) {
   return `${filePath}.rows`;
 }
 
-function buildRowFileName(index, row) {
-  const idSegment = sanitizeRowFileSegment(row?.id, `row_${index + 1}`);
-  return `${String(index + 1).padStart(4, "0")}_${idSegment}.json`;
+function buildRowFileName(rowOrId) {
+  const rowId =
+    typeof rowOrId === "string"
+      ? rowOrId
+      : typeof rowOrId?.id === "string"
+        ? rowOrId.id
+        : "";
+  const idSegment = sanitizeRowFileSegment(rowId, "request");
+  return `${idSegment}.json`;
 }
 
 async function removeStaleRowFiles(rowsDirectory, keepFileNames) {
@@ -45,6 +68,27 @@ async function removeStaleRowFiles(rowsDirectory, keepFileNames) {
   );
 }
 
+function buildEntriesFromRows(rows, limit) {
+  return (Array.isArray(rows) ? rows : [])
+    .map((row, index) => {
+      const normalizedRow = normalizeRow(row);
+      if (!normalizedRow) return null;
+      if (typeof normalizedRow.id !== "string" || normalizedRow.id.trim().length === 0) {
+        normalizedRow.id = `legacy_req_${index + 1}`;
+      }
+      const summary = summarizeRow(normalizedRow);
+      if (!summary?.id) return null;
+      return {
+        id: summary.id,
+        file: buildRowFileName(summary.id),
+        summary,
+        row: normalizedRow
+      };
+    })
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
 export function normalizeRecentRequestsStore(payload, maxEntries = DEFAULT_MAX_ENTRIES) {
   const limit = clampMaxEntries(maxEntries);
   const sourceRows = Array.isArray(payload)
@@ -52,49 +96,63 @@ export function normalizeRecentRequestsStore(payload, maxEntries = DEFAULT_MAX_E
     : Array.isArray(payload?.recentRequests)
       ? payload.recentRequests
       : [];
-  const rows = sourceRows.map(normalizeRow).filter(Boolean).slice(0, limit);
+  const entries = buildEntriesFromRows(sourceRows, limit);
   return {
     updatedAt: Number(payload?.updatedAt || Date.now()),
-    count: rows.length,
-    recentRequests: rows
+    count: entries.length,
+    recentRequests: entries.map((entry) => ({ ...entry.summary }))
   };
 }
 
 export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_ENTRIES }) {
   const limit = clampMaxEntries(maxEntries);
   const rowsDirectory = getRowsDirectory(filePath);
-  let state = normalizeRecentRequestsStore([], limit);
+  let entries = [];
+  let updatedAt = Date.now();
   let persistChain = Promise.resolve();
   let persistTimer = null;
   let pendingFlushPromise = null;
   let resolvePendingFlush = null;
   let rejectPendingFlush = null;
 
+  function snapshot() {
+    return {
+      updatedAt,
+      count: entries.length,
+      recentRequests: entries.map((entry) => ({ ...entry.summary }))
+    };
+  }
+
   async function writeState() {
+    const persistedEntries = entries.slice(0, limit).filter(Boolean);
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.mkdir(rowsDirectory, { recursive: true });
 
     const keepFileNames = new Set();
-    const persistedRows = [];
-
-    for (const [index, row] of state.recentRequests.entries()) {
-      const rowFile = buildRowFileName(index, row);
-      keepFileNames.add(rowFile);
-      await fs.writeFile(path.join(rowsDirectory, rowFile), JSON.stringify(row, null, 2), "utf8");
-      persistedRows.push({
-        file: rowFile
-      });
+    for (const entry of persistedEntries) {
+      keepFileNames.add(entry.file);
+      if (!entry.row) continue;
+      await fs.writeFile(path.join(rowsDirectory, entry.file), JSON.stringify(entry.row, null, 2), "utf8");
     }
 
     await removeStaleRowFiles(rowsDirectory, keepFileNames);
 
     const persistedState = {
       storageVersion: RECENT_REQUESTS_STORAGE_VERSION,
-      updatedAt: state.updatedAt,
-      count: state.count,
-      recentRequests: persistedRows
+      updatedAt,
+      count: persistedEntries.length,
+      recentRequests: persistedEntries.map((entry) => ({
+        id: entry.id,
+        file: entry.file,
+        summary: { ...entry.summary }
+      }))
     };
     await fs.writeFile(filePath, JSON.stringify(persistedState, null, 2), "utf8");
+
+    for (const entry of persistedEntries) {
+      if (!entry.row) continue;
+      entry.row = null;
+    }
   }
 
   function ensurePendingFlush() {
@@ -152,64 +210,113 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
   }
 
   async function load() {
+    let shouldRewrite = false;
     try {
       const raw = await fs.readFile(filePath, "utf8");
       const parsed = JSON.parse(raw);
+
       if (
         Number(parsed?.storageVersion || 0) === RECENT_REQUESTS_STORAGE_VERSION &&
         Array.isArray(parsed?.recentRequests)
       ) {
-        const loadedRows = [];
+        entries = parsed.recentRequests
+          .map((entry) => {
+            const file = typeof entry?.file === "string" ? entry.file.trim() : "";
+            const summary = normalizeSummary(entry?.summary);
+            if (!file || !summary?.id) return null;
+            return {
+              id: summary.id,
+              file,
+              summary,
+              row: null
+            };
+          })
+          .filter(Boolean)
+          .slice(0, limit);
+        updatedAt = Number(parsed?.updatedAt || Date.now());
+      } else if (
+        Array.isArray(parsed?.recentRequests) &&
+        parsed.recentRequests.every((entry) => typeof entry?.file === "string" && entry.file.trim().length > 0)
+      ) {
+        const loaded = [];
         for (const entry of parsed.recentRequests) {
           const rowFile = typeof entry?.file === "string" ? entry.file.trim() : "";
           if (!rowFile) continue;
           try {
             const rowRaw = await fs.readFile(path.join(rowsDirectory, rowFile), "utf8");
-            loadedRows.push(JSON.parse(rowRaw));
+            const row = JSON.parse(rowRaw);
+            const summary = summarizeRow(row);
+            if (!summary?.id) continue;
+            loaded.push({
+              id: summary.id,
+              file: rowFile,
+              summary,
+              row
+            });
           } catch {
             continue;
           }
         }
-        state = normalizeRecentRequestsStore(
-          {
-            updatedAt: parsed?.updatedAt,
-            recentRequests: loadedRows
-          },
-          limit
-        );
+        entries = loaded.slice(0, limit);
+        updatedAt = Number(parsed?.updatedAt || Date.now());
+        shouldRewrite = true;
       } else {
-        state = normalizeRecentRequestsStore(parsed, limit);
+        entries = buildEntriesFromRows(parsed?.recentRequests || parsed, limit);
+        updatedAt = Number(parsed?.updatedAt || Date.now());
+        shouldRewrite = entries.length > 0;
       }
     } catch {
-      state = normalizeRecentRequestsStore([], limit);
+      entries = [];
+      updatedAt = Date.now();
     }
-    await persistNow();
+
+    if (shouldRewrite) {
+      await persistNow();
+    }
     return snapshot();
   }
 
-  function snapshot() {
-    return {
-      updatedAt: state.updatedAt,
-      count: state.count,
-      recentRequests: state.recentRequests.map((row) => ({ ...row }))
-    };
+  async function getById(requestId) {
+    const targetId = String(requestId || "").trim();
+    if (!targetId) return null;
+    const entry = entries.find((item) => item.id === targetId);
+    if (!entry) return null;
+    if (entry.row) return { ...entry.row };
+    try {
+      const raw = await fs.readFile(path.join(rowsDirectory, entry.file), "utf8");
+      const row = normalizeRow(JSON.parse(raw));
+      return row ? { ...row } : null;
+    } catch {
+      return null;
+    }
   }
 
   function replace(rows) {
-    state = normalizeRecentRequestsStore({ updatedAt: Date.now(), recentRequests: rows }, limit);
+    entries = buildEntriesFromRows(rows, limit);
+    updatedAt = Date.now();
     void queuePersist();
     return snapshot();
   }
 
   function append(row) {
-    const nextRows = [row, ...state.recentRequests].slice(0, limit);
-    state = normalizeRecentRequestsStore({ updatedAt: Date.now(), recentRequests: nextRows }, limit);
+    const normalizedRow = normalizeRow(row);
+    const summary = summarizeRow(normalizedRow);
+    if (!normalizedRow || !summary?.id) return snapshot();
+    const entry = {
+      id: summary.id,
+      file: buildRowFileName(summary.id),
+      summary,
+      row: normalizedRow
+    };
+    entries = [entry, ...entries.filter((item) => item.id !== entry.id)].slice(0, limit);
+    updatedAt = Date.now();
     void queuePersist();
     return snapshot();
   }
 
   function clear() {
-    state = normalizeRecentRequestsStore([], limit);
+    entries = [];
+    updatedAt = Date.now();
     void persistNow();
     return snapshot();
   }
@@ -219,6 +326,7 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
     clear,
     filePath,
     flush,
+    getById,
     load,
     replace,
     snapshot
