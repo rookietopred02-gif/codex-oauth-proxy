@@ -2,7 +2,6 @@ import "dotenv/config";
 
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,7 +10,6 @@ import { createDashboardAuthController } from "./dashboard-auth.js";
 import { persistProxyConfigEnv } from "./env-config-store.js";
 
 import { extractCodexOAuthImportItems, importCodexOAuthTokens } from "./codex-auth-pool-import.js";
-import { startConfiguredServer } from "./bootstrap/lifecycle.js";
 import { createCodexAccountLeaseRegistry } from "./codex-account-leases.js";
 import { isCodexTokenInvalidatedError } from "./codex-token-invalidated.js";
 import { createExpiredAccountCleanupController } from "./expired-account-cleanup.js";
@@ -22,17 +20,14 @@ import {
   createResponsesChainStore
 } from "./responses-chain-store.js";
 import { createTempMailController } from "./temp-mail-controller.js";
+import { createCodexPoolSelectionHelpers } from "./runtime/codex-pool-selection.js";
+import { createCodexAuthPoolCoreHelpers } from "./runtime/codex-auth-pool-core.js";
+import { createCodexAccountIdentityHelpers } from "./runtime/codex-account-identity.js";
 import {
   extractUpstreamTransportError,
   fetchWithUpstreamRetry,
   isPreviousResponseIdUnsupportedError
 } from "./upstream-transport.js";
-import { registerAdminRoutes } from "./routes/admin-routes.js";
-import { registerAuthRoutes } from "./routes/auth.js";
-import { registerDashboardAuthProtection, registerDashboardAuthRoutes } from "./routes/dashboard-auth.js";
-import { registerHealthRoutes } from "./routes/health-routes.js";
-import { createProxyRouteHandlers } from "./routes/proxy-handlers.js";
-import { registerProviderRoutes } from "./routes/provider-routes.js";
 import {
   formatPayloadForAudit,
   inferProtocolType,
@@ -41,7 +36,6 @@ import {
   sanitizeAuditPath,
   toChunkBuffer
 } from "./http/audit.js";
-import { attachResponsesWebSocketServer } from "./http/responses-websocket-server.js";
 import {
   pipeAnthropicSseAsOpenAIChatCompletions,
   pipeGeminiSseAsOpenAIChatCompletions
@@ -57,10 +51,26 @@ import { applyAdditionalResponsesCreateFields } from "./protocols/openai/respons
 import { assertResponsesCreateFieldSupported } from "./protocols/openai/responses-create-compat.js";
 import { createOpenAIRequestNormalizationHelpers } from "./protocols/openai/request-normalization.js";
 import { createOpenAIResponsesCompatHelpers } from "./protocols/openai/responses-compat.js";
-import { registerCommonMiddleware, registerSystemRoutes } from "./routes/system.js";
+import { createServerLifecycleRuntime, registerServerApp } from "./server/app-runtime.js";
+import { createAuthContextRuntime } from "./server/auth-context-runtime.js";
 import { createAuthService } from "./services/auth-service.js";
 import { createAuditService } from "./services/audit-service.js";
 import { createCloudflaredService } from "./services/cloudflared-service.js";
+import { createCodexOAuthCallbackRuntime } from "./server/oauth-callback-runtime.js";
+import {
+  createProviderRoutingHelpers,
+  extractBearerToken,
+  readHeaderValue,
+  withTimeout
+} from "./server/provider-routing.js";
+import {
+  loadJsonStore,
+  loadTokenStore,
+  normalizeToken,
+  saveJsonStore,
+  saveTokenStore
+} from "./server/store-utils.js";
+import { createServerTestingExports } from "./server/testing-exports.js";
 import {
   DEFAULT_CLOUDFLARED_BIN,
   DEFAULT_CODEX_UPSTREAM_BASE_URL,
@@ -98,6 +108,16 @@ const rootDir = path.resolve(__dirname, "..");
 const runtimePaths = resolveServerRuntimePaths({ rootDir, env: process.env });
 const { runtimeBinDir, bundledCloudflaredResourcesDir, publicDir, envFilePath } = runtimePaths;
 const DEFAULT_CODEX_CLIENT_VERSION = getDefaultCodexClientVersion(process.env);
+const codexAccountIdentity = createCodexAccountIdentityHelpers({
+  jwtClaimPath: OPENAI_CODEX_JWT_CLAIM_PATH
+});
+const {
+  extractOpenAICodexAccountId,
+  extractOpenAICodexPrincipalId,
+  normalizeOpenAICodexPlanType,
+  extractOpenAICodexPlanType,
+  extractOpenAICodexEmail
+} = codexAccountIdentity;
 let config;
 let hasExplicitCustomOAuthRedirectUri = false;
 let hasExplicitCloudflaredLocalPort = false;
@@ -115,9 +135,33 @@ try {
   process.exit(1);
 }
 
-const pendingAuth = new Map();
-let codexCallbackServer = null;
-let codexCallbackServerStartPromise = null;
+const codexAuthPoolCore = createCodexAuthPoolCoreHelpers({
+  normalizeToken,
+  parseSlotValue,
+  normalizePlanType: normalizeOpenAICodexPlanType,
+  extractAccountId: extractOpenAICodexAccountId,
+  extractPrincipalId: extractOpenAICodexPrincipalId,
+  extractPlanType: extractOpenAICodexPlanType,
+  extractEmail: extractOpenAICodexEmail,
+  getStrategy: () => config.codexOAuth.multiAccountStrategy,
+  isAccountLeased: (ref, account) => isCodexAccountLeased(ref, account)
+});
+
+const {
+  deriveCodexAccountIdFromToken,
+  buildCodexPoolEntryId,
+  deriveCodexPoolEntryIdFromToken,
+  getCodexPoolEntryId,
+  createDefaultCodexAccountPoolStore,
+  sanitizeCodexAccountEntry,
+  normalizeCodexAccountSlots,
+  ensureCodexOAuthStoreShape,
+  upsertCodexOAuthAccount,
+  findCodexPoolAccountByRef,
+  selectCodexAccountForLogout,
+  removeCodexPoolAccountFromStore
+} = codexAuthPoolCore;
+
 const app = express();
 
 const hopByHop = new Set([
@@ -185,6 +229,64 @@ const dashboardAuth = await createDashboardAuthController({
   loginMaxAttempts: config.dashboardAuth.loginMaxAttempts,
   minimumPasswordLength: config.dashboardAuth.minimumPasswordLength
 });
+const providerRoutingHelpers = createProviderRoutingHelpers({
+  config,
+  DEFAULT_CODEX_CLIENT_VERSION,
+  OFFICIAL_OPENAI_MODELS,
+  OFFICIAL_GEMINI_MODELS,
+  OFFICIAL_ANTHROPIC_MODELS,
+  OFFICIAL_CODEX_MODELS,
+  getValidAuthContext,
+  getCodexOriginator,
+  getCachedJsonBody
+});
+const {
+  buildOfficialCodexModelCandidateIds,
+  chooseProtocolForV1ChatCompletions,
+  getOfficialCodexModelCandidateIds,
+  getOfficialModelCandidateIds,
+  getOpenAICompatibleModelIds,
+  handleAnthropicModelsList,
+  isAnthropicNativeRequest,
+  isGeminiNativeAliasPath,
+  resolveAnthropicApiKey,
+  resolveCodexCompatibleRoute,
+  resolveGeminiApiKey,
+  resolveModelRoute,
+  shouldFallbackGeminiUpstreamToCompat
+} = providerRoutingHelpers;
+const codexOAuthCallbackRuntime = createCodexOAuthCallbackRuntime({
+  config,
+  OAUTH_CALLBACK_SUCCESS_HTML,
+  logger: console,
+  getActiveOAuthRuntime,
+  normalizeToken,
+  extractOpenAICodexAccountId,
+  extractOpenAICodexPrincipalId,
+  extractOpenAICodexEmail,
+  parseSlotValue,
+  ensureCodexOAuthStoreShape,
+  normalizeOpenAICodexPlanType,
+  extractOpenAICodexPlanType,
+  withTimeout,
+  fetchCodexUsageSnapshotForAccount,
+  upsertCodexOAuthAccount,
+  saveTokenStore,
+  clearAuthContextCache,
+  exchangeCodeForToken
+});
+const {
+  buildOAuthCallbackMessage,
+  cleanupPendingStates,
+  completeOAuthCallback,
+  ensureCodexOAuthCallbackServer,
+  pendingAuth,
+  randomBase64Url,
+  sha256base64url,
+  stopCodexOAuthCallbackServer,
+  truncate,
+  getCodexOAuthCallbackServer
+} = codexOAuthCallbackRuntime;
 
 const cloudflaredService = createCloudflaredService({
   config,
@@ -204,7 +306,6 @@ const getCloudflaredStatus = (...args) => cloudflaredService.getStatus(...args);
 const installCloudflaredBinary = (...args) => cloudflaredService.installBinary(...args);
 const startCloudflaredTunnel = (...args) => cloudflaredService.startTunnel(...args);
 const stopCloudflaredTunnel = (...args) => cloudflaredService.stopTunnel(...args);
-let responsesWebSocketRuntime = null;
 
 async function importIntoCodexAuthPool(items, options = {}) {
   const result = await importCodexOAuthTokens({
@@ -356,6 +457,26 @@ function isCodexAccountLeased(ref = "", account = null) {
   return refs.some((candidate) => codexAccountLeaseRegistry.isLeased(candidate));
 }
 
+const codexPoolSelection = createCodexPoolSelectionHelpers({
+  lowQuotaThresholdDualWindow: LOW_QUOTA_THRESHOLD_DUAL_WINDOW,
+  lowQuotaThresholdSingleWindow: LOW_QUOTA_THRESHOLD_SINGLE_WINDOW,
+  getCodexPoolEntryId,
+  isCodexAccountLeased: (ref, account) => isCodexAccountLeased(ref, account),
+  getStrategy: () => config.codexOAuth.multiAccountStrategy,
+  randomInt: crypto.randomInt
+});
+
+const {
+  hasCodexUsageWindow,
+  readUsageRemainingPercent,
+  readUsageUsedPercent,
+  getCodexUsageWindowStats,
+  classifyCodexPoolHealth,
+  buildCodexPoolMetrics,
+  getCodexEnabledAccounts,
+  pickCodexAccountCandidates
+} = codexPoolSelection;
+
 function startExpiredAccountCleanupTimer() {
   if (expiredAccountCleanupTimer) return expiredAccountCleanupTimer;
   expiredAccountCleanupTimer = setInterval(() => {
@@ -371,20 +492,6 @@ function stopExpiredAccountCleanupTimer() {
   if (!expiredAccountCleanupTimer) return;
   clearInterval(expiredAccountCleanupTimer);
   expiredAccountCleanupTimer = null;
-}
-
-async function stopCodexOAuthCallbackServer() {
-  const server = codexCallbackServer;
-  codexCallbackServer = null;
-  codexCallbackServerStartPromise = null;
-  if (!server) return;
-  await new Promise((resolve) => {
-    try {
-      server.close(() => resolve());
-    } catch {
-      resolve();
-    }
-  });
 }
 
 function getActiveUpstreamBaseUrl() {
@@ -437,28 +544,9 @@ function getCodexUsageProbeBaseUrl() {
   return selected;
 }
 
-registerCommonMiddleware(app, {
-  config,
-  hasActiveManagedProxyApiKeys,
-  extractProxyApiKeyFromRequest,
-  findManagedProxyApiKeyByValue,
-  recordManagedProxyApiKeyUsage
-});
-registerDashboardAuthRoutes(app, {
-  dashboardAuth,
-  readJsonBody
-});
-registerDashboardAuthProtection(app, {
-  dashboardAuth
-});
-
-registerSystemRoutes(app, { publicDir });
-registerHealthRoutes(app, {
-  config,
-  getAuthStatus,
-  getActiveUpstreamBaseUrl,
-  isCodexMultiAccountEnabled
-});
+function isCodexMultiAccountEnabled() {
+  return config.authMode === "codex-oauth" && config.codexOAuth.multiAccountEnabled === true;
+}
 
 function replaceActiveOAuthStore(nextStore) {
   if (config.authMode === "codex-oauth") {
@@ -469,28 +557,6 @@ function replaceActiveOAuthStore(nextStore) {
     customOAuthStore = nextStore;
   }
 }
-
-registerAuthRoutes(app, {
-  config,
-  getAuthStatus,
-  getActiveOAuthRuntime,
-  ensureCodexOAuthCallbackServer,
-  randomBase64Url,
-  sha256base64url,
-  pendingAuth,
-  cleanupPendingStates,
-  parseSlotValue,
-  isCodexMultiAccountEnabled,
-  completeOAuthCallback,
-  buildOAuthCallbackMessage,
-  oauthCallbackSuccessHtml: OAUTH_CALLBACK_SUCCESS_HTML,
-  readJsonBody,
-  removeCodexPoolAccountFromStore,
-  isCodexAccountLeased,
-  saveTokenStore,
-  clearAuthContextCache,
-  replaceActiveOAuthStore
-});
 function getCodexOAuthStore() {
   return codexOAuthStore;
 }
@@ -499,78 +565,26 @@ function setCodexOAuthStore(nextStore) {
   codexOAuthStore = nextStore;
 }
 
-registerAdminRoutes(app, {
-  core: {
-    config,
-    runtimeStats,
-    recentRequestsStore,
-    cloudflaredRuntime,
-    tempMailController,
-    expiredAccountCleanupController,
-    getProxyApiKeyStore,
-    getAuthStatus,
-    checkCloudflaredInstalled,
-    buildApiKeySummary,
-    getActiveUpstreamBaseUrl,
-    isCodexMultiAccountEnabled,
-    getCloudflaredStatus,
-    getCodexPreheatState,
-    createProxyApiKey,
-    hashProxyApiKey,
-    sanitizeProxyApiKeyLabel,
-    persistProxyApiKeyStore,
-    readJsonBody,
-    startCloudflaredTunnel,
-    stopCloudflaredTunnel,
-    installCloudflaredBinary,
-    validCloudflaredModes: VALID_CLOUDFLARED_MODES,
-    parseNumberEnv,
-    getOfficialModelCandidateIds,
-    getOfficialCodexModelCandidateIds
-  },
-  pool: {
-    config,
-    readJsonBody,
-    getCodexOAuthStore,
-    setCodexOAuthStore,
-    ensureCodexOAuthStoreShape,
-    saveTokenStore,
-    clearAuthContextCache,
-    buildCodexPoolMetrics,
-    isCodexMultiAccountEnabled,
-    getCodexPoolEntryId,
-    findCodexPoolAccountByRef,
-    removeCodexPoolAccountFromStore,
-    isCodexAccountLeased,
-    importIntoCodexAuthPool,
-    extractCodexOAuthImportItems,
-    normalizeOpenAICodexPlanType,
-    refreshCodexUsageSnapshotInStore,
-    runCodexPreheat,
-    getCodexPreheatState
-  },
-  settings: {
-    config,
-    cloudflaredRuntime,
-    runtimeStats,
-    recentRequestsStore,
-    persistProxyConfigEnv: async (nextConfig) => await persistProxyConfigEnv(envFilePath, nextConfig),
-    readJsonBody,
-    normalizeUpstreamMode,
-    setActiveUpstreamBaseUrl,
-    normalizeCodexServiceTier,
-    parseReasoningEffortOrFallback,
-    validMultiAccountStrategies: VALID_MULTI_ACCOUNT_STRATEGIES,
-    multiAccountStrategyList: MULTI_ACCOUNT_STRATEGY_LIST,
-    expiredAccountCleanupController,
-    sanitizeModelMappings,
-    getActiveUpstreamBaseUrl,
-    isCodexMultiAccountEnabled,
-    runDirectChatCompletionTest,
-    tempMailController,
-    parseNumberEnv
-  }
+const authContextRuntime = createAuthContextRuntime({
+  config,
+  logger: console,
+  ensureCodexOAuthStoreShape,
+  saveTokenStore,
+  normalizeToken,
+  extractOpenAICodexAccountId,
+  extractOpenAICodexPrincipalId,
+  deriveCodexPoolEntryIdFromToken,
+  upsertCodexOAuthAccount,
+  pickCodexAccountCandidates,
+  getCodexEnabledAccounts,
+  getCodexPoolEntryId,
+  clearAuthContextCache,
+  expiredAccountCleanupController,
+  isCodexTokenInvalidatedError,
+  applyCodexInvalidatedAccountState
 });
+const { getValidAuthContextFromCodexOAuthStore, getValidAuthContextFromOAuthStore } = authContextRuntime;
+
 const upstreamRuntimeHelpers = createUpstreamRuntimeHelpers({
   maxAuditTextChars: RUNTIME_AUDIT_MAX_TEXT_CHARS,
   extractUpstreamTransportError,
@@ -697,7 +711,7 @@ const anthropicOpenAICompatHelpers = createAnthropicOpenAICompatHelpers({
   openCodexConversationStreamViaOAuth,
   runCodexConversationViaOAuth
 });
-const proxyRouteHandlers = createProxyRouteHandlers({
+const proxyRouteHandlerDeps = {
   config,
   runtimeStats,
   recentRequestsStore,
@@ -762,97 +776,112 @@ const proxyRouteHandlers = createProxyRouteHandlers({
   codexResponseAffinity,
   acquireCodexAccountLease,
   nextRuntimeRequestSeq,
+  extractCodexOAuthImportItems,
   getAuthModeHint: () =>
     config.authMode === "profile-store"
       ? "Run `your external auth tool login flow` first."
       : "Open /auth/login first."
-});
+};
 
-registerProviderRoutes(app, { handlers: proxyRouteHandlers });
-
-function syncResolvedRuntimeAddress({ port, requestedPort }) {
-  if (!hasExplicitCustomOAuthRedirectUri) {
-    config.customOAuth.redirectUri = `http://${config.host}:${config.port}/auth/callback`;
-  }
-
-  const currentCloudflaredPort = Number(cloudflaredRuntime.localPort || 0) || 0;
-  if (!hasExplicitCloudflaredLocalPort || currentCloudflaredPort === 0 || currentCloudflaredPort === requestedPort) {
-    config.publicAccess.localPort = port;
-    cloudflaredRuntime.localPort = port;
-  }
-}
-
-const shouldAutostartServer = !parseBooleanEnv(process.env.CODEX_PRO_MAX_DISABLE_AUTOSTART, false);
-const serverLifecycle = startConfiguredServer({
+const { proxyRouteHandlers } = registerServerApp({
   app,
   config,
-  shouldAutostart: shouldAutostartServer,
-  installSignalHandlers: shouldAutostartServer,
+  publicDir,
+  dashboardAuth,
+  hasActiveManagedProxyApiKeys,
+  extractProxyApiKeyFromRequest,
+  findManagedProxyApiKeyByValue,
+  recordManagedProxyApiKeyUsage,
+  getAuthStatus,
   getActiveUpstreamBaseUrl,
-  syncResolvedAddress: syncResolvedRuntimeAddress,
-  onStartup: ({ server }) => {
-    responsesWebSocketRuntime = attachResponsesWebSocketServer(server, {
-      config,
-      hasActiveManagedProxyApiKeys,
-      extractProxyApiKeyFromRequest,
-      findManagedProxyApiKeyByValue,
-      recordManagedProxyApiKeyUsage,
-      recordRecentProxyRequest: proxyRouteHandlers.recordRecentProxyRequest,
-      openResponsesCreateProxySession: proxyRouteHandlers.openResponsesCreateProxySession,
-      parseResponsesResultFromSse,
-      readUpstreamTextOrThrow,
-      parseJsonLoose
-    });
-    startExpiredAccountCleanupTimer();
-    if (config.authMode === "profile-store") {
-      console.log(`source: ${config.profileStore.authStorePath}`);
-      console.log(`profile:${config.profileStore.profileId}`);
-    } else if (config.authMode === "codex-oauth") {
-      console.log(`oauth-authorize: ${config.codexOAuth.authorizeUrl}`);
-      console.log(`oauth-store:     ${config.codexOAuth.tokenStorePath}`);
-      console.log(`login:           http://${config.host}:${config.port}/auth/login`);
-    } else {
-      console.log(`oauth-authorize: ${config.customOAuth.authorizeUrl}`);
-      console.log(`oauth-store:     ${config.customOAuth.tokenStorePath}`);
-      console.log(`login:           http://${config.host}:${config.port}/auth/login`);
-    }
-    console.log(`status:          http://${config.host}:${config.port}/auth/status`);
-    console.log(`dashboard:       http://${config.host}:${config.port}/dashboard/`);
-    console.log(`proxy:           http://${config.host}:${config.port}/v1/*`);
-    console.log(
-      `account-auto-rm: ${config.expiredAccountCleanup.enabled ? "enabled" : "disabled"} (${config.expiredAccountCleanup.intervalSeconds}s)`
-    );
-    if (config.expiredAccountCleanup.enabled) {
-      expiredAccountCleanupController.run("startup").catch((err) => {
-        console.warn(`[auth-pool] account auto-rm failed on startup: ${err?.message || err}`);
-      });
-    }
-  },
-  onShutdown: async () => {
-    const runtime = responsesWebSocketRuntime;
-    responsesWebSocketRuntime = null;
-    stopExpiredAccountCleanupTimer();
-    await Promise.allSettled([
-      runBoundedShutdownStep("responses websocket runtime", async () => {
-        await runtime?.close?.();
-      }, 1500),
-      runBoundedShutdownStep("codex oauth callback server", async () => {
-        await stopCodexOAuthCallbackServer();
-      }, 1500),
-      runBoundedShutdownStep("temp mail controller", async () => {
-        await tempMailController.shutdown();
-      }, 2500),
-      runBoundedShutdownStep("recent requests flush", async () => {
-        await recentRequestsStore.flush();
-      }, 1500),
-      runBoundedShutdownStep("proxy api key flush", async () => {
-        await flushProxyApiKeyStore();
-      }, 1500),
-      runBoundedShutdownStep("cloudflared tunnel", async () => {
-        await stopCloudflaredTunnel();
-      }, 2500)
-    ]);
-  }
+  isCodexMultiAccountEnabled,
+  getActiveOAuthRuntime,
+  ensureCodexOAuthCallbackServer,
+  randomBase64Url,
+  sha256base64url,
+  pendingAuth,
+  cleanupPendingStates,
+  parseSlotValue,
+  completeOAuthCallback,
+  buildOAuthCallbackMessage,
+  oauthCallbackSuccessHtml: OAUTH_CALLBACK_SUCCESS_HTML,
+  readJsonBody,
+  removeCodexPoolAccountFromStore,
+  isCodexAccountLeased,
+  saveTokenStore,
+  clearAuthContextCache,
+  replaceActiveOAuthStore,
+  runtimeStats,
+  recentRequestsStore,
+  cloudflaredRuntime,
+  tempMailController,
+  expiredAccountCleanupController,
+  getProxyApiKeyStore,
+  checkCloudflaredInstalled,
+  buildApiKeySummary,
+  getCloudflaredStatus,
+  getCodexPreheatState,
+  createProxyApiKey,
+  hashProxyApiKey,
+  sanitizeProxyApiKeyLabel,
+  persistProxyApiKeyStore,
+  startCloudflaredTunnel,
+  stopCloudflaredTunnel,
+  installCloudflaredBinary,
+  validCloudflaredModes: VALID_CLOUDFLARED_MODES,
+  parseNumberEnv,
+  getOfficialModelCandidateIds,
+  getOfficialCodexModelCandidateIds,
+  getCodexOAuthStore,
+  setCodexOAuthStore,
+  ensureCodexOAuthStoreShape,
+  buildCodexPoolMetrics,
+  getCodexPoolEntryId,
+  findCodexPoolAccountByRef,
+  importIntoCodexAuthPool,
+  normalizeOpenAICodexPlanType,
+  refreshCodexUsageSnapshotInStore,
+  refreshCodexTokensInStore,
+  runCodexPreheat,
+  persistProxyConfigEnv,
+  envFilePath,
+  normalizeUpstreamMode,
+  setActiveUpstreamBaseUrl,
+  normalizeCodexServiceTier,
+  parseReasoningEffortOrFallback,
+  validMultiAccountStrategies: VALID_MULTI_ACCOUNT_STRATEGIES,
+  multiAccountStrategyList: MULTI_ACCOUNT_STRATEGY_LIST,
+  sanitizeModelMappings,
+  runDirectChatCompletionTest,
+  proxyRouteHandlerDeps
+});
+
+const { serverLifecycle, shouldAutostartServer } = createServerLifecycleRuntime({
+  app,
+  config,
+  parseBooleanEnv,
+  processEnv: process.env,
+  hasExplicitCustomOAuthRedirectUri,
+  hasExplicitCloudflaredLocalPort,
+  cloudflaredRuntime,
+  getActiveUpstreamBaseUrl,
+  startExpiredAccountCleanupTimer,
+  stopExpiredAccountCleanupTimer,
+  expiredAccountCleanupController,
+  hasActiveManagedProxyApiKeys,
+  extractProxyApiKeyFromRequest,
+  findManagedProxyApiKeyByValue,
+  recordManagedProxyApiKeyUsage,
+  proxyRouteHandlers,
+  parseResponsesResultFromSse,
+  readUpstreamTextOrThrow,
+  parseJsonLoose,
+  tempMailController,
+  recentRequestsStore,
+  flushProxyApiKeyStore,
+  stopCloudflaredTunnel,
+  stopCodexOAuthCallbackServer,
+  runBoundedShutdownStep
 });
 let mainServer = serverLifecycle.mainServer;
 
@@ -1150,59 +1179,6 @@ async function refreshOpenAICodexToken(refreshToken) {
   };
 }
 
-function extractOpenAICodexAccountId(accessToken) {
-  const authClaim = extractOpenAICodexAuthClaim(accessToken);
-  const accountId = authClaim?.chatgpt_account_id;
-  return typeof accountId === "string" && accountId.length > 0 ? accountId : null;
-}
-
-function extractOpenAICodexPrincipalId(accessToken) {
-  const authClaim = extractOpenAICodexAuthClaim(accessToken);
-  const payload = decodeJwtPayload(accessToken);
-  const direct =
-    authClaim?.chatgpt_account_user_id ||
-    authClaim?.chatgpt_user_id ||
-    payload?.sub ||
-    null;
-  if (typeof direct === "string" && direct.length > 0) return direct;
-  const email = extractOpenAICodexEmail(accessToken);
-  if (typeof email === "string" && email.length > 0) return `email:${email.toLowerCase()}`;
-  return null;
-}
-
-function normalizeOpenAICodexPlanType(value) {
-  const raw = String(value || "").trim().toLowerCase();
-  if (!raw) return null;
-  return raw.replace(/[^a-z0-9_-]+/g, "-");
-}
-
-function extractOpenAICodexPlanType(accessToken) {
-  const authClaim = extractOpenAICodexAuthClaim(accessToken);
-  return normalizeOpenAICodexPlanType(authClaim?.chatgpt_plan_type || authClaim?.plan_type || "");
-}
-
-function extractOpenAICodexEmail(accessToken) {
-  const payload = decodeJwtPayload(accessToken);
-  const profileClaim = payload?.["https://api.openai.com/profile"];
-  const email = profileClaim?.email;
-  return typeof email === "string" && email.length > 0 ? email : null;
-}
-
-function extractOpenAICodexAuthClaim(accessToken) {
-  const payload = decodeJwtPayload(accessToken);
-  return payload?.[OPENAI_CODEX_JWT_CLAIM_PATH] || null;
-}
-
-function decodeJwtPayload(token) {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-  } catch {
-    return null;
-  }
-}
-
 function getActiveOAuthRuntime() {
   if (config.authMode === "codex-oauth") {
     return { oauth: config.codexOAuth, store: codexOAuthStore };
@@ -1211,302 +1187,6 @@ function getActiveOAuthRuntime() {
     return { oauth: config.customOAuth, store: customOAuthStore };
   }
   return null;
-}
-
-async function loadTokenStore(tokenStorePath) {
-  try {
-    const raw = await fs.readFile(tokenStorePath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return { token: null };
-  }
-}
-
-async function saveTokenStore(tokenStorePath, nextStore) {
-  await fs.mkdir(path.dirname(tokenStorePath), { recursive: true });
-  await fs.writeFile(tokenStorePath, JSON.stringify(nextStore, null, 2), "utf8");
-}
-
-async function loadJsonStore(filePath, fallbackValue = {}) {
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return fallbackValue;
-  }
-}
-
-async function saveJsonStore(filePath, payload) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
-}
-
-function normalizeToken(tokenResponse, currentToken = null) {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const expiresIn = Number(tokenResponse.expires_in || 3600);
-  const expiresAt = Number(tokenResponse.expires_at || nowSec + expiresIn);
-  return {
-    access_token: tokenResponse.access_token,
-    refresh_token: tokenResponse.refresh_token || currentToken?.refresh_token || null,
-    token_type: tokenResponse.token_type || "Bearer",
-    scope: tokenResponse.scope || null,
-    expires_at: expiresAt
-  };
-}
-
-function deriveCodexAccountIdFromToken(tokenLike) {
-  const accessToken = tokenLike?.access_token || tokenLike?.access || "";
-  const accountId = extractOpenAICodexAccountId(accessToken);
-  if (accountId) return accountId;
-  const fingerprintSource = `${accessToken.slice(0, 48)}|${tokenLike?.refresh_token || tokenLike?.refresh || ""}`;
-  return `acct_${crypto.createHash("sha1").update(fingerprintSource).digest("hex").slice(0, 12)}`;
-}
-
-function buildCodexPoolEntryId(principalId, accountId, planType = null) {
-  const normalizedPlanType = normalizeOpenAICodexPlanType(planType);
-  if (principalId) {
-    return normalizedPlanType ? `${principalId}::plan:${normalizedPlanType}` : principalId;
-  }
-  if (accountId) {
-    return normalizedPlanType ? `acct:${accountId}::plan:${normalizedPlanType}` : `acct:${accountId}`;
-  }
-  return "";
-}
-
-function deriveCodexPoolEntryIdFromToken(tokenLike, options = {}) {
-  const accessToken = tokenLike?.access_token || tokenLike?.access || "";
-  const principalId = extractOpenAICodexPrincipalId(accessToken);
-  const accountId = extractOpenAICodexAccountId(accessToken);
-  const planType =
-    normalizeOpenAICodexPlanType(options.planType) ||
-    extractOpenAICodexPlanType(accessToken) ||
-    normalizeOpenAICodexPlanType(tokenLike?.usage_snapshot?.plan_type) ||
-    normalizeOpenAICodexPlanType(tokenLike?.plan_type);
-  const structuredId = buildCodexPoolEntryId(principalId, accountId, planType);
-  if (structuredId) return structuredId;
-  const fingerprintSource = `${accessToken.slice(0, 48)}|${tokenLike?.refresh_token || tokenLike?.refresh || ""}`;
-  const fallbackId = `entry_${crypto.createHash("sha1").update(fingerprintSource).digest("hex").slice(0, 16)}`;
-  return planType ? `${fallbackId}::plan:${planType}` : fallbackId;
-}
-
-function getCodexPoolEntryId(accountEntry) {
-  if (!accountEntry || typeof accountEntry !== "object") return "";
-  const raw = accountEntry.identity_id || accountEntry.entry_id || accountEntry.account_id || "";
-  return String(raw).trim();
-}
-
-function isCodexMultiAccountEnabled() {
-  return config.authMode === "codex-oauth" && config.codexOAuth.multiAccountEnabled === true;
-}
-
-function createDefaultCodexAccountPoolStore() {
-  return {
-    token: null,
-    accounts: [],
-    rotation: {
-      next_index: 0
-    },
-    active_account_id: null
-  };
-}
-
-function sanitizeCodexAccountEntry(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const token = raw.token && typeof raw.token === "object" ? raw.token : null;
-  if (!token?.access_token) return null;
-
-  const normalizedToken = normalizeToken(token, token);
-  const tokenAccountId = extractOpenAICodexAccountId(normalizedToken.access_token || "");
-  const persistedPlanType =
-    normalizeOpenAICodexPlanType(raw?.usage_snapshot?.plan_type) ||
-    normalizeOpenAICodexPlanType(raw?.plan_type);
-  const tokenEntryId = deriveCodexPoolEntryIdFromToken(normalizedToken, { planType: persistedPlanType });
-  const fallbackAccountId = String(raw.account_id || raw.accountId || "").trim();
-  const fallbackEntryId = String(raw.identity_id || raw.entry_id || raw.account_id || "").trim();
-  const accountId = tokenAccountId || fallbackAccountId;
-  const entryId = tokenEntryId || fallbackEntryId;
-  if (!accountId || !entryId) return null;
-  return {
-    identity_id: entryId,
-    account_id: accountId,
-    label: typeof raw.label === "string" ? raw.label : "",
-    slot: parseSlotValue(raw.slot),
-    enabled: raw.enabled !== false,
-    token: normalizedToken,
-    created_at: Number(raw.created_at || raw.createdAt || Math.floor(Date.now() / 1000)),
-    last_used_at: Number(raw.last_used_at || raw.lastUsedAt || 0),
-    failure_count: Number(raw.failure_count || raw.failureCount || 0),
-    cooldown_until: Number(raw.cooldown_until || raw.cooldownUntil || 0),
-    last_error: typeof raw.last_error === "string" ? raw.last_error : "",
-    last_status_code: Number(raw.last_status_code || raw.lastStatusCode || 0),
-    token_invalidated_at: Number(raw.token_invalidated_at || raw.tokenInvalidatedAt || 0),
-    usage_snapshot:
-      raw.usage_snapshot && typeof raw.usage_snapshot === "object" ? raw.usage_snapshot : null,
-    usage_updated_at: Number(raw.usage_updated_at || raw.usageUpdatedAt || 0)
-  };
-}
-
-function normalizeCodexAccountSlots(accounts) {
-  if (!Array.isArray(accounts) || accounts.length === 0) return false;
-
-  let changed = false;
-  const used = new Set();
-  const needsAssignment = [];
-
-  for (const account of accounts) {
-    const slot = parseSlotValue(account?.slot);
-    if (slot && !used.has(slot)) {
-      if (Number(account.slot || 0) !== slot) {
-        account.slot = slot;
-        changed = true;
-      }
-      used.add(slot);
-      continue;
-    }
-
-    if (account.slot !== null) {
-      account.slot = null;
-      changed = true;
-    }
-    needsAssignment.push(account);
-  }
-
-  let cursor = 1;
-  for (const account of needsAssignment) {
-    while (cursor <= 64 && used.has(cursor)) cursor += 1;
-    if (cursor > 64) break;
-    account.slot = cursor;
-    used.add(cursor);
-    changed = true;
-    cursor += 1;
-  }
-
-  return changed;
-}
-
-function ensureCodexOAuthStoreShape(store) {
-  const src = store && typeof store === "object" ? store : {};
-  const out = {
-    ...createDefaultCodexAccountPoolStore(),
-    ...src,
-    rotation: {
-      next_index: Number(src?.rotation?.next_index || src?.rotation?.nextIndex || 0)
-    }
-  };
-
-  const originalAccounts = Array.isArray(src.accounts) ? src.accounts : [];
-  out.accounts = originalAccounts.map(sanitizeCodexAccountEntry).filter(Boolean);
-
-  let changed = !Array.isArray(src.accounts) || out.accounts.length !== originalAccounts.length;
-  let tokenBackedEntryId = "";
-  let tokenBackedAccountEnabled = false;
-
-  if (src.token?.access_token) {
-    const tokenNormalized = normalizeToken(src.token, src.token);
-    const accountId = deriveCodexAccountIdFromToken(tokenNormalized);
-    const activePlanType = normalizeOpenAICodexPlanType(src?.usage_snapshot?.plan_type);
-    const entryId = deriveCodexPoolEntryIdFromToken(tokenNormalized, { planType: activePlanType });
-    tokenBackedEntryId = entryId;
-    const idx = out.accounts.findIndex((x) => getCodexPoolEntryId(x) === entryId);
-    if (idx >= 0) {
-      out.accounts[idx].identity_id = entryId;
-      out.accounts[idx].account_id = accountId;
-      out.accounts[idx].token = tokenNormalized;
-      tokenBackedAccountEnabled = out.accounts[idx].enabled !== false;
-    } else {
-      out.accounts.push({
-        identity_id: entryId,
-        account_id: accountId,
-        label: "",
-        slot: null,
-        enabled: true,
-        token: tokenNormalized,
-        created_at: Math.floor(Date.now() / 1000),
-        last_used_at: 0,
-        failure_count: 0,
-        cooldown_until: 0,
-        last_error: "",
-        last_status_code: 0,
-        token_invalidated_at: 0,
-        usage_snapshot: null,
-        usage_updated_at: 0
-      });
-      tokenBackedAccountEnabled = true;
-    }
-    if (tokenBackedAccountEnabled && out.active_account_id !== entryId) {
-      out.active_account_id = entryId;
-      changed = true;
-    }
-  }
-
-  const firstEnabledAccount = out.accounts.find((x) => x && x.enabled !== false) || null;
-
-  if (out.accounts.length > 0 && !out.active_account_id && firstEnabledAccount) {
-    out.active_account_id = getCodexPoolEntryId(firstEnabledAccount);
-    changed = true;
-  }
-  if (out.active_account_id && out.accounts.length > 0) {
-    const activeRef = String(out.active_account_id);
-    const hasDirect = out.accounts.some((x) => getCodexPoolEntryId(x) === activeRef);
-    if (!hasDirect) {
-      const byLegacyPlanless = out.accounts.find((x) => getCodexPoolEntryId(x).startsWith(`${activeRef}::plan:`));
-      if (byLegacyPlanless) {
-        out.active_account_id = getCodexPoolEntryId(byLegacyPlanless);
-        changed = true;
-      } else {
-      const byLegacyAccountId = out.accounts.find((x) => String(x.account_id || "") === activeRef);
-      if (byLegacyAccountId) {
-        out.active_account_id = getCodexPoolEntryId(byLegacyAccountId);
-        changed = true;
-        }
-      }
-    }
-
-    const activeAccount = out.accounts.find((x) => getCodexPoolEntryId(x) === String(out.active_account_id || ""));
-    if (!activeAccount || activeAccount.enabled === false) {
-      const fallbackActiveId = firstEnabledAccount ? getCodexPoolEntryId(firstEnabledAccount) : null;
-      if (out.active_account_id !== fallbackActiveId) {
-        out.active_account_id = fallbackActiveId;
-        changed = true;
-      }
-    }
-  }
-
-  if (out.accounts.length === 0) {
-    out.rotation.next_index = 0;
-    out.active_account_id = null;
-  } else if (!Number.isFinite(out.rotation.next_index) || out.rotation.next_index < 0) {
-    out.rotation.next_index = 0;
-    changed = true;
-  } else {
-    out.rotation.next_index = out.rotation.next_index % out.accounts.length;
-  }
-
-  const preferredTokenAccount =
-    out.accounts.find((x) => getCodexPoolEntryId(x) === String(out.active_account_id || "")) || firstEnabledAccount;
-  const preferredToken = preferredTokenAccount?.enabled === false ? null : preferredTokenAccount?.token || null;
-  const currentTokenEntryId = deriveCodexPoolEntryIdFromToken(out.token || null);
-  if (preferredToken) {
-    const preferredTokenEntryId = getCodexPoolEntryId(preferredTokenAccount);
-    if (!out.token || currentTokenEntryId !== preferredTokenEntryId) {
-      out.token = preferredToken;
-      changed = true;
-    }
-  } else if (out.token) {
-    out.token = null;
-    changed = true;
-  }
-
-  if (tokenBackedEntryId && !tokenBackedAccountEnabled && currentTokenEntryId === tokenBackedEntryId) {
-    out.token = preferredToken;
-    changed = true;
-  }
-
-  if (normalizeCodexAccountSlots(out.accounts)) {
-    changed = true;
-  }
-
-  return { store: out, changed };
 }
 
 function parsePercentOrNull(value) {
@@ -1533,483 +1213,6 @@ function parseJsonLoose(rawText) {
   }
 }
 
-function hasCodexUsageWindow(usageWindow) {
-  if (!usageWindow || typeof usageWindow !== "object") return false;
-  const windowMinutes = Number(usageWindow.window_minutes);
-  if (Number.isFinite(windowMinutes) && windowMinutes > 0) return true;
-
-  const resetAt = Number(usageWindow.reset_at);
-  if (Number.isFinite(resetAt) && resetAt > 0) return true;
-
-  const resetAfterSec = Number(usageWindow.reset_after_seconds);
-  if (Number.isFinite(resetAfterSec) && resetAfterSec > 0) return true;
-
-  const usedPercent = parsePercentOrNull(usageWindow.used_percent);
-  if (usedPercent !== null && usedPercent > 0) return true;
-
-  const remainingPercent = parsePercentOrNull(usageWindow.remaining_percent);
-  if (remainingPercent !== null && remainingPercent < 100) return true;
-
-  return false;
-}
-
-function readUsageRemainingPercent(usageWindow) {
-  const direct = parsePercentOrNull(usageWindow?.remaining_percent);
-  if (direct !== null) return direct;
-  const used = parsePercentOrNull(usageWindow?.used_percent);
-  if (used === null) return null;
-  return Math.max(0, Math.min(100, 100 - used));
-}
-
-function readUsageUsedPercent(usageWindow) {
-  const direct = parsePercentOrNull(usageWindow?.used_percent);
-  if (direct !== null) return direct;
-  const remaining = parsePercentOrNull(usageWindow?.remaining_percent);
-  if (remaining === null) return null;
-  return Math.max(0, Math.min(100, 100 - remaining));
-}
-
-function getCodexUsageWindowStats(account) {
-  const usage = account?.usage_snapshot || null;
-  let primaryHasWindow = hasCodexUsageWindow(usage?.primary);
-  let secondaryHasWindow = hasCodexUsageWindow(usage?.secondary);
-  let primaryRemaining = primaryHasWindow ? readUsageRemainingPercent(usage?.primary) : null;
-  let secondaryRemaining = secondaryHasWindow ? readUsageRemainingPercent(usage?.secondary) : null;
-  let primaryUsed = primaryHasWindow ? readUsageUsedPercent(usage?.primary) : null;
-  let secondaryUsed = secondaryHasWindow ? readUsageUsedPercent(usage?.secondary) : null;
-  let primaryWindowMinutes = Number(usage?.primary?.window_minutes);
-  let secondaryWindowMinutes = Number(usage?.secondary?.window_minutes);
-  const planType = String(usage?.plan_type || "").trim().toLowerCase();
-
-  // Free plans only expose one quota window. If legacy/bad snapshots contain both,
-  // collapse to a single effective window so dashboard and health remain consistent.
-  if (planType === "free") {
-    const windows = [];
-    if (primaryHasWindow) {
-      windows.push({
-        remaining: primaryRemaining,
-        used: primaryUsed,
-        minutes: Number.isFinite(primaryWindowMinutes) ? primaryWindowMinutes : null
-      });
-    }
-    if (secondaryHasWindow) {
-      windows.push({
-        remaining: secondaryRemaining,
-        used: secondaryUsed,
-        minutes: Number.isFinite(secondaryWindowMinutes) ? secondaryWindowMinutes : null
-      });
-    }
-
-    const pickScore = (w) => {
-      const rem = Number.isFinite(w?.remaining) ? w.remaining : 100;
-      const used = Number.isFinite(w?.used) ? w.used : 0;
-      return used > 0 || rem < 100 ? 1000 - rem + used : 0;
-    };
-    const preferred = windows
-      .map((w) => ({ w, s: pickScore(w) }))
-      .sort((a, b) => b.s - a.s)[0]?.w;
-
-    primaryHasWindow = Boolean(preferred);
-    secondaryHasWindow = false;
-    primaryRemaining = preferred?.remaining ?? null;
-    primaryUsed = preferred?.used ?? null;
-    primaryWindowMinutes = Number.isFinite(preferred?.minutes) ? preferred.minutes : 10080;
-    secondaryRemaining = null;
-    secondaryUsed = null;
-    secondaryWindowMinutes = null;
-  }
-
-  const isSingleWindow = primaryHasWindow && !secondaryHasWindow;
-  return {
-    planType,
-    isSingleWindow,
-    primaryHasWindow,
-    secondaryHasWindow,
-    primaryWindowMinutes: Number.isFinite(primaryWindowMinutes) ? primaryWindowMinutes : null,
-    secondaryWindowMinutes: Number.isFinite(secondaryWindowMinutes) ? secondaryWindowMinutes : null,
-    primaryRemaining,
-    secondaryRemaining,
-    primaryUsed,
-    secondaryUsed
-  };
-}
-
-function resolveCodexLowQuotaThreshold(usageStats) {
-  if (!usageStats || typeof usageStats !== "object") return LOW_QUOTA_THRESHOLD_DUAL_WINDOW;
-  if (usageStats.isSingleWindow) return LOW_QUOTA_THRESHOLD_SINGLE_WINDOW;
-  if (usageStats.planType === "free") return LOW_QUOTA_THRESHOLD_SINGLE_WINDOW;
-  return LOW_QUOTA_THRESHOLD_DUAL_WINDOW;
-}
-
-function classifyCodexPoolHealth(account, nowSec = Math.floor(Date.now() / 1000), usage = null) {
-  const enabled = account?.enabled !== false;
-  const cooldownUntil = Number(account?.cooldown_until || 0);
-  const expiresAt = Number(account?.token?.expires_at || 0);
-  const inCooldown = cooldownUntil > nowSec;
-  const expired = expiresAt > 0 && expiresAt <= nowSec;
-  const expiringSoon = expiresAt > nowSec && expiresAt - nowSec < 180;
-  const usageStats = usage || getCodexUsageWindowStats(account);
-  const primaryRemaining = usageStats.primaryRemaining;
-  const secondaryRemaining = usageStats.secondaryRemaining;
-  const lowQuotaThreshold = resolveCodexLowQuotaThreshold(usageStats);
-  // For dual-window plans, either window reaching 0 means the account is not usable now.
-  // For single-window plans, only the primary window applies.
-  const hardLimited = usageStats.isSingleWindow
-    ? primaryRemaining !== null && primaryRemaining <= 0
-    : (primaryRemaining !== null && primaryRemaining <= 0) ||
-      (secondaryRemaining !== null && secondaryRemaining <= 0);
-  const lowQuota =
-    (primaryRemaining !== null && primaryRemaining <= lowQuotaThreshold) ||
-    (secondaryRemaining !== null && secondaryRemaining <= LOW_QUOTA_THRESHOLD_DUAL_WINDOW);
-
-  if (!enabled) return { status: "disabled", hardLimited, lowQuota };
-  if (expired) return { status: "expired", hardLimited, lowQuota };
-  if (inCooldown) return { status: "cooldown", hardLimited, lowQuota };
-  if (hardLimited) return { status: "limited", hardLimited, lowQuota };
-  if (expiringSoon) return { status: "expiring", hardLimited, lowQuota };
-  if (lowQuota) return { status: "limited", hardLimited, lowQuota };
-  return { status: "healthy", hardLimited, lowQuota };
-}
-
-function computeCodexPoolHealthScore(
-  account,
-  activeEntryId = "",
-  nowSec = Math.floor(Date.now() / 1000),
-  usage = null,
-  health = null
-) {
-  const usageStats = usage || getCodexUsageWindowStats(account);
-  const healthMeta = health || classifyCodexPoolHealth(account, nowSec, usageStats);
-  const failureCount = Number(account?.failure_count || 0);
-  const cooldownUntil = Number(account?.cooldown_until || 0);
-  const expiresAt = Number(account?.token?.expires_at || 0);
-  const isActive = getCodexPoolEntryId(account) === String(activeEntryId || "");
-
-  let score = 100;
-  if (account?.enabled === false) score -= 90;
-  if (healthMeta.status === "expired") score -= 80;
-  if (healthMeta.status === "cooldown") score -= 35;
-  if (healthMeta.status === "expiring") score -= 15;
-  if (healthMeta.status === "limited") {
-    if (healthMeta.hardLimited) score -= 28;
-    else score -= usageStats.isSingleWindow ? 20 : 12;
-  }
-  if (usageStats.primaryUsed !== null) score -= Math.round(usageStats.primaryUsed * 0.35);
-  if (usageStats.secondaryUsed !== null) score -= Math.round(usageStats.secondaryUsed * 0.15);
-  score -= Math.min(55, failureCount * 11);
-  if (cooldownUntil > nowSec) {
-    const remain = cooldownUntil - nowSec;
-    score -= Math.min(18, Math.floor(remain / 20));
-  }
-  if (expiresAt > nowSec && expiresAt - nowSec < 180) {
-    score -= 8;
-  }
-  if (isActive) score += 3;
-  return Math.max(0, Math.min(100, Math.round(score)));
-}
-
-function decorateCodexPoolAccount(account, activeEntryId = "", nowSec = Math.floor(Date.now() / 1000)) {
-  const usage = getCodexUsageWindowStats(account);
-  const health = classifyCodexPoolHealth(account, nowSec, usage);
-  const healthScore = computeCodexPoolHealthScore(account, activeEntryId, nowSec, usage, health);
-  return {
-    account,
-    entryId: getCodexPoolEntryId(account),
-    healthStatus: health.status,
-    healthScore,
-    primaryRemaining: usage.primaryRemaining,
-    secondaryRemaining: usage.secondaryRemaining,
-    primaryUsed: usage.primaryUsed,
-    secondaryUsed: usage.secondaryUsed,
-    hardLimited: health.hardLimited,
-    lowQuota: health.lowQuota
-  };
-}
-
-function compareCodexSmartDecorated(a, b) {
-  if (b.healthScore !== a.healthScore) return b.healthScore - a.healthScore;
-  if ((b.primaryRemaining ?? -1) !== (a.primaryRemaining ?? -1)) {
-    return (b.primaryRemaining ?? -1) - (a.primaryRemaining ?? -1);
-  }
-  if ((b.secondaryRemaining ?? -1) !== (a.secondaryRemaining ?? -1)) {
-    return (b.secondaryRemaining ?? -1) - (a.secondaryRemaining ?? -1);
-  }
-  const aUsed = Number(a.account?.last_used_at || 0);
-  const bUsed = Number(b.account?.last_used_at || 0);
-  if (aUsed !== bUsed) return aUsed - bUsed;
-  return String(a.entryId || "").localeCompare(String(b.entryId || ""));
-}
-
-function buildCodexPoolMetrics(accounts, activeEntryId = "") {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const decorated = (Array.isArray(accounts) ? accounts : []).map((x) =>
-    decorateCodexPoolAccount(x, activeEntryId, nowSec)
-  );
-  const primaryValues = decorated
-    .map((x) => x.primaryRemaining)
-    .filter((x) => Number.isFinite(x));
-  const secondaryValues = decorated
-    .map((x) => x.secondaryRemaining)
-    .filter((x) => Number.isFinite(x));
-  const enabled = decorated.filter((x) => x.account?.enabled !== false);
-  const healthy = decorated.filter((x) => x.healthStatus === "healthy");
-  const cooldown = decorated.filter((x) => x.healthStatus === "cooldown");
-  const atRisk = decorated.filter((x) =>
-    ["disabled", "expired", "cooldown", "expiring", "limited"].includes(x.healthStatus)
-  );
-  const lowQuotaCount = decorated.filter((x) => x.lowQuota).length;
-  const hardLimitedCount = decorated.filter((x) => x.hardLimited).length;
-  const recommended = [...enabled]
-    .sort(compareCodexSmartDecorated)
-    .slice(0, 5)
-    .map((x) => x.entryId);
-  return {
-    decorated,
-    summary: {
-      totalAccounts: decorated.length,
-      enabledAccounts: enabled.length,
-      healthyRatio: enabled.length > 0 ? Math.round((healthy.length / enabled.length) * 100) : 0,
-      cooldownCount: cooldown.length,
-      atRiskCount: atRisk.length,
-      lowQuotaCount,
-      hardLimitedCount,
-      avgPrimaryRemaining:
-        primaryValues.length > 0
-          ? Math.round(primaryValues.reduce((a, b) => a + b, 0) / primaryValues.length)
-          : null,
-      avgSecondaryRemaining:
-        secondaryValues.length > 0
-          ? Math.round(secondaryValues.reduce((a, b) => a + b, 0) / secondaryValues.length)
-          : null,
-      recommendedEntryIds: recommended
-    }
-  };
-}
-
-function getCodexEnabledAccounts(store) {
-  if (!Array.isArray(store?.accounts)) return [];
-  const nowSec = Math.floor(Date.now() / 1000);
-  const enabledAccounts = store.accounts.filter((x) => x && x.enabled !== false);
-  if (enabledAccounts.length === 0) return [];
-  // If every account is cooling down, still allow fallback candidates instead of hard-failing
-  // with "No enabled OAuth accounts".
-  const eligible =
-    enabledAccounts.filter((x) => Number(x.cooldown_until || 0) <= nowSec).length > 0
-      ? enabledAccounts.filter((x) => Number(x.cooldown_until || 0) <= nowSec)
-      : [...enabledAccounts];
-  const preferred = eligible.filter((x) => {
-    const health = classifyCodexPoolHealth(x, nowSec);
-    return health.status !== "limited" && !health.hardLimited;
-  });
-  return preferred.length > 0 ? preferred : eligible;
-}
-
-function rotateListFromIndex(list, startIndex) {
-  if (!Array.isArray(list) || list.length === 0) return [];
-  const safeStart = Math.max(0, Math.min(Number(startIndex || 0), list.length - 1));
-  return list.slice(safeStart).concat(list.slice(0, safeStart));
-}
-
-function prioritizeUnleasedCodexAccounts(candidates, preferredPoolEntryId = "") {
-  const ordered = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
-  if (ordered.length <= 1) return ordered;
-
-  const preferredId = typeof preferredPoolEntryId === "string" ? preferredPoolEntryId.trim() : "";
-  const preferred = preferredId
-    ? ordered.find((account) => getCodexPoolEntryId(account) === preferredId) || null
-    : null;
-  const remaining = preferred
-    ? ordered.filter((account) => getCodexPoolEntryId(account) !== preferredId)
-    : ordered;
-
-  const unleased = remaining.filter((account) => !isCodexAccountLeased(getCodexPoolEntryId(account), account));
-  if (unleased.length === 0) {
-    return preferred ? [preferred, ...remaining] : remaining;
-  }
-
-  const leased = remaining.filter((account) => isCodexAccountLeased(getCodexPoolEntryId(account), account));
-  return preferred ? [preferred, ...unleased, ...leased] : [...unleased, ...leased];
-}
-
-function pickCodexAccountCandidates(store, options = {}) {
-  const enabled = getCodexEnabledAccounts(store);
-  if (enabled.length === 0) return [];
-  const preferredPoolEntryId =
-    typeof options.preferredPoolEntryId === "string" ? options.preferredPoolEntryId.trim() : "";
-
-  const strategy = config.codexOAuth.multiAccountStrategy;
-  let candidates;
-  if (strategy === "smart") {
-    const decorated = enabled.map((x) => decorateCodexPoolAccount(x, store.active_account_id || ""));
-    const preferred = decorated.filter((x) => x.healthStatus !== "limited" && !x.hardLimited);
-    const ranked = (preferred.length > 0 ? preferred : decorated).sort(compareCodexSmartDecorated);
-    candidates = ranked.map((x) => x.account);
-  } else if (strategy === "manual") {
-    const nowSec = Math.floor(Date.now() / 1000);
-    const activeRef = String(store.active_account_id || "").trim();
-    const pool = Array.isArray(store.accounts) ? store.accounts : [];
-    const activeReady = pool.find(
-      (x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec && getCodexPoolEntryId(x) === activeRef
-    );
-    if (activeReady) candidates = [activeReady];
-    else {
-      const activeEnabled = pool.find((x) => x && x.enabled !== false && getCodexPoolEntryId(x) === activeRef);
-      if (activeEnabled) candidates = [activeEnabled];
-      else {
-        const fallbackReady = pool.find((x) => x && x.enabled !== false && Number(x.cooldown_until || 0) <= nowSec);
-        if (fallbackReady) candidates = [fallbackReady];
-        else {
-          const fallbackEnabled = pool.find((x) => x && x.enabled !== false);
-          candidates = fallbackEnabled ? [fallbackEnabled] : [];
-        }
-      }
-    }
-  } else if (strategy === "sticky" && store.active_account_id) {
-    const primary = enabled.find((x) => getCodexPoolEntryId(x) === String(store.active_account_id));
-    if (primary) {
-      const primaryId = getCodexPoolEntryId(primary);
-      candidates = [primary, ...enabled.filter((x) => getCodexPoolEntryId(x) !== primaryId)];
-    }
-  } else if (strategy === "random") {
-    const shuffled = [...enabled];
-    for (let i = shuffled.length - 1; i > 0; i -= 1) {
-      const j = crypto.randomInt(0, i + 1);
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    candidates = shuffled;
-  }
-  if (!Array.isArray(candidates) || candidates.length === 0) {
-    const start = Number(store?.rotation?.next_index || 0) % enabled.length;
-    candidates = rotateListFromIndex(enabled, start);
-  }
-
-  if (!preferredPoolEntryId) {
-    return prioritizeUnleasedCodexAccounts(candidates);
-  }
-
-  const preferredPool = (Array.isArray(store?.accounts) ? store.accounts : []).filter((x) => x && x.enabled !== false);
-  const preferred = preferredPool.find((x) => getCodexPoolEntryId(x) === preferredPoolEntryId);
-  if (!preferred) return prioritizeUnleasedCodexAccounts(candidates);
-
-  const preferredId = getCodexPoolEntryId(preferred);
-  return prioritizeUnleasedCodexAccounts(
-    [preferred, ...candidates.filter((x) => getCodexPoolEntryId(x) !== preferredId)],
-    preferredId
-  );
-}
-
-function upsertCodexOAuthAccount(store, normalizedToken, options = {}) {
-  const accountId = deriveCodexAccountIdFromToken(normalizedToken);
-  const planType =
-    normalizeOpenAICodexPlanType(options.planType) || extractOpenAICodexPlanType(normalizedToken?.access_token || "");
-  const entryId = deriveCodexPoolEntryIdFromToken(normalizedToken, { planType });
-  const tokenEmail = extractOpenAICodexEmail(normalizedToken?.access_token || "");
-  const label = typeof options.label === "string" ? options.label.trim() : "";
-  const slot = parseSlotValue(options.slot);
-  const forceReplaceSlot =
-    options.force === true || options.force === 1 || String(options.force || "").trim() === "1";
-  const nowSec = Math.floor(Date.now() / 1000);
-  const usageSnapshot = options.usageSnapshot && typeof options.usageSnapshot === "object" ? options.usageSnapshot : null;
-  if (!Array.isArray(store.accounts)) store.accounts = [];
-
-  const existingIdx = store.accounts.findIndex((x) => getCodexPoolEntryId(x) === entryId);
-  const slotIdx = slot ? store.accounts.findIndex((x) => Number(x.slot || 0) === slot) : -1;
-
-  // Prefer updating existing account identity to avoid duplicate same-account entries.
-  let targetIdx = existingIdx;
-  if (targetIdx < 0 && slotIdx >= 0 && forceReplaceSlot) {
-    targetIdx = slotIdx;
-  }
-
-  let action = "created";
-  let resolvedIncomingSlot = slot;
-  if (existingIdx < 0 && slotIdx >= 0 && !forceReplaceSlot) {
-    // Keep existing slot owner; assign this new account to the next free slot.
-    resolvedIncomingSlot = null;
-    action = "created_reassigned_slot";
-  }
-  if (targetIdx >= 0) {
-    const isSameAccountUpdate = existingIdx >= 0;
-    if (isSameAccountUpdate) {
-      const currentSlot = Number(store.accounts[targetIdx].slot || 0) || null;
-      const requestedDifferentSlot =
-        resolvedIncomingSlot !== null && currentSlot !== null && resolvedIncomingSlot !== currentSlot;
-      action =
-        requestedDifferentSlot && !forceReplaceSlot
-          ? "already_exists_same_account"
-          : "updated_existing_account";
-    } else {
-      action = "replaced_slot";
-    }
-
-    const currentLabel =
-      typeof store.accounts[targetIdx].label === "string" && store.accounts[targetIdx].label.trim().length > 0
-        ? store.accounts[targetIdx].label.trim()
-        : "";
-    const currentSlot = Number(store.accounts[targetIdx].slot || 0) || null;
-    const keepSlotBecauseSameAccount =
-      isSameAccountUpdate &&
-      resolvedIncomingSlot !== null &&
-      currentSlot !== null &&
-      resolvedIncomingSlot !== currentSlot &&
-      !forceReplaceSlot;
-    const resolvedLabel = isSameAccountUpdate
-      ? currentLabel || tokenEmail || accountId
-      : label || currentLabel || tokenEmail || accountId;
-    store.accounts[targetIdx] = {
-      ...store.accounts[targetIdx],
-      identity_id: entryId,
-      account_id: accountId,
-      token: normalizeToken(normalizedToken, store.accounts[targetIdx].token),
-      enabled: true,
-      label: resolvedLabel,
-      slot: keepSlotBecauseSameAccount
-        ? currentSlot
-        : resolvedIncomingSlot ?? store.accounts[targetIdx].slot ?? null,
-      last_error: "",
-      last_status_code: 0,
-      token_invalidated_at: 0,
-      cooldown_until: 0,
-      usage_snapshot: usageSnapshot || store.accounts[targetIdx].usage_snapshot || null,
-      usage_updated_at: usageSnapshot
-        ? Number(usageSnapshot.fetched_at || nowSec) || nowSec
-        : Number(store.accounts[targetIdx].usage_updated_at || 0)
-    };
-  } else {
-    store.accounts.push({
-      identity_id: entryId,
-      account_id: accountId,
-      label: label || tokenEmail || accountId,
-      slot: resolvedIncomingSlot ?? null,
-      enabled: true,
-      token: normalizeToken(normalizedToken, normalizedToken),
-      created_at: nowSec,
-      last_used_at: 0,
-      failure_count: 0,
-      cooldown_until: 0,
-      last_error: "",
-      last_status_code: 0,
-      token_invalidated_at: 0,
-      usage_snapshot: usageSnapshot,
-      usage_updated_at: usageSnapshot ? Number(usageSnapshot.fetched_at || nowSec) || nowSec : 0
-    });
-  }
-
-  store.active_account_id = entryId;
-  store.token = normalizedToken;
-  store.rotation = store.rotation || { next_index: 0 };
-  if (!Number.isFinite(store.rotation.next_index)) store.rotation.next_index = 0;
-
-  if (options.skipSlotNormalization !== true) {
-    normalizeCodexAccountSlots(store.accounts);
-  }
-
-  const resolvedAccount = store.accounts.find((x) => getCodexPoolEntryId(x) === entryId);
-  const resolvedSlot = Number(resolvedAccount?.slot || 0) || null;
-
-  return { accountId, entryId, slot: resolvedSlot, action, email: tokenEmail || null, planType, account: resolvedAccount || null };
-}
-
 function shouldRotateCodexAccountForStatus(statusCode) {
   return statusCode === 401 || statusCode === 403 || statusCode === 429;
 }
@@ -2018,124 +1221,6 @@ function getCodexPoolCooldownSeconds(statusCode, failureCount) {
   if (statusCode === 401 || statusCode === 403) return Math.min(1800, 120 * Math.max(1, failureCount));
   if (statusCode === 429) return Math.min(600, 30 * Math.max(1, failureCount));
   return Math.min(180, 15 * Math.max(1, failureCount));
-}
-
-function findCodexPoolAccountByRef(accounts, ref) {
-  const needle = String(ref || "").trim();
-  if (!needle) return null;
-  const byEntry = (accounts || []).find((x) => getCodexPoolEntryId(x) === needle);
-  if (byEntry) return byEntry;
-  return (accounts || []).find((x) => String(x.account_id || "") === needle) || null;
-}
-
-function selectCodexAccountForLogout(store, explicitRef = "") {
-  const accounts = Array.isArray(store?.accounts) ? store.accounts : [];
-  if (accounts.length === 0) return null;
-
-  const explicit = String(explicitRef || "").trim();
-  if (explicit) {
-    const byExplicit = findCodexPoolAccountByRef(accounts, explicit);
-    if (byExplicit) return byExplicit;
-  }
-
-  const activeRef = String(store?.active_account_id || "").trim();
-  if (activeRef) {
-    const byActive = findCodexPoolAccountByRef(accounts, activeRef);
-    if (byActive) return byActive;
-  }
-
-  const cacheAccountId = String(getCachedAuthContext()?.accountId || "").trim();
-  if (cacheAccountId) {
-    const byCache = findCodexPoolAccountByRef(accounts, cacheAccountId);
-    if (byCache) return byCache;
-  }
-
-  const tokenRef = deriveCodexPoolEntryIdFromToken(store?.token || null);
-  if (tokenRef) {
-    const byToken = findCodexPoolAccountByRef(accounts, tokenRef);
-    if (byToken) return byToken;
-  }
-
-  return accounts.find((x) => x && x.enabled !== false) || accounts[0] || null;
-}
-
-function removeCodexPoolAccountFromStore(storeInput, accountRef = "", options = {}) {
-  const normalized = ensureCodexOAuthStoreShape(storeInput);
-  const store = normalized.store;
-  const accounts = Array.isArray(store.accounts) ? store.accounts : [];
-  const target = selectCodexAccountForLogout(store, accountRef);
-  if (!target) {
-    return {
-      removed: false,
-      removedEntryId: null,
-      removedAccountId: null,
-      remainingAccounts: accounts.length,
-      activeEntryId: String(store.active_account_id || "").trim() || null,
-      store
-    };
-  }
-
-  const removedEntryId = getCodexPoolEntryId(target);
-  const removedAccountId = String(target.account_id || "").trim() || null;
-  const isAccountLeased =
-    typeof options.isAccountLeased === "function" ? options.isAccountLeased : isCodexAccountLeased;
-  const ignoreLease = options.ignoreLease === true;
-  if (!ignoreLease && isAccountLeased(removedEntryId || accountRef, target) === true) {
-    return {
-      removed: false,
-      blocked: "leased",
-      blockedEntryId: removedEntryId,
-      blockedAccountId: removedAccountId,
-      remainingAccounts: accounts.length,
-      activeEntryId: String(store.active_account_id || "").trim() || null,
-      store
-    };
-  }
-  const nextAccounts = accounts.filter((x) => getCodexPoolEntryId(x) !== removedEntryId);
-  const removed = nextAccounts.length !== accounts.length;
-  if (!removed) {
-    return {
-      removed: false,
-      removedEntryId,
-      removedAccountId,
-      remainingAccounts: accounts.length,
-      activeEntryId: String(store.active_account_id || "").trim() || null,
-      store
-    };
-  }
-
-  store.accounts = nextAccounts;
-  if (nextAccounts.length === 0) {
-    store.active_account_id = null;
-    store.token = null;
-    store.rotation = { next_index: 0 };
-  } else {
-    let nextActive = null;
-    const currentActiveRef = String(store.active_account_id || "").trim();
-    if (currentActiveRef && currentActiveRef !== removedEntryId) {
-      nextActive = findCodexPoolAccountByRef(nextAccounts, currentActiveRef);
-    }
-    if (!nextActive || nextActive.enabled === false) {
-      nextActive = nextAccounts.find((x) => x && x.enabled !== false) || nextAccounts[0];
-    }
-
-    const nextActiveEntryId = getCodexPoolEntryId(nextActive);
-    const nextIdx = nextAccounts.findIndex((x) => getCodexPoolEntryId(x) === nextActiveEntryId);
-    store.active_account_id = nextActiveEntryId || null;
-    store.token = nextActive?.token || null;
-    store.rotation = {
-      next_index: nextIdx >= 0 && nextAccounts.length > 1 ? (nextIdx + 1) % nextAccounts.length : 0
-    };
-  }
-
-  return {
-    removed: true,
-    removedEntryId,
-    removedAccountId,
-    remainingAccounts: store.accounts.length,
-    activeEntryId: String(store.active_account_id || "").trim() || null,
-    store
-  };
 }
 
 function applyCodexInvalidatedAccountState(store, target, nowSec = Math.floor(Date.now() / 1000)) {
@@ -2158,7 +1243,7 @@ function applyCodexInvalidatedAccountState(store, target, nowSec = Math.floor(Da
     store.token = fallbackAccount?.token || null;
   }
 
-  if (store.active_account_id === targetEntryId) {
+  if (store.active_account_id === targetEntryId && config.codexOAuth.multiAccountStrategy !== "manual") {
     store.active_account_id = null;
   }
 }
@@ -2478,6 +1563,130 @@ async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, 
       changed: true
     };
   }
+}
+
+async function refreshCodexTokensInStore(store, oauthConfig, options = {}) {
+  if (!store || !Array.isArray(store.accounts)) {
+    return {
+      ok: false,
+      refreshed: 0,
+      total: 0,
+      results: [],
+      error: "Account store is unavailable."
+    };
+  }
+
+  const includeDisabled = options.includeDisabled === true;
+  const accountRef = typeof options.accountRef === "string" ? options.accountRef.trim() : "";
+  const normalized = ensureCodexOAuthStoreShape(store);
+  Object.assign(store, normalized.store);
+
+  let targets = Array.isArray(store.accounts) ? [...store.accounts] : [];
+  if (!includeDisabled) {
+    targets = targets.filter((account) => account?.enabled !== false);
+  }
+  if (accountRef) {
+    targets = targets.filter((account) => {
+      const entryId = getCodexPoolEntryId(account);
+      return entryId === accountRef || String(account?.account_id || "").trim() === accountRef;
+    });
+  }
+
+  if (targets.length === 0) {
+    return {
+      ok: false,
+      refreshed: 0,
+      total: 0,
+      results: [],
+      error: accountRef ? `No matching account to refresh: ${accountRef}` : "No eligible accounts to refresh tokens."
+    };
+  }
+
+  const activeRefBefore = String(store.active_account_id || "").trim();
+  const results = [];
+  let refreshed = 0;
+  let changed = false;
+
+  for (let index = 0; index < targets.length; index += 1) {
+    const target = targets[index];
+    const entryIdBefore = getCodexPoolEntryId(target) || String(target?.account_id || "").trim();
+    const accountIdBefore = String(target?.account_id || "").trim() || null;
+    const previousAccessToken = String(target?.token?.access_token || "");
+    const isActive = entryIdBefore === activeRefBefore;
+
+    try {
+      if (!target?.token?.refresh_token) {
+        throw new Error("No refresh token available.");
+      }
+
+      const refreshedToken = await refreshAccessToken(target.token.refresh_token, oauthConfig);
+      const nextToken = normalizeToken(refreshedToken, target.token);
+      const nextAccountId =
+        extractOpenAICodexAccountId(nextToken.access_token || "") || target.account_id || accountIdBefore;
+      const nextEntryId =
+        deriveCodexPoolEntryIdFromToken(nextToken, {
+          planType:
+            normalizeOpenAICodexPlanType(target?.usage_snapshot?.plan_type) ||
+            normalizeOpenAICodexPlanType(target?.plan_type)
+        }) ||
+        entryIdBefore;
+
+      target.token = nextToken;
+      target.account_id = nextAccountId;
+      target.identity_id = nextEntryId;
+      target.last_error = "";
+      target.last_status_code = 0;
+      target.token_invalidated_at = 0;
+      target.cooldown_until = 0;
+      target.failure_count = 0;
+      target.last_used_at = Math.floor(Date.now() / 1000);
+
+      if (isActive) {
+        store.active_account_id = nextEntryId;
+      }
+      if (String(store?.token?.access_token || "") === previousAccessToken) {
+        store.token = nextToken;
+      }
+
+      refreshed += 1;
+      changed = true;
+      results.push({
+        entryId: nextEntryId,
+        accountId: nextAccountId,
+        ok: true,
+        expiresAt: Number(nextToken?.expires_at || 0) || 0
+      });
+    } catch (err) {
+      const message = String(err?.message || err || "token_refresh_failed");
+      const statusCode = Number(err?.statusCode || 0) || 0;
+      target.last_error = message;
+      target.last_status_code = statusCode;
+      changed = true;
+      results.push({
+        entryId: entryIdBefore || null,
+        accountId: accountIdBefore,
+        ok: false,
+        error: message,
+        statusCode
+      });
+    }
+
+    if (index < targets.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+  }
+
+  const renormalized = ensureCodexOAuthStoreShape(store);
+  Object.assign(store, renormalized.store);
+  changed = changed || renormalized.changed;
+
+  return {
+    ok: refreshed > 0,
+    refreshed,
+    total: targets.length,
+    changed,
+    results
+  };
 }
 
 async function maybeCaptureCodexUsageFromHeaders(authContext, headers, source = "response") {
@@ -2839,140 +2048,6 @@ async function runCodexPreheat(reason = "manual", options = {}) {
   }
 }
 
-function isExpiredOrNearExpirySec(expiresAtSec) {
-  if (!Number.isFinite(expiresAtSec)) return false;
-  const nowSec = Math.floor(Date.now() / 1000);
-  return expiresAtSec - nowSec < 60;
-}
-
-async function getValidAuthContextFromCodexOAuthStore(store, oauthConfig, options = {}) {
-  const normalized = ensureCodexOAuthStoreShape(store);
-  if (normalized.changed) {
-    Object.assign(store, normalized.store);
-    await saveTokenStore(oauthConfig.tokenStorePath, store);
-  } else {
-    Object.assign(store, normalized.store);
-  }
-
-  if (!isCodexMultiAccountEnabled()) {
-    const context = await getValidAuthContextFromOAuthStore(store, oauthConfig);
-    const upsert = upsertCodexOAuthAccount(store, store.token, {
-      label: context.principalId || context.accountId || ""
-    });
-    await saveTokenStore(oauthConfig.tokenStorePath, store);
-    return {
-      ...context,
-      poolAccountId: upsert.entryId,
-      poolEntryId: upsert.entryId
-    };
-  }
-
-  const preferredPoolEntryId =
-    typeof options.preferredPoolEntryId === "string" ? options.preferredPoolEntryId.trim() : "";
-  const candidates = pickCodexAccountCandidates(store, { preferredPoolEntryId });
-  if (candidates.length === 0) {
-    throw new Error("No enabled OAuth accounts available in account pool.");
-  }
-
-  const nowSec = Math.floor(Date.now() / 1000);
-  const errors = [];
-  let sawInvalidatedFailure = false;
-  for (const account of candidates) {
-    try {
-      if (!account.token?.access_token) {
-        throw new Error("Missing access token.");
-      }
-
-      if (isExpiredOrNearExpirySec(account.token.expires_at)) {
-        if (!account.token.refresh_token) {
-          throw new Error("Access token expired and no refresh token available.");
-        }
-        const refreshed = await refreshAccessToken(account.token.refresh_token, oauthConfig);
-        account.token = normalizeToken(refreshed, account.token);
-      }
-
-      const accountIdFromToken =
-        extractOpenAICodexAccountId(account.token.access_token) || account.account_id;
-      const entryIdFromToken = deriveCodexPoolEntryIdFromToken(account.token);
-      const principalIdFromToken =
-        extractOpenAICodexPrincipalId(account.token.access_token) || entryIdFromToken;
-      account.identity_id = entryIdFromToken;
-      account.account_id = accountIdFromToken;
-      account.enabled = true;
-      account.last_used_at = nowSec;
-      account.failure_count = 0;
-      account.cooldown_until = 0;
-      account.last_error = "";
-      store.token = account.token;
-      store.active_account_id = entryIdFromToken;
-      store.rotation = store.rotation || { next_index: 0 };
-      if (candidates.length > 1 && config.codexOAuth.multiAccountStrategy === "round-robin") {
-        const enabled = getCodexEnabledAccounts(store);
-        const idx = enabled.findIndex((x) => getCodexPoolEntryId(x) === entryIdFromToken);
-        store.rotation.next_index = idx >= 0 ? (idx + 1) % enabled.length : 0;
-      }
-      await saveTokenStore(oauthConfig.tokenStorePath, store);
-      return {
-        accessToken: account.token.access_token,
-        accountId: accountIdFromToken,
-        principalId: principalIdFromToken,
-        poolAccountId: entryIdFromToken,
-        poolEntryId: entryIdFromToken
-      };
-    } catch (err) {
-      account.failure_count = Number(account.failure_count || 0) + 1;
-      account.last_error = String(err.message || err);
-      account.last_status_code = Number(err?.statusCode || 0) || 0;
-      const tokenInvalidated = isCodexTokenInvalidatedError(account.last_status_code, account.last_error);
-      if (tokenInvalidated) {
-        applyCodexInvalidatedAccountState(store, account, nowSec);
-        sawInvalidatedFailure = true;
-      } else {
-        const cooldownSeconds = Math.min(120, 10 * account.failure_count);
-        account.cooldown_until = nowSec + cooldownSeconds;
-        account.token_invalidated_at = 0;
-      }
-      errors.push(`${getCodexPoolEntryId(account) || account.account_id}: ${account.last_error}`);
-    }
-  }
-
-  await saveTokenStore(oauthConfig.tokenStorePath, store);
-  clearAuthContextCache();
-  if (sawInvalidatedFailure && config.expiredAccountCleanup.enabled) {
-    await expiredAccountCleanupController.run("token_invalidated").catch((err) => {
-      console.warn(`[auth-pool] account auto-rm failed after refresh failure: ${err?.message || err}`);
-    });
-  }
-  throw new Error(`All pooled OAuth accounts failed. ${errors.join(" | ")}`);
-}
-
-async function getValidAuthContextFromOAuthStore(store, oauthConfig) {
-  if (!store.token?.access_token) {
-    throw new Error("No token in store. Login required.");
-  }
-
-  if (!isExpiredOrNearExpirySec(store.token.expires_at)) {
-    return {
-      accessToken: store.token.access_token,
-      accountId: extractOpenAICodexAccountId(store.token.access_token) || null,
-      principalId: extractOpenAICodexPrincipalId(store.token.access_token) || null
-    };
-  }
-
-  if (!store.token.refresh_token) {
-    throw new Error("Access token expired and no refresh token available.");
-  }
-
-  const refreshed = await refreshAccessToken(store.token.refresh_token, oauthConfig);
-  store.token = normalizeToken(refreshed, store.token);
-  await saveTokenStore(oauthConfig.tokenStorePath, store);
-  return {
-    accessToken: store.token.access_token,
-    accountId: extractOpenAICodexAccountId(store.token.access_token) || null,
-    principalId: extractOpenAICodexPrincipalId(store.token.access_token) || null
-  };
-}
-
 async function exchangeCodeForToken(code, codeVerifier, oauthConfig) {
   const form = new URLSearchParams();
   form.set("grant_type", "authorization_code");
@@ -2995,547 +2070,6 @@ async function exchangeCodeForToken(code, codeVerifier, oauthConfig) {
     throw new Error(`HTTP ${resp.status} ${resp.statusText}: ${text}`);
   }
   return JSON.parse(text);
-}
-
-async function refreshAccessToken(refreshToken, oauthConfig) {
-  const form = new URLSearchParams();
-  form.set("grant_type", "refresh_token");
-  form.set("refresh_token", refreshToken);
-  form.set("client_id", oauthConfig.clientId);
-  if (oauthConfig.clientSecret) {
-    form.set("client_secret", oauthConfig.clientSecret);
-  }
-
-  const resp = await fetch(oauthConfig.tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: form
-  });
-
-  const text = await resp.text();
-  if (!resp.ok) {
-    throw new Error(`Refresh failed: HTTP ${resp.status} ${resp.statusText}: ${text}`);
-  }
-  return JSON.parse(text);
-}
-
-function getModeDefaultModel(mode) {
-  if (mode === "gemini-v1beta") return config.gemini.defaultModel;
-  if (mode === "anthropic-v1") return config.anthropic.defaultModel;
-  return config.codex.defaultModel;
-}
-
-function wildcardMatch(pattern, text) {
-  const parts = String(pattern || "").split("*");
-  if (parts.length === 1) return pattern === text;
-  let textPos = 0;
-  for (let i = 0; i < parts.length; i += 1) {
-    const part = parts[i];
-    if (!part) continue;
-    if (i === 0) {
-      if (!text.slice(textPos).startsWith(part)) return false;
-      textPos += part.length;
-      continue;
-    }
-    if (i === parts.length - 1) {
-      return text.slice(textPos).endsWith(part);
-    }
-    const nextPos = text.slice(textPos).indexOf(part);
-    if (nextPos < 0) return false;
-    textPos += nextPos + part.length;
-  }
-  return true;
-}
-
-function resolveSystemModelRoute(originalModel, targetMode) {
-  const model = typeof originalModel === "string" && originalModel.trim().length > 0
-    ? originalModel.trim()
-    : getModeDefaultModel(targetMode);
-  const lower = model.toLowerCase();
-
-  if (targetMode === "gemini-v1beta") {
-    if (lower.startsWith("gemini-")) return model;
-    if (lower.startsWith("gpt-") || lower.includes("codex") || lower.startsWith("claude-")) {
-      return config.gemini.defaultModel;
-    }
-    return model;
-  }
-
-  if (targetMode === "anthropic-v1") {
-    if (lower.startsWith("claude-")) return model;
-    if (lower.startsWith("gpt-") || lower.includes("codex") || lower.startsWith("gemini-")) {
-      return config.anthropic.defaultModel;
-    }
-    return model;
-  }
-
-  if (lower.startsWith("gpt-") || lower.includes("codex")) return model;
-  return config.codex.defaultModel;
-}
-
-function resolveModelRoute(originalModel, targetMode = config.upstreamMode) {
-  const requestedModel = typeof originalModel === "string" && originalModel.trim().length > 0
-    ? originalModel.trim()
-    : getModeDefaultModel(targetMode);
-
-  if (!config.modelRouter.enabled) {
-    return {
-      requestedModel,
-      mappedModel: requestedModel,
-      routeType: "disabled",
-      routeRule: null
-    };
-  }
-
-  const customMappings = config.modelRouter.customMappings || {};
-  if (customMappings[requestedModel]) {
-    return {
-      requestedModel,
-      mappedModel: customMappings[requestedModel],
-      routeType: "exact",
-      routeRule: requestedModel
-    };
-  }
-
-  let bestWildcard = null;
-  for (const [pattern, target] of Object.entries(customMappings)) {
-    if (!pattern.includes("*")) continue;
-    if (!wildcardMatch(pattern, requestedModel)) continue;
-    const specificity = pattern.length - (pattern.match(/\*/g)?.length || 0);
-    if (!bestWildcard || specificity > bestWildcard.specificity) {
-      bestWildcard = {
-        pattern,
-        target,
-        specificity
-      };
-    }
-  }
-
-  if (bestWildcard) {
-    return {
-      requestedModel,
-      mappedModel: bestWildcard.target,
-      routeType: "wildcard",
-      routeRule: bestWildcard.pattern
-    };
-  }
-
-  const fallbackModel = resolveSystemModelRoute(requestedModel, targetMode);
-  return {
-    requestedModel,
-    mappedModel: fallbackModel,
-    routeType: fallbackModel === requestedModel ? "passthrough" : "system",
-    routeRule: fallbackModel === requestedModel ? null : targetMode
-  };
-}
-
-function detectModelFamily(modelId) {
-  const value = String(modelId || "").trim().toLowerCase();
-  if (!value) return "";
-  if (value.startsWith("gemini-")) return "gemini-v1beta";
-  if (
-    value.startsWith("claude-") ||
-    value.includes("claude") ||
-    value.includes("opus") ||
-    value.includes("sonnet") ||
-    value.includes("haiku")
-  ) {
-    return "anthropic-v1";
-  }
-  if (value.startsWith("gpt-") || value.includes("codex") || /^o\d/.test(value)) {
-    return "codex-chatgpt";
-  }
-  return "";
-}
-
-function resolveCustomModelRouteOnly(originalModel) {
-  const requestedModel =
-    typeof originalModel === "string" && originalModel.trim().length > 0
-      ? originalModel.trim()
-      : "";
-  if (!requestedModel || !config.modelRouter.enabled) return null;
-
-  const customMappings = config.modelRouter.customMappings || {};
-  if (customMappings[requestedModel]) {
-    return {
-      requestedModel,
-      mappedModel: customMappings[requestedModel],
-      routeType: "exact",
-      routeRule: requestedModel
-    };
-  }
-
-  let bestWildcard = null;
-  for (const [pattern, target] of Object.entries(customMappings)) {
-    if (!pattern.includes("*")) continue;
-    if (!wildcardMatch(pattern, requestedModel)) continue;
-    const specificity = pattern.length - (pattern.match(/\*/g)?.length || 0);
-    if (!bestWildcard || specificity > bestWildcard.specificity) {
-      bestWildcard = {
-        pattern,
-        target,
-        specificity
-      };
-    }
-  }
-
-  if (!bestWildcard) return null;
-  return {
-    requestedModel,
-    mappedModel: bestWildcard.target,
-    routeType: "wildcard",
-    routeRule: bestWildcard.pattern
-  };
-}
-
-function resolveCodexCompatibleRoute(originalModel) {
-  const route = resolveModelRoute(originalModel, "codex-chatgpt");
-  const family = detectModelFamily(route.mappedModel);
-  if (!family || family === "codex-chatgpt") return route;
-
-  const fallbackModel = resolveSystemModelRoute(route.requestedModel, "codex-chatgpt");
-  return {
-    requestedModel: route.requestedModel,
-    mappedModel: fallbackModel,
-    routeType: "system",
-    routeRule: "codex-chatgpt"
-  };
-}
-
-function extractRequestedModelFromOpenAICompatBody(
-  rawBody,
-  fallbackModel = config.codex.defaultModel,
-  parsedBody = undefined
-) {
-  if ((!rawBody || rawBody.length === 0) && parsedBody === undefined) return fallbackModel;
-
-  let parsed = parsedBody;
-  if (parsed === undefined) {
-    try {
-      parsed = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-      return fallbackModel;
-    }
-  }
-
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-    const model = typeof parsed.model === "string" ? parsed.model.trim() : "";
-    if (model.length > 0) return model;
-  }
-  return fallbackModel;
-}
-
-function chooseProtocolForV1ChatCompletions(req) {
-  const requestedModel = extractRequestedModelFromOpenAICompatBody(
-    req.rawBody,
-    getModeDefaultModel(config.upstreamMode),
-    getCachedJsonBody(req)
-  );
-  const customRoute = resolveCustomModelRouteOnly(requestedModel);
-  if (customRoute) {
-    const customFamily = detectModelFamily(customRoute.mappedModel);
-    if (customFamily) {
-      return customFamily;
-    }
-  }
-
-  if (config.upstreamMode === "codex-chatgpt") {
-    const requestFamily = detectModelFamily(requestedModel);
-    if (requestFamily === "gemini-v1beta" || requestFamily === "anthropic-v1") {
-      return requestFamily;
-    }
-  }
-
-  return config.upstreamMode;
-}
-
-function isGeminiNativeAliasPath(pathname) {
-  return /^\/v1\/models\/[^/:]+:(generateContent|streamGenerateContent|countTokens)$/.test(
-    String(pathname || "")
-  );
-}
-
-function uniqueNonEmptyModelIds(values) {
-  return [...new Set((values || []).filter((x) => typeof x === "string" && x.trim().length > 0))];
-}
-
-function getOpenAICompatibleModelIds() {
-  const ids = [
-    config.codex.defaultModel,
-    config.gemini.defaultModel,
-    config.anthropic.defaultModel,
-    ...OFFICIAL_OPENAI_MODELS,
-    ...OFFICIAL_GEMINI_MODELS,
-    ...OFFICIAL_ANTHROPIC_MODELS
-  ];
-  for (const [sourceModel, targetModel] of Object.entries(config.modelRouter.customMappings || {})) {
-    ids.push(sourceModel, targetModel);
-  }
-  return uniqueNonEmptyModelIds(ids);
-}
-
-function getModelCandidateIds() {
-  const ids = [
-    config.codex.defaultModel,
-    config.gemini.defaultModel,
-    config.anthropic.defaultModel,
-    ...OFFICIAL_OPENAI_MODELS,
-    ...OFFICIAL_GEMINI_MODELS,
-    ...OFFICIAL_ANTHROPIC_MODELS
-  ];
-  ids.push(...getOpenAICompatibleModelIds());
-  for (const [sourceModel, targetModel] of Object.entries(config.modelRouter.customMappings || {})) {
-    ids.push(sourceModel, targetModel);
-  }
-  return uniqueNonEmptyModelIds(ids).sort();
-}
-
-function buildOfficialCodexModelCandidateIds(dynamicIds = [], defaultModel = config.codex.defaultModel) {
-  return uniqueNonEmptyModelIds([defaultModel, ...OFFICIAL_CODEX_MODELS, ...(Array.isArray(dynamicIds) ? dynamicIds : [])]).sort();
-}
-
-const officialModelCache = {
-  expiresAt: 0,
-  ids: [],
-  codexIds: []
-};
-
-async function withTimeout(promise, timeoutMs, errorMessage) {
-  let timer = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
-      })
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-async function fetchCodexOfficialModels() {
-  let auth = null;
-  try {
-    auth = await getValidAuthContext();
-  } catch {
-    return [];
-  }
-  if (!auth?.accessToken || !auth?.accountId) return [];
-
-  const url = new URL(`${config.upstreamBaseUrl.replace(/\/+$/, "")}/codex/models`);
-  url.searchParams.set("client_version", DEFAULT_CODEX_CLIENT_VERSION);
-
-  const resp = await withTimeout(
-    fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        authorization: `Bearer ${auth.accessToken}`,
-        "chatgpt-account-id": auth.accountId,
-        "openai-beta": "responses=experimental",
-        originator: getCodexOriginator(),
-        accept: "application/json",
-        "user-agent": "codex-pro-max-model-catalog"
-      }
-    }),
-    5000,
-    "Codex model catalog request timed out."
-  );
-  if (!resp.ok) return [];
-  const json = await resp.json().catch(() => null);
-  const models = Array.isArray(json?.models) ? json.models : [];
-  return uniqueNonEmptyModelIds(models.map((m) => (typeof m?.slug === "string" ? m.slug : "")));
-}
-
-async function fetchGeminiOfficialModels() {
-  const apiKey = String(config.gemini.apiKey || "").trim();
-  if (!apiKey) return [];
-
-  const url = new URL(`${config.gemini.baseUrl.replace(/\/+$/, "")}/models`);
-  url.searchParams.set("key", apiKey);
-  const resp = await withTimeout(fetch(url.toString(), { method: "GET" }), 5000, "Gemini model catalog request timed out.");
-  if (!resp.ok) return [];
-  const json = await resp.json().catch(() => null);
-  const models = Array.isArray(json?.models) ? json.models : [];
-  return uniqueNonEmptyModelIds(
-    models.map((m) => {
-      const raw = typeof m?.name === "string" ? m.name : "";
-      return raw.startsWith("models/") ? raw.slice(7) : raw;
-    })
-  );
-}
-
-async function fetchAnthropicOfficialModels() {
-  const apiKey = String(config.anthropic.apiKey || "").trim();
-  if (!apiKey) return [];
-
-  const url = `${config.anthropic.baseUrl.replace(/\/+$/, "")}/models`;
-  const resp = await withTimeout(
-    fetch(url, {
-      method: "GET",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": config.anthropic.version
-      }
-    }),
-    5000,
-    "Anthropic model catalog request timed out."
-  );
-  if (!resp.ok) return [];
-  const json = await resp.json().catch(() => null);
-  const models = Array.isArray(json?.data) ? json.data : [];
-  return uniqueNonEmptyModelIds(models.map((m) => (typeof m?.id === "string" ? m.id : "")));
-}
-
-async function getOfficialModelCandidateIds({ forceRefresh = false } = {}) {
-  if (!forceRefresh && officialModelCache.expiresAt > Date.now() && officialModelCache.ids.length > 0) {
-    return officialModelCache.ids;
-  }
-
-  const [codexIds, geminiIds, anthropicIds] = await Promise.all([
-    fetchCodexOfficialModels().catch(() => []),
-    fetchGeminiOfficialModels().catch(() => []),
-    fetchAnthropicOfficialModels().catch(() => [])
-  ]);
-
-  const merged = uniqueNonEmptyModelIds([
-    ...OFFICIAL_OPENAI_MODELS,
-    ...OFFICIAL_GEMINI_MODELS,
-    ...OFFICIAL_ANTHROPIC_MODELS,
-    ...codexIds,
-    ...geminiIds,
-    ...anthropicIds,
-    ...getModelCandidateIds()
-  ]).sort();
-  const codexMerged = buildOfficialCodexModelCandidateIds(codexIds, config.codex.defaultModel);
-
-  officialModelCache.ids = merged;
-  officialModelCache.codexIds = codexMerged;
-  officialModelCache.expiresAt = Date.now() + 5 * 60 * 1000;
-  return merged;
-}
-
-async function getOfficialCodexModelCandidateIds({ forceRefresh = false } = {}) {
-  if (!forceRefresh && officialModelCache.expiresAt > Date.now() && officialModelCache.codexIds.length > 0) {
-    return officialModelCache.codexIds;
-  }
-  await getOfficialModelCandidateIds({ forceRefresh });
-  return officialModelCache.codexIds;
-}
-
-function readHeaderValue(req, name) {
-  const raw = req.headers?.[name.toLowerCase()];
-  if (Array.isArray(raw)) return raw[0] || "";
-  return typeof raw === "string" ? raw : "";
-}
-
-function extractBearerToken(req) {
-  const auth = readHeaderValue(req, "authorization");
-  const match = auth.match(/^Bearer\s+(.+)$/i);
-  if (!match) return "";
-  return (match[1] || "").trim();
-}
-
-function sanitizeUpstreamApiKeyCandidate(value) {
-  const key = String(value || "").trim();
-  if (!key) return "";
-  const shared = String(config.codexOAuth.sharedApiKey || "").trim();
-  if (shared && key === shared) return "";
-  return key;
-}
-
-function isLikelyGeminiApiKey(value) {
-  const key = String(value || "").trim();
-  // Typical Google API key format.
-  return /^AIza[0-9A-Za-z_-]{20,}$/.test(key);
-}
-
-function isLikelyAnthropicApiKey(value) {
-  const key = String(value || "").trim();
-  // Typical Anthropic key format.
-  return /^sk-ant-[0-9A-Za-z_-]{16,}$/i.test(key);
-}
-
-function extractGeminiRequestApiKeys(req) {
-  if (!config.providerUpstream.allowRequestApiKeys) {
-    return {
-      headerKey: "",
-      queryKey: ""
-    };
-  }
-  const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
-  return {
-    headerKey: sanitizeUpstreamApiKeyCandidate(readHeaderValue(req, "x-goog-api-key")),
-    queryKey: sanitizeUpstreamApiKeyCandidate(incoming.searchParams.get("key") || "")
-  };
-}
-
-function shouldForceGeminiUpstream(req) {
-  const forceHeader = String(readHeaderValue(req, "x-proxy-gemini-upstream") || "")
-    .trim()
-    .toLowerCase();
-  if (["1", "true", "yes", "on", "force"].includes(forceHeader)) return true;
-  const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
-  const forceQuery = String(incoming.searchParams.get("proxy_gemini_upstream") || "")
-    .trim()
-    .toLowerCase();
-  return ["1", "true", "yes", "on", "force"].includes(forceQuery);
-}
-
-function shouldPreferGeminiCompat(req) {
-  // In codex-oauth mode, Gemini should default to local compatibility mode so
-  // localhost/public proxy callers do not need a real Google API key.
-  if (config.authMode !== "codex-oauth") return false;
-  if (shouldForceGeminiUpstream(req)) return false;
-  return true;
-}
-
-function shouldFallbackGeminiUpstreamToCompat(req, httpStatus) {
-  return shouldPreferGeminiCompat(req) && [401, 403, 429].includes(Number(httpStatus || 0));
-}
-
-function resolveGeminiApiKey(req) {
-  if (shouldPreferGeminiCompat(req)) return "";
-  const configuredKey = sanitizeUpstreamApiKeyCandidate(config.gemini.apiKey || "");
-  if (configuredKey && isLikelyGeminiApiKey(configuredKey)) return configuredKey;
-  const { headerKey, queryKey } = extractGeminiRequestApiKeys(req);
-  if (headerKey && isLikelyGeminiApiKey(headerKey)) return headerKey;
-  if (queryKey && isLikelyGeminiApiKey(queryKey)) return queryKey;
-  return "";
-}
-
-function resolveAnthropicApiKey(req) {
-  const configuredKey = sanitizeUpstreamApiKeyCandidate(config.anthropic.apiKey || "");
-  if (configuredKey && isLikelyAnthropicApiKey(configuredKey)) return configuredKey;
-  if (!config.providerUpstream.allowRequestApiKeys) return "";
-  const headerKey = sanitizeUpstreamApiKeyCandidate(readHeaderValue(req, "x-api-key"));
-  if (headerKey && isLikelyAnthropicApiKey(headerKey)) return headerKey;
-  return "";
-}
-
-function isAnthropicNativeRequest(req) {
-  return (
-    config.upstreamMode === "anthropic-v1" ||
-    Boolean(readHeaderValue(req, "anthropic-version")) ||
-    Boolean(readHeaderValue(req, "anthropic-beta")) ||
-    (config.providerUpstream.allowRequestApiKeys && Boolean(readHeaderValue(req, "x-api-key")))
-  );
-}
-
-async function handleAnthropicModelsList(req, res) {
-  const nowIso = new Date().toISOString();
-  const modelIds = getOpenAICompatibleModelIds();
-  res.json({
-    data: modelIds.map((id) => ({
-        type: "model",
-        id,
-        display_name: id,
-        created_at: nowIso
-      })),
-    first_id: modelIds[0] || config.anthropic.defaultModel,
-    last_id: modelIds[modelIds.length - 1] || config.anthropic.defaultModel,
-    has_more: false
-  });
 }
 
 function mapHttpStatusToGeminiStatus(httpStatus) {
@@ -4686,9 +3220,18 @@ function getCodexOriginator() {
 
 function resolveReasoningEffort(value, context = null, modelId = null) {
   const requested = parseReasoningEffortOrFallback(value, null, { allowAdaptive: true });
+  const hasExplicitRequest = requested !== null;
   let resolved = null;
   if (requested && requested !== "adaptive") {
     resolved = requested;
+  }
+
+  const planModeReasoningEffort =
+    !resolved && !hasExplicitRequest && context && typeof context === "object" && context.planMode === true
+      ? parseReasoningEffortOrFallback(context.planModeReasoningEffort, null)
+      : null;
+  if (planModeReasoningEffort) {
+    resolved = planModeReasoningEffort;
   }
 
   if (!resolved) {
@@ -4868,260 +3411,9 @@ function scoreTextComplexityHints(text) {
   return hint;
 }
 
-async function completeOAuthCallback({ code, state }) {
-  const pending = pendingAuth.get(state);
-  if (!pending) {
-    throw new Error("Invalid OAuth callback: missing/expired state.");
-  }
-  pendingAuth.delete(state);
-
-  const oauthRuntime = getActiveOAuthRuntime();
-  if (!oauthRuntime) {
-    throw new Error("OAuth runtime is unavailable in current auth mode.");
-  }
-  if (pending.mode !== config.authMode) {
-    throw new Error(`OAuth state mode mismatch: expected ${pending.mode}, got ${config.authMode}.`);
-  }
-
-  const token = await exchangeCodeForToken(code, pending.verifier, oauthRuntime.oauth);
-  const normalizedToken = normalizeToken(token, oauthRuntime.store.token);
-  oauthRuntime.store.token = normalizedToken;
-
-  let callbackSummary = {
-    accountId: extractOpenAICodexAccountId(normalizedToken.access_token || "") || null,
-    entryId: extractOpenAICodexPrincipalId(normalizedToken.access_token || "") || null,
-    email: extractOpenAICodexEmail(normalizedToken.access_token || "") || null,
-    slot: parseSlotValue(pending.slot),
-    action: "updated"
-  };
-
-  if (config.authMode === "codex-oauth") {
-    const shaped = ensureCodexOAuthStoreShape(oauthRuntime.store);
-    Object.keys(oauthRuntime.store).forEach((key) => delete oauthRuntime.store[key]);
-    Object.assign(oauthRuntime.store, shaped.store);
-    let probe = null;
-    let probedSnapshot = null;
-    let detectedPlanType =
-      normalizeOpenAICodexPlanType(callbackSummary?.planType) ||
-      extractOpenAICodexPlanType(normalizedToken.access_token || "");
-
-    try {
-      probedSnapshot = await withTimeout(
-        fetchCodexUsageSnapshotForAccount(
-          {
-            token: normalizeToken(normalizedToken, normalizedToken),
-            account_id: callbackSummary.accountId || null,
-            identity_id: callbackSummary.entryId || null,
-            usage_snapshot: null
-          },
-          oauthRuntime.oauth
-        ),
-        12000,
-        "Usage probe timed out."
-      );
-      detectedPlanType =
-        normalizeOpenAICodexPlanType(probedSnapshot?.plan_type) || detectedPlanType;
-      probe = {
-        ok: true,
-        planType: detectedPlanType,
-        snapshot: probedSnapshot
-      };
-    } catch (err) {
-      probe = {
-        ok: false,
-        error: String(err?.message || err || "usage_probe_failed")
-      };
-    }
-
-    const upsert = upsertCodexOAuthAccount(oauthRuntime.store, normalizedToken, {
-      label: pending.label || "",
-      slot: pending.slot,
-      force: pending.force,
-      planType: detectedPlanType,
-      usageSnapshot: probedSnapshot
-    });
-    callbackSummary = {
-      accountId: upsert.accountId,
-      entryId: upsert.entryId || callbackSummary.entryId,
-      email: upsert.email || callbackSummary.email,
-      slot: upsert.slot,
-      action: upsert.action,
-      planType: upsert.planType || detectedPlanType || null
-    };
-
-    if (probe?.ok) {
-      callbackSummary.planType = probe.planType || callbackSummary.planType || null;
-      callbackSummary.usageFetched = true;
-    } else if (probe) {
-      callbackSummary.usageFetched = false;
-      callbackSummary.usageFetchError = probe.error || probe.skipped || "usage_probe_failed";
-    }
-  }
-
-  await saveTokenStore(oauthRuntime.oauth.tokenStorePath, oauthRuntime.store);
-  clearAuthContextCache();
-  return callbackSummary;
-}
-
-async function ensureCodexOAuthCallbackServer() {
-  if (config.authMode !== "codex-oauth") return;
-  if (codexCallbackServer && codexCallbackServer.listening) return;
-  if (codexCallbackServerStartPromise) {
-    await codexCallbackServerStartPromise;
-    return;
-  }
-
-  codexCallbackServerStartPromise = new Promise((resolve, reject) => {
-    const host = config.codexOAuth.callbackBindHost;
-    const port = config.codexOAuth.callbackPort;
-    const callbackPath = config.codexOAuth.callbackPath;
-    const server = http.createServer(async (req, res) => {
-      try {
-        const url = new URL(req.url || "", "http://localhost");
-        if (url.pathname !== callbackPath) {
-          res.statusCode = 404;
-          res.setHeader("content-type", "text/plain; charset=utf-8");
-          res.end("Not found");
-          return;
-        }
-
-        const state = String(url.searchParams.get("state") || "");
-        const code = String(url.searchParams.get("code") || "");
-        const error = String(url.searchParams.get("error") || "");
-
-        if (error) {
-          res.statusCode = 400;
-          res.setHeader("content-type", "text/html; charset=utf-8");
-          res.end(
-            `<h1>OAuth failed</h1><p>${escapeHtml(error)}</p><p>Return to dashboard and try login again.</p>`
-          );
-          return;
-        }
-        if (!state || !code) {
-          res.statusCode = 400;
-          res.setHeader("content-type", "text/html; charset=utf-8");
-          res.end("<h1>OAuth failed</h1><p>Missing code/state in callback.</p>");
-          return;
-        }
-
-        try {
-          const summary = await completeOAuthCallback({ code, state });
-          res.statusCode = 200;
-          res.setHeader("content-type", "text/html; charset=utf-8");
-          const msg = buildOAuthCallbackMessage(summary);
-          res.end(OAUTH_CALLBACK_SUCCESS_HTML.replace("</body>", `${msg}</body>`));
-        } catch (err) {
-          console.error("Codex OAuth callback handling failed:", err);
-          res.statusCode = 500;
-          res.setHeader("content-type", "text/html; charset=utf-8");
-          res.end(
-            `<h1>Token exchange failed</h1><p>${escapeHtml(err.message)}</p><p>Return to dashboard and retry.</p>`
-          );
-        }
-      } catch (err) {
-        res.statusCode = 500;
-        res.setHeader("content-type", "text/plain; charset=utf-8");
-        res.end(`Internal callback error: ${err.message}`);
-      }
-    });
-
-    server.once("error", (err) => {
-      if (codexCallbackServer === server) codexCallbackServer = null;
-      reject(
-        new Error(
-          `Failed to bind codex callback server at http://${host}:${port}${callbackPath}: ${err.message}`
-        )
-      );
-    });
-
-    server.listen(port, host, () => {
-      codexCallbackServer = server;
-      resolve();
-    });
-  });
-
-  try {
-    await codexCallbackServerStartPromise;
-  } finally {
-    codexCallbackServerStartPromise = null;
-  }
-}
-
-function cleanupPendingStates() {
-  const now = Date.now();
-  for (const [state, value] of pendingAuth.entries()) {
-    if (now - value.createdAt > 10 * 60 * 1000) pendingAuth.delete(state);
-  }
-}
-
-function randomBase64Url(bytes) {
-  return crypto.randomBytes(bytes).toString("base64url");
-}
-
-function sha256base64url(text) {
-  return crypto.createHash("sha256").update(text).digest("base64url");
-}
-
-function truncate(text, maxLen) {
-  if (typeof text !== "string") return "";
-  if (text.length <= maxLen) return text;
-  return `${text.slice(0, maxLen)}...`;
-}
-
-function describeOAuthUpsertAction(action) {
-  switch (String(action || "")) {
-    case "created":
-      return "new account added";
-    case "created_reassigned_slot":
-      return "new account added (requested slot occupied, reassigned)";
-    case "updated_existing_account":
-      return "existing account token refreshed";
-    case "already_exists_same_account":
-      return "same account detected (not added again)";
-    case "replaced_slot":
-      return "slot owner replaced";
-    default:
-      return "updated";
-  }
-}
-
-function buildOAuthCallbackMessage(summary) {
-  const accountId = summary?.accountId || "unknown";
-  const entryId = summary?.entryId || "";
-  const email = summary?.email || "";
-  const action = summary?.action || "updated";
-  const slot = summary?.slot || "-";
-  const planType = String(summary?.planType || "").trim();
-  const usageFetched = summary?.usageFetched === true;
-  const usageFetchError = String(summary?.usageFetchError || "").trim();
-  const actionLabel = describeOAuthUpsertAction(action);
-  const emailLine = email ? `<p>Email: ${escapeHtml(email)}</p>` : "";
-  const entryLine = entryId ? `<p>Entry: ${escapeHtml(truncate(String(entryId), 80))}</p>` : "";
-  const planLine = planType ? `<p>Detected Plan: ${escapeHtml(planType)}</p>` : "";
-  const usageLine = usageFetched
-    ? `<p>Usage Snapshot: refreshed</p>`
-    : usageFetchError
-      ? `<p style="color:#b45309"><strong>Usage probe:</strong> ${escapeHtml(usageFetchError)}</p>`
-      : "";
-  const warning =
-    action === "already_exists_same_account"
-      ? `<p style="color:#b45309"><strong>Notice:</strong> This login returned the same ChatGPT account ID, so no new account was added.</p><p style="color:#b45309">Use another browser profile/incognito and login with a different account.</p>`
-      : "";
-  return `<p>Account: ${escapeHtml(accountId)}</p>${entryLine}${emailLine}<p>Action: ${escapeHtml(actionLabel)}</p><p>Slot: ${escapeHtml(String(slot))}</p>${planLine}${usageLine}${warning}`;
-}
-
-function escapeHtml(text) {
-  return String(text)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
 export { app, mainServer };
 
-export const __testing = {
+export const __testing = createServerTestingExports({
   config,
   acquireCodexAccountLease,
   applyCodexInvalidatedAccountState,
@@ -5134,7 +3426,7 @@ export const __testing = {
   getExpiredAccountCleanupTimer: () => expiredAccountCleanupTimer,
   ensureCodexOAuthCallbackServer,
   stopCodexOAuthCallbackServer,
-  getCodexOAuthCallbackServer: () => codexCallbackServer,
+  getCodexOAuthCallbackServer,
   getCloudflaredRuntime: () => cloudflaredRuntime,
   stopCloudflaredTunnel,
   ensureCodexOAuthStoreShape,
@@ -5144,22 +3436,8 @@ export const __testing = {
   normalizeCodexResponsesRequestBody,
   normalizeChatCompletionsRequestBody,
   parseResponsesResultFromSse,
-  normalizeCherryAnthropicAgentOriginalUrl: anthropicLocalCompatHelpers.normalizeCherryAnthropicAgentOriginalUrl,
-  parseAnthropicNativeBody: anthropicLocalCompatHelpers.parseAnthropicNativeBody,
-  normalizeAnthropicNativeTools: anthropicLocalCompatHelpers.normalizeAnthropicNativeTools,
-  normalizeAnthropicNativeToolChoice: anthropicLocalCompatHelpers.normalizeAnthropicNativeToolChoice,
-  normalizeAnthropicNativeExecutionConfig: anthropicLocalCompatHelpers.normalizeAnthropicNativeExecutionConfig,
-  resolveAnthropicNativeReasoningSummary: anthropicLocalCompatHelpers.resolveAnthropicNativeReasoningSummary,
-  normalizeAnthropicToolUseInput: anthropicLocalCompatHelpers.normalizeAnthropicToolUseInput,
-  toResponsesInputFromAnthropicMessages: anthropicLocalCompatHelpers.toResponsesInputFromAnthropicMessages,
-  planAnthropicFunctionCallEmission: anthropicLocalCompatHelpers.planAnthropicFunctionCallEmission,
-  rememberAnthropicPendingToolBatch: anthropicLocalCompatHelpers.rememberAnthropicPendingToolBatch,
-  maybeBuildQueuedAnthropicToolMessage: anthropicLocalCompatHelpers.maybeBuildQueuedAnthropicToolMessage,
-  clearAnthropicPendingToolBatches: anthropicLocalCompatHelpers.clearAnthropicPendingToolBatches,
-  buildAnthropicMessageFromResponsesResponse: anthropicLocalCompatHelpers.buildAnthropicMessageFromResponsesResponse,
-  renderAnthropicMessageSseEvents: anthropicLocalCompatHelpers.renderAnthropicMessageSseEvents,
-  estimateAnthropicCountTokens: anthropicLocalCompatHelpers.estimateAnthropicCountTokens,
+  anthropicLocalCompatHelpers,
   buildCodexResponsesRequestBody,
   handleAnthropicNativeProxy
-};
+});
 
