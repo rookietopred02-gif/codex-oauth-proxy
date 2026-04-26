@@ -5,8 +5,13 @@ import test from "node:test";
 
 import { createProxyRouteHandlers } from "../src/routes/proxy-handlers.js";
 import {
+  OFFICIAL_RESPONSES_METHOD_CONTRACT,
   RESPONSES_METHOD_CONTRACT
 } from "../src/protocols/openai/responses-contract.js";
+import {
+  buildResponsesChainEntry,
+  expandResponsesRequestBodyFromChain
+} from "../src/responses-chain-store.js";
 
 const responsesOpenApiContract = JSON.parse(
   readFileSync(new URL("./fixtures/openai-responses-openapi.json", import.meta.url), "utf8")
@@ -205,6 +210,9 @@ function createHandlers({ normalizeResponsesImpl, fetchImpl, configOverrides = {
     buildResponsesChainEntry() {
       return null;
     },
+    async bridgeCodexResponsesCollaborationMode(body) {
+      return body;
+    },
     codexResponsesChain: {
       lookup() {
         return null;
@@ -271,6 +279,9 @@ function createHandlers({ normalizeResponsesImpl, fetchImpl, configOverrides = {
     isAnthropicNativeRequest() {
       return false;
     },
+    async getOfficialModelCandidateIds() {
+      return [];
+    },
     getOpenAICompatibleModelIds() {
       return [];
     },
@@ -297,8 +308,70 @@ function createHandlers({ normalizeResponsesImpl, fetchImpl, configOverrides = {
 test("Responses method contract fixture matches the runtime method contract", () => {
   assert.deepEqual(
     responsesOpenApiContract.methods.map(({ id, method, path }) => ({ id, method, path })),
-    RESPONSES_METHOD_CONTRACT
+    OFFICIAL_RESPONSES_METHOD_CONTRACT
   );
+});
+
+test("Responses local extension fixture remains separate from the official method contract", () => {
+  assert.deepEqual(
+    responsesOpenApiContract.local_extension_methods.map(({ id, method, path }) => ({ id, method, path })),
+    RESPONSES_METHOD_CONTRACT.filter(({ id }) => id === "compact" || id === "input_tokens")
+  );
+});
+
+test("GET /v1/models prefers dynamic official model candidates so newly exposed models are listed", async () => {
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("Not used in models list test.");
+    },
+    async fetchImpl() {
+      throw new Error("Not used in models list test.");
+    },
+    contextOverrides: {
+      async getOfficialModelCandidateIds() {
+        return ["gpt-5.4", "gpt-5.5", "gpt-5.5-codex"];
+      },
+      getOpenAICompatibleModelIds() {
+        return ["gpt-5.4", "gpt-5.3-codex"];
+      }
+    }
+  });
+  const req = createMockRequest({ method: "GET", originalUrl: "/v1/models" });
+  const res = createMockResponse();
+
+  await handlers.modelsList(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(
+    res.jsonPayload?.data?.map((item) => item.id),
+    ["gpt-5.4", "gpt-5.5", "gpt-5.5-codex"]
+  );
+});
+
+test("GET /v1/models falls back to local compatible model ids when the dynamic catalog is unavailable", async () => {
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("Not used in models list test.");
+    },
+    async fetchImpl() {
+      throw new Error("Not used in models list test.");
+    },
+    contextOverrides: {
+      async getOfficialModelCandidateIds() {
+        throw new Error("catalog unavailable");
+      },
+      getOpenAICompatibleModelIds() {
+        return ["gpt-5.4", "gpt-5.3-codex"];
+      }
+    }
+  });
+  const req = createMockRequest({ method: "GET", originalUrl: "/v1/models" });
+  const res = createMockResponse();
+
+  await handlers.modelsList(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.jsonPayload?.data?.map((item) => item.id), ["gpt-5.4", "gpt-5.3-codex"]);
 });
 
 test("POST /v1/responses applies create normalization before forwarding upstream", async () => {
@@ -486,6 +559,281 @@ test("Responses create proxy session replays local chain and strips previous_res
   );
   assert.equal(capturedInit.headers.get("accept-encoding"), "identity");
   assert.equal(session.compatibilityHint, "");
+  session.release();
+});
+
+test("Responses create proxy session bridges explicit plan mode from local Codex session state before normalization", async () => {
+  let normalizedPayload = null;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      normalizedPayload = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: rawBody,
+        json: normalizedPayload,
+        collectCompletedResponseAsJson: false,
+        model: normalizedPayload.model || "gpt-5.4",
+        modelRoute: {
+          requestedModel: normalizedPayload.model || "gpt-5.4",
+          mappedModel: normalizedPayload.model || "gpt-5.4"
+        }
+      };
+    },
+    async fetchImpl() {
+      return new Response("ok", { status: 200, headers: { "content-type": "text/event-stream" } });
+    },
+    contextOverrides: {
+      async bridgeCodexResponsesCollaborationMode(body) {
+        return {
+          ...body,
+          collaborationMode: "plan",
+          settings: {
+            developer_instructions: null
+          }
+        };
+      }
+    }
+  });
+
+  const requestBody = Buffer.from(
+    JSON.stringify({
+      model: "gpt-5.4",
+      instructions: "Base instructions",
+      client_metadata: {
+        "x-codex-turn-metadata": "{\"session_id\":\"sess_1\",\"turn_id\":\"turn_1\"}"
+      },
+      input: "hello"
+    }),
+    "utf8"
+  );
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {}
+    },
+    createMockResponse(),
+    {
+      originalUrl: "/v1/responses",
+      requestBody,
+      parsedRequestBody: JSON.parse(requestBody.toString("utf8"))
+    }
+  );
+
+  assert.equal(normalizedPayload?.collaborationMode, "plan");
+  assert.equal(normalizedPayload?.settings?.developer_instructions, null);
+  session.release();
+});
+
+test("Responses create proxy session lets the current bridged default mode override prior chained plan mode", async () => {
+  let normalizedPayload = null;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      normalizedPayload = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: rawBody,
+        json: normalizedPayload,
+        collectCompletedResponseAsJson: false,
+        model: normalizedPayload.model || "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      return new Response("ok", { status: 200, headers: { "content-type": "text/event-stream" } });
+    },
+    contextOverrides: {
+      extractPreviousResponseId(rawBody) {
+        return JSON.parse(rawBody.toString("utf8")).previous_response_id || "";
+      },
+      async bridgeCodexResponsesCollaborationMode(body) {
+        if (body.collaborationMode) return body;
+        return {
+          ...body,
+          collaborationMode: "default"
+        };
+      },
+      codexResponsesChain: {
+        lookup() {
+          return {
+            responseId: "resp_prev_plan",
+            collaborationMode: "plan",
+            inputHistory: [
+              { role: "user", content: [{ type: "input_text", text: "Plan the migration." }] }
+            ]
+          };
+        },
+        remember() {}
+      },
+      expandResponsesRequestBodyFromChain(body, entry) {
+        return {
+          ...body,
+          collaborationMode: body.collaborationMode || entry.collaborationMode,
+          input: [
+            ...(Array.isArray(entry.inputHistory) ? entry.inputHistory : []),
+            ...(Array.isArray(body.input) ? body.input : [])
+          ]
+        };
+      }
+    }
+  });
+
+  const payload = {
+    model: "gpt-5.4",
+    previous_response_id: "resp_prev_plan",
+    input: [{ role: "user", content: [{ type: "input_text", text: "Continue in normal mode." }] }]
+  };
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {}
+    },
+    createMockResponse(),
+    {
+      originalUrl: "/v1/responses",
+      requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+      parsedRequestBody: payload
+    }
+  );
+
+  assert.equal(normalizedPayload?.collaborationMode, "default");
+  session.release();
+});
+
+test("Responses create proxy session preserves current developer or system messages and explicit developer_instructions during local continuation", async () => {
+  let normalizedPayload = null;
+  let capturedInit = null;
+  const previousEntry = buildResponsesChainEntry(
+    {
+      collaborationMode: "plan",
+      settings: {
+        developer_instructions: null
+      },
+      input: [
+        {
+          role: "developer",
+          content: [{ type: "input_text", text: "Old developer instructions." }]
+        },
+        {
+          role: "system",
+          content: [{ type: "input_text", text: "Old system instructions." }]
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "First turn." }]
+        }
+      ]
+    },
+    {
+      id: "resp_prev_chain",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "First answer." }],
+          phase: "final_answer"
+        }
+      ]
+    }
+  );
+
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      normalizedPayload = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: rawBody,
+        json: normalizedPayload,
+        collectCompletedResponseAsJson: false,
+        model: normalizedPayload.model || "gpt-5.4"
+      };
+    },
+    async fetchImpl(_url, init) {
+      capturedInit = init;
+      return new Response("ok", { status: 200, headers: { "content-type": "text/event-stream" } });
+    },
+    contextOverrides: {
+      extractPreviousResponseId(rawBody) {
+        return JSON.parse(rawBody.toString("utf8")).previous_response_id || "";
+      },
+      codexResponsesChain: {
+        lookup(responseId) {
+          assert.equal(responseId, "resp_prev_chain");
+          return previousEntry;
+        },
+        remember() {}
+      },
+      expandResponsesRequestBodyFromChain
+    }
+  });
+
+  const payload = {
+    model: "gpt-5.4",
+    previous_response_id: "resp_prev_chain",
+    settings: {
+      developer_instructions: "Use the explicit developer instructions for this turn."
+    },
+    messages: [
+      {
+        role: "developer",
+        content: "Keep the current developer guidance."
+      },
+      {
+        role: "system",
+        content: "Keep the current system guidance."
+      },
+      {
+        role: "user",
+        content: "Second turn."
+      }
+    ]
+  };
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {}
+    },
+    createMockResponse(),
+    {
+      originalUrl: "/v1/responses",
+      requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+      parsedRequestBody: payload
+    }
+  );
+
+  assert.equal(normalizedPayload?.previous_response_id, undefined);
+  assert.equal(Object.hasOwn(normalizedPayload || {}, "messages"), false);
+  assert.equal(normalizedPayload?.collaborationMode, "plan");
+  assert.equal(normalizedPayload?.settings?.developer_instructions, "Use the explicit developer instructions for this turn.");
+  assert.deepEqual(normalizedPayload?.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "First turn." }]
+    },
+    {
+      type: "message",
+      role: "assistant",
+      phase: "final_answer",
+      content: [{ type: "output_text", text: "First answer." }]
+    },
+    {
+      role: "developer",
+      content: "Keep the current developer guidance."
+    },
+    {
+      role: "system",
+      content: "Keep the current system guidance."
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Second turn." }]
+    }
+  ]);
+  assert.equal(Buffer.from(capturedInit.body).toString("utf8"), JSON.stringify(normalizedPayload));
   session.release();
 });
 
@@ -983,7 +1331,9 @@ test("Responses create normalization preserves temperature on stream requests", 
   assert.equal(forwarded.temperature, 0.25);
 });
 
-for (const route of responsesOpenApiContract.methods.filter((entry) => entry.expects_create_normalization === false)) {
+for (const route of [...responsesOpenApiContract.methods, ...responsesOpenApiContract.local_extension_methods].filter(
+  (entry) => entry.expects_create_normalization === false
+)) {
   test(`${route.method} ${route.path} bypasses create normalization and preserves request shape`, async () => {
     let normalizeCalls = 0;
     let capturedUrl = "";

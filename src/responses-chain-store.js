@@ -1,10 +1,8 @@
+import { createResponsesInputConversionHelpers } from "./protocols/openai/responses-input-conversion.js";
+
 const DEFAULT_CHAIN_TTL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_CHAIN_MAX_ENTRIES = 1024;
-const ASSISTANT_CONTROL_SCAFFOLDING_PATTERNS = [
-  /<\s*\/?\s*proposed_plan\b/i,
-  /\bPlan Mode\b/i,
-  /\brequest_user_input\b/i
-];
+const { toResponsesInputFromChatMessages } = createResponsesInputConversionHelpers();
 
 function normalizeId(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -25,56 +23,89 @@ function stableStringify(value) {
   return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
 }
 
-function textContainsAssistantControlScaffolding(text) {
-  if (typeof text !== "string" || text.length === 0) return false;
-  return ASSISTANT_CONTROL_SCAFFOLDING_PATTERNS.some((pattern) => pattern.test(text));
+function normalizeSettingObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 
-function normalizeReplayableAssistantContentPart(part) {
-  if (!part || typeof part !== "object" || Array.isArray(part)) return null;
+function normalizeCollaborationMode(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "plan") return "plan";
+  if (normalized === "default") return "default";
+  return "";
+}
 
-  const cloned = cloneJson(part);
-  const partType = normalizeId(part.type);
-  if (!partType) return cloned;
+function extractExplicitCollaborationMode(requestBody) {
+  if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) return "";
+  const directMode = normalizeCollaborationMode(requestBody.collaborationMode || requestBody.collaboration_mode);
+  if (directMode) return directMode;
+  const settings = normalizeSettingObject(requestBody.settings);
+  return normalizeCollaborationMode(settings?.collaborationMode || settings?.collaboration_mode);
+}
 
-  if (partType === "output_text" || partType === "text" || partType === "input_text") {
-    return textContainsAssistantControlScaffolding(part.text) ? null : cloned;
-  }
+function usesModeDefaultDeveloperInstructions(requestBody) {
+  const settings = normalizeSettingObject(requestBody?.settings);
+  return Boolean(settings && Object.prototype.hasOwnProperty.call(settings, "developer_instructions") && settings.developer_instructions === null);
+}
 
-  if (partType === "refusal") {
-    if (
-      textContainsAssistantControlScaffolding(part.refusal) ||
-      textContainsAssistantControlScaffolding(part.text)
-    ) {
-      return null;
-    }
-    return cloned;
-  }
+function hasExplicitInstructions(requestBody) {
+  return typeof requestBody?.instructions === "string" && requestBody.instructions.length > 0;
+}
 
-  return cloned;
+function hasExplicitDeveloperInstructionsSetting(requestBody) {
+  const settings = normalizeSettingObject(requestBody?.settings);
+  return Boolean(
+    settings &&
+      Object.prototype.hasOwnProperty.call(settings, "developer_instructions") &&
+      settings.developer_instructions !== null
+  );
+}
+
+function shouldFilterReplayItemByStructure(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+  const itemType = normalizeId(item.type);
+  const phase = normalizeId(item.phase);
+  return itemType === "plan" || phase === "commentary";
+}
+
+function isInstructionRoleItem(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+  const role = normalizeId(item.role);
+  return role === "system" || role === "developer";
 }
 
 function normalizeReplayableAssistantItem(item) {
   if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-
-  const cloned = cloneJson(item);
-  if (typeof item.content === "string") {
-    return textContainsAssistantControlScaffolding(item.content) ? null : cloned;
+  if (shouldFilterReplayItemByStructure(item)) return null;
+  if (!normalizeId(item.type) && normalizeId(item.role) === "assistant") {
+    const converted = toResponsesInputFromChatMessages([item]);
+    const assistantMessage = Array.isArray(converted)
+      ? converted.find((entry) => entry && entry.role === "assistant" && !entry.type)
+      : null;
+    if (assistantMessage) {
+      return {
+        type: "message",
+        role: "assistant",
+        content: cloneJson(assistantMessage.content)
+      };
+    }
   }
-  if (!Array.isArray(item.content)) {
-    return cloned;
-  }
-
-  const normalizedContent = item.content.map((part) => normalizeReplayableAssistantContentPart(part)).filter(Boolean);
-  if (normalizedContent.length === 0) {
-    return null;
-  }
-
-  cloned.content = normalizedContent;
-  return cloned;
+  return cloneJson(item);
 }
 
-function normalizeReplayableItem(item) {
+function normalizeReplayableRoleItem(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  const role = normalizeId(item.role);
+  if (!role || normalizeId(item.type)) return cloneJson(item);
+  if (role === "assistant") {
+    return normalizeReplayableAssistantItem(item);
+  }
+  const converted = toResponsesInputFromChatMessages([item]);
+  const first = Array.isArray(converted) && converted.length > 0 ? converted[0] : null;
+  return first ? cloneJson(first) : cloneJson(item);
+}
+
+function normalizeReplayableItem(item, options = {}) {
+  const preserveInstructionRoles = options.preserveInstructionRoles === true;
   if (typeof item === "string") {
     return {
       role: "user",
@@ -85,8 +116,11 @@ function normalizeReplayableItem(item) {
 
   const itemType = normalizeId(item.type);
   const role = normalizeId(item.role);
-  if (role === "system" || role === "developer") {
+  if (shouldFilterReplayItemByStructure(item)) {
     return null;
+  }
+  if (role === "system" || role === "developer") {
+    return preserveInstructionRoles ? cloneJson(item) : null;
   }
   if (role === "assistant") {
     return normalizeReplayableAssistantItem(item);
@@ -96,19 +130,48 @@ function normalizeReplayableItem(item) {
   }
 
   if (role) {
-    return cloneJson(item);
+    return normalizeReplayableRoleItem(item);
   }
 
   return null;
 }
 
-function normalizeReplayableItems(items) {
+function normalizeReplayableItems(items, options = {}) {
   if (typeof items === "string") {
-    const normalized = normalizeReplayableItem(items);
+    const normalized = normalizeReplayableItem(items, options);
     return normalized ? [normalized] : [];
   }
   if (!Array.isArray(items)) return [];
-  return items.map((item) => normalizeReplayableItem(item)).filter(Boolean);
+  const normalized = [];
+  for (const item of items) {
+    if (
+      item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      !normalizeId(item.type) &&
+      (normalizeId(item.role) === "assistant" || normalizeId(item.role) === "tool" || normalizeId(item.role) === "user")
+    ) {
+      const converted = toResponsesInputFromChatMessages([item]);
+      for (const entry of Array.isArray(converted) ? converted : []) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+        if (entry.role === "assistant" && !entry.type) {
+          const assistantMessage = normalizeReplayableAssistantItem(entry);
+          if (assistantMessage) normalized.push(assistantMessage);
+          continue;
+        }
+        const canonical =
+          !normalizeId(entry.type) && normalizeId(entry.role)
+            ? normalizeReplayableRoleItem(entry)
+            : normalizeReplayableItem(entry, options);
+        if (canonical) normalized.push(canonical);
+      }
+      continue;
+    }
+
+    const canonical = normalizeReplayableItem(item, options);
+    if (canonical) normalized.push(canonical);
+  }
+  return normalized;
 }
 
 function areReplayItemsEqual(left, right) {
@@ -130,14 +193,28 @@ function findReplayOverlap(priorHistory, currentInput) {
   return 0;
 }
 
-function mergeReplayHistory(priorHistory, currentInput) {
-  const normalizedHistory = normalizeReplayableItems(priorHistory);
-  const normalizedInput = normalizeReplayableItems(currentInput);
-  if (normalizedHistory.length === 0) return normalizedInput;
-  if (normalizedInput.length === 0) return normalizedHistory;
+function splitLeadingInstructionItems(items) {
+  const leadingInstructionItems = [];
+  let index = 0;
+  while (index < items.length && isInstructionRoleItem(items[index])) {
+    leadingInstructionItems.push(items[index]);
+    index += 1;
+  }
+  return {
+    leadingInstructionItems,
+    remainder: items.slice(index)
+  };
+}
 
-  const overlap = findReplayOverlap(normalizedHistory, normalizedInput);
-  return [...normalizedHistory, ...normalizedInput.slice(overlap)];
+function mergeReplayHistory(priorHistory, currentInput, options = {}) {
+  const normalizedHistory = normalizeReplayableItems(priorHistory);
+  const normalizedInput = normalizeReplayableItems(currentInput, options);
+  const { leadingInstructionItems, remainder } = splitLeadingInstructionItems(normalizedInput);
+  if (normalizedHistory.length === 0) return [...leadingInstructionItems, ...remainder];
+  if (remainder.length === 0) return [...normalizedHistory, ...leadingInstructionItems];
+
+  const overlap = findReplayOverlap(normalizedHistory, remainder);
+  return [...normalizedHistory, ...leadingInstructionItems, ...remainder.slice(overlap)];
 }
 
 function normalizeChainEntry(entry) {
@@ -147,6 +224,11 @@ function normalizeChainEntry(entry) {
   return {
     responseId,
     inputHistory: normalizeReplayableItems(entry.inputHistory),
+    collaborationMode: extractExplicitCollaborationMode(entry) || normalizeCollaborationMode(entry.collaborationMode),
+    modeDefaultDeveloperInstructions:
+      typeof entry.modeDefaultDeveloperInstructions === "boolean"
+        ? entry.modeDefaultDeveloperInstructions
+        : usesModeDefaultDeveloperInstructions(entry),
     updatedAt: Number(entry.updatedAt || Date.now())
   };
 }
@@ -161,6 +243,8 @@ export function buildResponsesChainEntry(requestBody, response, now = Date.now()
   return normalizeChainEntry({
     responseId,
     inputHistory: [...requestInput, ...outputItems],
+    collaborationMode: extractExplicitCollaborationMode(requestBody),
+    modeDefaultDeveloperInstructions: usesModeDefaultDeveloperInstructions(requestBody),
     updatedAt: now
   });
 }
@@ -170,7 +254,24 @@ export function expandResponsesRequestBodyFromChain(requestBody, previousEntry) 
   if (!entry) return cloneJson(requestBody);
 
   const expanded = cloneJson(requestBody) || {};
-  expanded.input = mergeReplayHistory(entry.inputHistory, expanded.input);
+  const currentTurnInput = expanded.input !== undefined ? expanded.input : Array.isArray(expanded.messages) ? expanded.messages : expanded.input;
+  expanded.input = mergeReplayHistory(entry.inputHistory, currentTurnInput, { preserveInstructionRoles: true });
+  if (expanded.input !== undefined && Array.isArray(expanded.messages)) {
+    delete expanded.messages;
+  }
+  if (!extractExplicitCollaborationMode(expanded) && entry.collaborationMode) {
+    expanded.collaborationMode = entry.collaborationMode;
+  }
+  if (
+    !usesModeDefaultDeveloperInstructions(expanded) &&
+    !hasExplicitDeveloperInstructionsSetting(expanded) &&
+    !hasExplicitInstructions(expanded) &&
+    entry.modeDefaultDeveloperInstructions
+  ) {
+    const settings = normalizeSettingObject(expanded.settings) ? { ...expanded.settings } : {};
+    settings.developer_instructions = null;
+    expanded.settings = settings;
+  }
   delete expanded.previous_response_id;
   return expanded;
 }
