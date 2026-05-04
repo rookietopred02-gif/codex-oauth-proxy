@@ -1392,95 +1392,6 @@
         min-height: 0;
       }
 
-      .temp-mail-panel {
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 14px;
-        background: linear-gradient(180deg, rgba(8, 15, 33, 0.58), rgba(6, 12, 28, 0.52));
-        padding: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        flex: 1;
-        min-height: 0;
-        box-shadow: inset 0 0 0 1px rgba(126, 157, 219, 0.06);
-      }
-
-      .temp-mail-panel h4 {
-        margin: 0;
-        font-size: 11px;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: #d9e4ff;
-      }
-
-      .temp-mail-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
-      }
-
-      .temp-mail-grid .field {
-        min-width: 0;
-      }
-
-      .temp-mail-summary {
-        min-height: 34px;
-        display: flex;
-        align-items: center;
-      }
-
-      .temp-mail-summary.ok {
-        color: var(--ok);
-      }
-
-      .temp-mail-summary.warn {
-        color: var(--warn);
-      }
-
-      .temp-mail-summary.bad {
-        color: var(--bad);
-      }
-
-      .temp-mail-console {
-        flex: 1;
-        min-height: 300px;
-        margin-top: 4px;
-        border-radius: 14px;
-        border: 1px solid rgba(136, 167, 228, 0.16);
-        background:
-          radial-gradient(700px 220px at 0% 0%, rgba(75, 126, 220, 0.16), transparent 68%),
-          rgba(2, 8, 20, 0.94);
-        padding: 12px;
-        white-space: pre-wrap;
-        word-break: break-word;
-        box-shadow:
-          inset 0 0 0 1px rgba(127, 158, 221, 0.05),
-          inset 0 14px 24px rgba(12, 19, 36, 0.2);
-      }
-
-      .temp-mail-console-line {
-        font-family: "JetBrains Mono", monospace;
-        font-size: 11px;
-        line-height: 1.45;
-        color: #dce8ff;
-      }
-
-      .temp-mail-console-line + .temp-mail-console-line {
-        margin-top: 4px;
-      }
-
-      .temp-mail-console-line.is-success {
-        color: var(--ok);
-      }
-
-      .temp-mail-console-line.is-warning {
-        color: var(--warn);
-      }
-
-      .temp-mail-console-line.is-error {
-        color: var(--bad);
-      }
-
       .map-del {
         border: 1px solid rgba(255, 111, 127, 0.45);
         background: rgba(255, 111, 127, 0.14);
@@ -2490,10 +2401,6 @@
           grid-template-columns: 1fr;
         }
 
-        .temp-mail-grid {
-          grid-template-columns: 1fr;
-        }
-
         .account-grid.compact {
           max-height: none;
           overflow: visible;
@@ -2548,9 +2455,6 @@
           grid-template-columns: 1fr;
         }
 
-        .temp-mail-console {
-          min-height: 220px;
-        }
       }
 
       .account-empty {
@@ -2674,10 +2578,6 @@
           <div id="heroPoolChip" class="head-chip" data-tone="neutral">
             <div class="head-chip-label" data-i18n="hero_pool">Pool</div>
             <div id="heroPoolValue" class="head-chip-value mono">-</div>
-          </div>
-          <div id="heroTempChip" class="head-chip" data-tone="neutral">
-            <div class="head-chip-label" data-i18n="hero_temp">Temp Mail</div>
-            <div id="heroTempValue" class="head-chip-value mono">-</div>
           </div>
         </div>
         <div class="head-nav">
@@ -2900,39 +2800,6 @@
               <div class="result" id="testResult" data-i18n="self_test_none">No test executed.</div>
             </div>
 
-            <div class="temp-mail-panel">
-              <h4 data-i18n="temp_mail_title">Temp Mail</h4>
-              <div class="temp-mail-grid">
-                <div class="field">
-                  <label for="tempMailCount" data-i18n="temp_mail_count">Count</label>
-                  <input id="tempMailCount" type="number" min="1" max="100" step="1" value="1" />
-                </div>
-                <div class="field">
-                  <label for="tempMailPassword" data-i18n="temp_mail_password">Password</label>
-                  <input id="tempMailPassword" type="password" autocomplete="off" />
-                </div>
-                <div class="field">
-                  <label for="tempMailDelay" data-i18n="temp_mail_delay">Next Delay (s)</label>
-                  <input id="tempMailDelay" type="number" min="0" max="300" step="1" value="15" />
-                </div>
-                <div class="field">
-                  <label for="tempMailWorkers" data-i18n="temp_mail_workers">Threads</label>
-                  <input id="tempMailWorkers" type="number" min="1" max="50" step="1" value="1" />
-                </div>
-              </div>
-              <label class="checkline"
-                ><input id="tempMailAllowParallel" type="checkbox" /><span data-i18n="temp_mail_allow_parallel"
-                  >Enable Parallel</span
-                ></label
-              >
-              <div class="btns">
-                <button id="tempMailToggleBtn" class="button-strong" type="button">Run Temp Mail</button>
-              </div>
-              <div id="tempMailSummary" class="result temp-mail-summary" data-i18n="temp_mail_idle">Idle.</div>
-              <div id="tempMailConsole" class="temp-mail-console log">
-                <div class="temp-mail-console-line" data-i18n="temp_mail_console_empty">No Temp Mail logs yet.</div>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -3263,7 +3130,6 @@
       import { createRecentRequestsUi } from "./dashboard/requests.js";
       import { createDiagnosticsFeature } from "./app/features/diagnostics.js";
       import { createPoolFeature } from "./app/features/pool.js";
-      import { createTempMailFeature } from "./app/features/temp-mail.js";
       import { createDashboardI18n } from "./app/i18n.js";
       import {
         readStoredBool as readStoredBoolFromStore,
@@ -3294,16 +3160,10 @@
       let activeCustomSelectKey = "";
       const UI_LANG_STORAGE_KEY = "codex_proxy_dashboard_ui_lang";
       const HEARTBEAT_SECONDS_STORAGE_KEY = "codex_proxy_dashboard_heartbeat_seconds";
-      const TEMP_MAIL_COUNT_STORAGE_KEY = "codex_proxy_dashboard_temp_mail_count";
-      const TEMP_MAIL_PASSWORD_STORAGE_KEY = "codex_proxy_dashboard_temp_mail_password";
-      const TEMP_MAIL_DELAY_STORAGE_KEY = "codex_proxy_dashboard_temp_mail_delay";
-      const TEMP_MAIL_ALLOW_PARALLEL_STORAGE_KEY = "codex_proxy_dashboard_temp_mail_allow_parallel";
-      const TEMP_MAIL_WORKERS_STORAGE_KEY = "codex_proxy_dashboard_temp_mail_workers";
       const HEARTBEAT_MIN_SECONDS = 2;
       const HEARTBEAT_MAX_SECONDS = 3600;
       const DEFAULT_STATE_REFRESH_VISIBLE_MS = 7000;
       const DEFAULT_STATE_REFRESH_HIDDEN_MS = 30000;
-      const TEMP_MAIL_ACTIVE_REFRESH_MS = 2000;
       const DASHBOARD_AUTH_MIN_PASSWORD_LENGTH = 8;
       let stateRefreshVisibleMs = DEFAULT_STATE_REFRESH_VISIBLE_MS;
       let stateRefreshHiddenMs = DEFAULT_STATE_REFRESH_HIDDEN_MS;
@@ -3407,12 +3267,10 @@
         const authOk = Boolean(state.auth?.authenticated);
         const accounts = Array.isArray(state.auth?.accounts) ? state.auth.accounts : [];
         const enabledCount = Number(state.auth?.enabledAccountCount || 0);
-        const tempSummary = tempMailFeature.summarizeHead();
 
         setHeadChip("heroAuth", authOk ? t("hero_auth_ok") : t("hero_auth_missing"), authOk ? "ok" : "bad");
         setHeadChip("heroMode", displayUpstreamMode(state.config?.upstreamMode || "-"), "accent");
         setHeadChip("heroPool", tt("hero_pool_value", { enabled: enabledCount, total: accounts.length }), enabledCount > 0 ? "ok" : "neutral");
-        setHeadChip("heroTemp", tempSummary.text, tempSummary.tone);
       }
 
       function normalizeRuntimeDisplayHost(value) {
@@ -3555,7 +3413,6 @@
         dashboardAuthFeature.render();
         publicAccessFeature.render(publicAccessFeature.getStatusSnapshot());
         recentRequestsUi.renderRecordingToggle();
-        tempMailFeature.render(tempMailFeature.getState());
         void recentRequestsUi.reopenActiveDetail();
       }
 
@@ -4496,7 +4353,6 @@
         const refreshUsageEnabled = options.refreshUsage !== false;
         const refreshModels = options.refreshModels !== false;
         const refreshPublicAccess = options.refreshPublicAccess !== false;
-        const refreshTempMail = options.refreshTempMail !== false;
 
         if (!forceUsage && secondaryHydrationPromise) {
           return await secondaryHydrationPromise;
@@ -4515,13 +4371,6 @@
             backgroundTasks.push(
               publicAccessFeature.fetchStatus().catch((err) => {
                 console.warn("Public access status refresh failed:", err.message);
-              })
-            );
-          }
-          if (refreshTempMail) {
-            backgroundTasks.push(
-              tempMailFeature.fetchStatus().catch((err) => {
-                console.warn("Temp Mail status refresh failed:", err.message);
               })
             );
           }
@@ -4636,24 +4485,6 @@
         fmtCooldown,
         shortId,
         setTextAndPulse
-      });
-      const tempMailFeature = createTempMailFeature({
-        $,
-        api,
-        t,
-        tt,
-        escapeHtml,
-        refreshState: async (force = false) => await refreshState(force),
-        readStoredBool,
-        readStoredNumber,
-        readStoredString,
-        writeStoredString,
-        countStorageKey: TEMP_MAIL_COUNT_STORAGE_KEY,
-        passwordStorageKey: TEMP_MAIL_PASSWORD_STORAGE_KEY,
-        delayStorageKey: TEMP_MAIL_DELAY_STORAGE_KEY,
-        allowParallelStorageKey: TEMP_MAIL_ALLOW_PARALLEL_STORAGE_KEY,
-        workersStorageKey: TEMP_MAIL_WORKERS_STORAGE_KEY,
-        activeRefreshMs: TEMP_MAIL_ACTIVE_REFRESH_MS
       });
 
       async function generateApiKey() {
@@ -4945,7 +4776,6 @@
           autoSaveSnapshot = JSON.stringify(buildConfigPayload());
         }
         diagnosticsFeature.render(state, { fxEnabled });
-        tempMailFeature.render(state.tempMail || null);
         renderHeadOverview(state);
         if (!autoSaveReady) {
           autoSaveReady = true;
@@ -5060,10 +4890,6 @@
         } catch (err) {
           $("testResult").textContent = tt("self_test_failed", { message: err.message });
         }
-      }
-
-      async function toggleTempMailRun() {
-        await tempMailFeature.toggleRun();
       }
 
       async function runPreheatNow() {
@@ -5786,15 +5612,6 @@
           recentRequestsUi.closeRequestDetailModal();
         }
       });
-      for (const id of ["tempMailCount", "tempMailPassword", "tempMailDelay", "tempMailWorkers"]) {
-        $(id).addEventListener("change", () => tempMailFeature.saveFormToStorage());
-        $(id).addEventListener("blur", () => tempMailFeature.saveFormToStorage());
-      }
-      $("tempMailAllowParallel").addEventListener("change", () => {
-        tempMailFeature.syncWorkersDisabled();
-        tempMailFeature.saveFormToStorage();
-      });
-      $("tempMailToggleBtn").addEventListener("click", toggleTempMailRun);
       $("runTestBtn").addEventListener("click", runTest);
       $("runPreheatBtn").addEventListener("click", () => runPreheatNow());
 
@@ -5803,8 +5620,6 @@
       initInteractiveFx();
       initRuntimeHeartbeatControl();
       initAutoTokenRefreshControl();
-      tempMailFeature.loadFormFromStorage();
-      tempMailFeature.render(null);
 
       (async () => {
         try {
@@ -5819,8 +5634,7 @@
           refreshModels: false,
           forceUsage: false,
           refreshUsage: false,
-          refreshPublicAccess: true,
-          refreshTempMail: true
+          refreshPublicAccess: true
         }).catch(() => {});
       }, DASHBOARD_SECONDARY_REFRESH_MS);
       document.addEventListener("visibilitychange", () => {
@@ -5833,8 +5647,7 @@
             refreshModels: false,
             forceUsage: false,
             refreshUsage: false,
-            refreshPublicAccess: true,
-            refreshTempMail: true
+            refreshPublicAccess: true
           }).catch(() => {});
         }
       });

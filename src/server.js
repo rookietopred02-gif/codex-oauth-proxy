@@ -20,7 +20,6 @@ import {
   expandResponsesRequestBodyFromChain
 } from "./responses-chain-store.js";
 import { createCodexCollaborationModeResolver } from "./codex-collaboration-mode.js";
-import { createTempMailController } from "./temp-mail-controller.js";
 import { createCodexPoolSelectionHelpers } from "./runtime/codex-pool-selection.js";
 import { createCodexAuthPoolCoreHelpers } from "./runtime/codex-auth-pool-core.js";
 import { createCodexAccountIdentityHelpers } from "./runtime/codex-account-identity.js";
@@ -345,15 +344,6 @@ async function importIntoCodexAuthPool(items, options = {}) {
   clearAuthContextCache();
   return result;
 }
-
-const tempMailController = createTempMailController({
-  rootDir,
-  importTokens: async (items, options = {}) => await importIntoCodexAuthPool(items, options),
-  isSupported: () => config.authMode === "codex-oauth",
-  runnerBinaryPath: process.env.CODEX_PRO_MAX_TEMP_MAIL_RUNNER_BIN || "",
-  runnerResourcesDir: process.env.CODEX_PRO_MAX_TEMP_MAIL_RESOURCES_DIR || "",
-  allowGoRun: !parseBooleanEnv(process.env.CODEX_PRO_MAX_DISABLE_TEMP_MAIL_GO_RUN, false)
-});
 
 const expiredAccountCleanupController = createExpiredAccountCleanupController({
   initialConfig: config.expiredAccountCleanup,
@@ -831,7 +821,6 @@ const { proxyRouteHandlers } = registerServerApp({
   runtimeStats,
   recentRequestsStore,
   cloudflaredRuntime,
-  tempMailController,
   expiredAccountCleanupController,
   getProxyApiKeyStore,
   checkCloudflaredInstalled,
@@ -896,7 +885,6 @@ const { serverLifecycle, shouldAutostartServer } = createServerLifecycleRuntime(
   parseResponsesResultFromSse,
   readUpstreamTextOrThrow,
   parseJsonLoose,
-  tempMailController,
   recentRequestsStore,
   flushProxyApiKeyStore,
   stopCloudflaredTunnel,

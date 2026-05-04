@@ -10,6 +10,9 @@ Reviewed on **April 11, 2026** against the internal source-of-truth spec at `.om
   https://platform.openai.com/docs/api-reference/responses/input-items
 - Built-in tools guide (`responses` mode):  
   https://platform.openai.com/docs/guides/tools?api-mode=responses
+- Text generation instruction guidance and conversation state guidance, rechecked on **May 4, 2026**:
+  - https://developers.openai.com/api/docs/guides/text#message-roles-and-instruction-following
+  - https://developers.openai.com/api/docs/guides/conversation-state#passing-context-from-the-previous-response
 
 ## Current repo evidence
 
@@ -21,8 +24,10 @@ Reviewed on **April 11, 2026** against the internal source-of-truth spec at `.om
   - forces `stream=true`
   - forces `store=false`
   - injects `include += reasoning.encrypted_content`
+  - treats `instructions` as current-turn only during `previous_response_id` continuations
   - accepts local alias fields `messages` and `reasoning_effort`
   - drops `temperature` and `top_p` on the codex-backed Responses path
+- `src/routes/proxy-handlers.js` replays locally stored Responses chains when Codex upstream cannot consume official `previous_response_id` directly. A local chain miss is rejected instead of being silently downgraded to a fresh turn.
 - `src/protocols/openai/responses-compat.js` has explicit streaming/output-item preservation logic for:
   - `message`
   - `reasoning`
@@ -61,8 +66,11 @@ Some request transforms are deliberate repo compatibility choices rather than of
 - forced `stream=true`
 - forced `store=false`
 - automatic `reasoning.encrypted_content` include
+- local replay of known `previous_response_id` chains for the Codex backend, without surfacing a user-visible compatibility warning on successful replay
 - local aliases `messages` and `reasoning_effort`
 - dropping `temperature` and `top_p` for codex-backed Responses
+
+The proxy must not carry instructions from older turns into a continuation. Official guidance says `instructions` applies only to the current response generation request, so local replay preserves explicit current-turn developer/system instructions but does not reintroduce earlier request-level instructions.
 
 These are reasonable only if they remain explicitly documented as compatibility divergences instead of being presented as native OpenAI Responses behavior.
 

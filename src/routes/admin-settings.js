@@ -18,7 +18,6 @@ export function registerAdminSettingsRoutes(app, context) {
     getActiveUpstreamBaseUrl,
     isCodexMultiAccountEnabled,
     runDirectChatCompletionTest,
-    tempMailController,
     normalizeCodexServiceTier,
     parseNumberEnv
   } = context;
@@ -174,41 +173,4 @@ export function registerAdminSettingsRoutes(app, context) {
     }
   });
 
-  app.get("/admin/temp-mail/status", async (_req, res) => {
-    try {
-      const result = await tempMailController.refreshRunner(false);
-      res.json({ ok: true, tempMail: result });
-    } catch (err) {
-      res.status(400).json({
-        error: "temp_mail_status_failed",
-        message: String(err?.message || err || "Failed to refresh Temp Mail status."),
-        tempMail: tempMailController.getState()
-      });
-    }
-  });
-
-  app.post("/admin/temp-mail/start", async (req, res) => {
-    try {
-      const body = await readJsonBody(req);
-      const result = await tempMailController.start(body || {});
-      res.json({ ok: true, tempMail: result });
-    } catch (err) {
-      res.status(400).json({
-        error: "temp_mail_start_failed",
-        message: String(err?.message || err || "Failed to start Temp Mail.")
-      });
-    }
-  });
-
-  app.post("/admin/temp-mail/stop", async (_req, res) => {
-    try {
-      const result = await tempMailController.stop();
-      res.json({ ok: true, tempMail: result });
-    } catch (err) {
-      res.status(400).json({
-        error: "temp_mail_stop_failed",
-        message: String(err?.message || err || "Failed to stop Temp Mail.")
-      });
-    }
-  });
 }

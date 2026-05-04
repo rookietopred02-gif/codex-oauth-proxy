@@ -749,8 +749,8 @@ test("Responses WebSocket session helper rejects non-codex upstream modes", asyn
   );
 });
 
-test("Responses create proxy session strips unresolved previous_response_id before Codex upstream", async () => {
-  let capturedInit = null;
+test("Responses create proxy session rejects unresolved previous_response_id before Codex upstream", async () => {
+  let fetchCalls = 0;
   let compatibilityHint = "";
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
@@ -763,7 +763,7 @@ test("Responses create proxy session strips unresolved previous_response_id befo
       };
     },
     async fetchImpl(_url, init) {
-      capturedInit = init;
+      fetchCalls += 1;
       return new Response("", {
         status: 200,
         headers: { "content-type": "text/event-stream" }
@@ -785,41 +785,37 @@ test("Responses create proxy session strips unresolved previous_response_id befo
     input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
   };
 
-  const session = await handlers.openResponsesCreateProxySession(
-    {
-      method: "POST",
-      originalUrl: "/v1/responses",
-      url: "/v1/responses",
-      headers: {}
-    },
-    createMockResponse(),
-    {
-      originalUrl: "/v1/responses",
-      requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
-      parsedRequestBody: payload
+  await assert.rejects(
+    () =>
+      handlers.openResponsesCreateProxySession(
+        {
+          method: "POST",
+          originalUrl: "/v1/responses",
+          url: "/v1/responses",
+          headers: {}
+        },
+        createMockResponse(),
+        {
+          originalUrl: "/v1/responses",
+          requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+          parsedRequestBody: payload
+        }
+      ),
+    (err) => {
+      assert.equal(err.statusCode, 409);
+      assert.equal(err.error, "previous_response_id_chain_missing");
+      return true;
     }
   );
 
-  assert.deepEqual(session.normalizedResponsesRequest, {
-    model: "gpt-5.4",
-    input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
-  });
-  assert.equal(
-    Buffer.from(capturedInit.body).toString("utf8"),
-    JSON.stringify({
-      model: "gpt-5.4",
-      input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
-    })
-  );
-  assert.equal(capturedInit.headers.get("accept-encoding"), "identity");
-  assert.equal(session.compatibilityHint, "previous_response_id_unsupported");
-  assert.equal(compatibilityHint, "previous_response_id_unsupported");
-  session.release();
+  assert.equal(fetchCalls, 0);
+  assert.equal(compatibilityHint, "");
 });
 
 test("Responses create proxy session emulates previous_response_id from the local chain", async () => {
   let capturedInit = null;
   let compatibilityHint = "";
+  let compatibilityHintCalls = 0;
   let rememberedEntry = null;
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody, options = {}) {
@@ -843,6 +839,7 @@ test("Responses create proxy session emulates previous_response_id from the loca
     },
     contextOverrides: {
       noteCompatibilityHint(_res, hint) {
+        compatibilityHintCalls += 1;
         compatibilityHint = hint;
       },
       extractPreviousResponseId(rawBody) {
@@ -911,8 +908,9 @@ test("Responses create proxy session emulates previous_response_id from the loca
     "first answer",
     "next turn"
   ]);
-  assert.equal(session.compatibilityHint, "previous_response_id_emulated_locally");
-  assert.equal(compatibilityHint, "previous_response_id_emulated_locally");
+  assert.equal(session.compatibilityHint, "");
+  assert.equal(compatibilityHint, "");
+  assert.equal(compatibilityHintCalls, 0);
   session.rememberCompletion({ id: "resp_next", output: [] });
   assert.equal(rememberedEntry.responseId, "resp_next");
   session.release();
@@ -1093,6 +1091,22 @@ test("Responses create proxy session keeps the current bridged mode when previou
       extractPreviousResponseId(rawBody) {
         return JSON.parse(rawBody.toString("utf8")).previous_response_id || "";
       },
+      codexResponsesChain: {
+        lookup(responseId) {
+          assert.equal(responseId, "resp_prev_plan");
+          return {
+            responseId,
+            inputHistory: [],
+            updatedAt: Date.now()
+          };
+        },
+        remember() {}
+      },
+      expandResponsesRequestBodyFromChain(body) {
+        const next = structuredClone(body);
+        delete next.previous_response_id;
+        return next;
+      },
       async bridgeCodexResponsesCollaborationMode(body) {
         if (body.collaborationMode) return body;
         return {
@@ -1150,6 +1164,22 @@ test("Responses create proxy session preserves current explicit developer instru
     contextOverrides: {
       extractPreviousResponseId(rawBody) {
         return JSON.parse(rawBody.toString("utf8")).previous_response_id || "";
+      },
+      codexResponsesChain: {
+        lookup(responseId) {
+          assert.equal(responseId, "resp_prev_chain");
+          return {
+            responseId,
+            inputHistory: [],
+            updatedAt: Date.now()
+          };
+        },
+        remember() {}
+      },
+      expandResponsesRequestBodyFromChain(body) {
+        const next = structuredClone(body);
+        delete next.previous_response_id;
+        return next;
       }
     }
   });
@@ -1308,9 +1338,8 @@ test("Responses create proxy session strips Cloudflare and forwarded headers bef
   session.release();
 });
 
-test("Responses create proxy session does not forward previous_response_id without a local chain", async () => {
+test("Responses create proxy session fails previous_response_id without a local chain", async () => {
   let fetchCalls = 0;
-  let capturedInit = null;
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
       const json = JSON.parse(rawBody.toString("utf8"));
@@ -1321,9 +1350,8 @@ test("Responses create proxy session does not forward previous_response_id witho
         model: "gpt-5.4"
       };
     },
-    async fetchImpl(_url, init) {
+    async fetchImpl() {
       fetchCalls += 1;
-      capturedInit = init;
       return new Response("", {
         status: 200,
         headers: { "content-type": "text/event-stream" }
@@ -1336,31 +1364,35 @@ test("Responses create proxy session does not forward previous_response_id witho
     }
   });
 
-  const session = await handlers.openResponsesCreateProxySession(
-    {
-      method: "POST",
-      originalUrl: "/v1/responses",
-      url: "/v1/responses",
-      headers: {}
-    },
-    createMockResponse(),
-    {
-      originalUrl: "/v1/responses",
-      requestBody: Buffer.from(JSON.stringify({
-        model: "gpt-5.4",
-        previous_response_id: "resp_missing",
-        input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
-      }), "utf8"),
-      parsedRequestBody: {
-        model: "gpt-5.4",
-        previous_response_id: "resp_missing",
-        input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
-      }
+  const payload = {
+    model: "gpt-5.4",
+    previous_response_id: "resp_missing",
+    input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
+  };
+
+  await assert.rejects(
+    () =>
+      handlers.openResponsesCreateProxySession(
+        {
+          method: "POST",
+          originalUrl: "/v1/responses",
+          url: "/v1/responses",
+          headers: {}
+        },
+        createMockResponse(),
+        {
+          originalUrl: "/v1/responses",
+          requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+          parsedRequestBody: payload
+        }
+      ),
+    (err) => {
+      assert.equal(err.statusCode, 409);
+      assert.equal(err.error, "previous_response_id_chain_missing");
+      return true;
     }
   );
-  assert.equal(fetchCalls, 1);
-  assert.doesNotMatch(String(Buffer.from(capturedInit.body).toString("utf8")), /\"previous_response_id\"/);
-  session.release();
+  assert.equal(fetchCalls, 0);
 });
 
 test("audit middleware preserves full packets without truncation even if limits are small", () => {

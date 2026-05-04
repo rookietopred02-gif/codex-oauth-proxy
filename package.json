@@ -11,9 +11,8 @@
     "start": "node src/server.js",
     "desktop:dev": "node scripts/run-electron.mjs .",
     "clean:build-cache": "node scripts/clean-build-cache.mjs",
-    "build:runner": "node scripts/build-temp-mail-runner.mjs",
     "build:cloudflared": "node scripts/build-cloudflared-bundles.mjs",
-    "build:desktop-resources": "npm run build:runner && npm run build:cloudflared",
+    "build:desktop-resources": "npm run build:cloudflared",
     "dist:win": "npm run build:desktop-resources && node scripts/dist-electron-win.mjs",
     "dist:mac": "npm run build:desktop-resources && electron-builder --mac dmg --universal",
     "dist:linux": "npm run build:desktop-resources && electron-builder --linux AppImage --x64",
@@ -56,13 +55,6 @@
       "!tests/**/*"
     ],
     "extraResources": [
-      {
-        "from": "build-resources/temp-mail-runner",
-        "to": "temp-mail-runner",
-        "filter": [
-          "**/*"
-        ]
-      },
       {
         "from": "build-resources/cloudflared",
         "to": "cloudflared",

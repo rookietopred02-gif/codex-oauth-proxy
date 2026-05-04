@@ -78,13 +78,9 @@ export function configureEmbeddedServerEnv({
   process.env.CODEX_PRO_MAX_PUBLIC_DIR = path.join(resolvedRootDir, "public");
 
   if (packaged && resolvedResourcesDir) {
-    process.env.CODEX_PRO_MAX_TEMP_MAIL_RESOURCES_DIR = path.join(resolvedResourcesDir, "temp-mail-runner");
     process.env.CODEX_PRO_MAX_CLOUDFLARED_RESOURCES_DIR = path.join(resolvedResourcesDir, "cloudflared");
-    process.env.CODEX_PRO_MAX_DISABLE_TEMP_MAIL_GO_RUN = "1";
   } else {
-    delete process.env.CODEX_PRO_MAX_TEMP_MAIL_RESOURCES_DIR;
     delete process.env.CODEX_PRO_MAX_CLOUDFLARED_RESOURCES_DIR;
-    delete process.env.CODEX_PRO_MAX_DISABLE_TEMP_MAIL_GO_RUN;
   }
 
   return {

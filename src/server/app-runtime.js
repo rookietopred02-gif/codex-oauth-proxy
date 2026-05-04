@@ -39,7 +39,6 @@ export function registerServerApp({
   runtimeStats,
   recentRequestsStore,
   cloudflaredRuntime,
-  tempMailController,
   expiredAccountCleanupController,
   getProxyApiKeyStore,
   checkCloudflaredInstalled,
@@ -134,7 +133,6 @@ export function registerServerApp({
       runtimeStats,
       recentRequestsStore,
       cloudflaredRuntime,
-      tempMailController,
       expiredAccountCleanupController,
       getProxyApiKeyStore,
       getAuthStatus,
@@ -201,7 +199,6 @@ export function registerServerApp({
       getActiveUpstreamBaseUrl,
       isCodexMultiAccountEnabled,
       runDirectChatCompletionTest,
-      tempMailController,
       parseNumberEnv
     }
   });
@@ -250,7 +247,6 @@ export function createServerLifecycleRuntime({
   parseResponsesResultFromSse,
   readUpstreamTextOrThrow,
   parseJsonLoose,
-  tempMailController,
   recentRequestsStore,
   flushProxyApiKeyStore,
   stopCloudflaredTunnel,
@@ -322,9 +318,6 @@ export function createServerLifecycleRuntime({
         runBoundedShutdownStep("codex oauth callback server", async () => {
           await stopCodexOAuthCallbackServer();
         }, 1500),
-        runBoundedShutdownStep("temp mail controller", async () => {
-          await tempMailController.shutdown();
-        }, 2500),
         runBoundedShutdownStep("recent requests flush", async () => {
           await recentRequestsStore.flush();
         }, 1500),

@@ -58,7 +58,6 @@ function createConfig() {
 test("GET /admin/state does not block on slow auxiliary probes", async () => {
   const never = new Promise(() => {});
   let cloudflaredChecks = 0;
-  let tempMailChecks = 0;
   const app = express();
 
   registerAdminCoreRoutes(app, {
@@ -83,18 +82,6 @@ test("GET /admin/state does not block on slow auxiliary probes", async () => {
       mode: "quick",
       useHttp2: true,
       localPort: 8787
-    },
-    tempMailController: {
-      refreshRunner: async () => {
-        tempMailChecks += 1;
-        return await never;
-      },
-      getState: () => ({
-        supported: true,
-        runnerReady: false,
-        runnerError: "",
-        logs: []
-      })
     },
     expiredAccountCleanupController: {
       getState: () => ({ enabled: false })
@@ -147,14 +134,12 @@ test("GET /admin/state does not block on slow auxiliary probes", async () => {
     assert.equal(response.status, 200);
     assert.equal(body.ok, true);
     assert.equal(cloudflaredChecks, 1);
-    assert.equal(tempMailChecks, 1);
     assert.equal(body.stats.recentRequests[0].requestPacket, undefined);
     assert.ok(elapsedMs < 500, `expected /admin/state to return quickly, got ${elapsedMs}ms`);
   } finally {
     await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
   }
 });
-
 test("GET /admin/requests/:id returns a lightweight request detail summary", async () => {
   const app = express();
 
@@ -182,10 +167,6 @@ test("GET /admin/requests/:id returns a lightweight request detail summary", asy
       mode: "quick",
       useHttp2: true,
       localPort: 8787
-    },
-    tempMailController: {
-      refreshRunner: async () => ({}),
-      getState: () => ({ supported: true, runnerReady: false, logs: [] })
     },
     expiredAccountCleanupController: {
       getState: () => ({ enabled: false })
@@ -225,7 +206,6 @@ test("GET /admin/requests/:id returns a lightweight request detail summary", asy
     await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
   }
 });
-
 test("GET /admin/requests/:id/packet returns a packet preview slice", async () => {
   const app = express();
 
@@ -259,10 +239,6 @@ test("GET /admin/requests/:id/packet returns a packet preview slice", async () =
       useHttp2: true,
       localPort: 8787
     },
-    tempMailController: {
-      refreshRunner: async () => ({}),
-      getState: () => ({ supported: true, runnerReady: false, logs: [] })
-    },
     expiredAccountCleanupController: {
       getState: () => ({ enabled: false })
     },
@@ -295,75 +271,6 @@ test("GET /admin/requests/:id/packet returns a packet preview slice", async () =
     assert.equal(body.packet.field, "responsePacket");
     assert.equal(body.packet.text, "response preview");
     assert.equal(body.packet.truncated, true);
-  } finally {
-    await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
-  }
-});
-
-test("GET /admin/temp-mail/status returns the refreshed controller snapshot", async () => {
-  const app = express();
-  let refreshCalls = 0;
-
-  registerAdminSettingsRoutes(app, {
-    config: createConfig(),
-    cloudflaredRuntime: {
-      process: null,
-      outputTail: []
-    },
-    runtimeStats: {
-      recentRequests: []
-    },
-    recentRequestsStore: {
-      clear: () => ({ recentRequests: [] }),
-      flush: async () => {}
-    },
-    persistProxyConfigEnv: async () => {},
-    readJsonBody: async () => ({}),
-    normalizeUpstreamMode: (value) => value,
-    normalizeCodexServiceTier: (value) => value,
-    parseReasoningEffortOrFallback: (value) => value,
-    validMultiAccountStrategies: new Set(["round-robin"]),
-    multiAccountStrategyList: ["round-robin"],
-    expiredAccountCleanupController: {
-      getState: () => ({ enabled: false }),
-      updateConfig: () => {}
-    },
-    sanitizeModelMappings: (value) => value,
-    getActiveUpstreamBaseUrl: () => "https://example.invalid",
-    isCodexMultiAccountEnabled: () => false,
-    runDirectChatCompletionTest: async () => ({ ok: true }),
-    tempMailController: {
-      refreshRunner: async () => {
-        refreshCalls += 1;
-        return {
-          supported: true,
-          runnerReady: true,
-          runnerVersion: "1.2.3",
-          runnerMode: "binary",
-          running: false,
-          stopping: false,
-          logs: []
-        };
-      },
-      getState: () => ({
-        supported: true,
-        runnerReady: false,
-        logs: []
-      })
-    },
-    parseNumberEnv: (_value, fallback) => fallback
-  });
-
-  const backend = await listen(app);
-  try {
-    const response = await fetch(`${backend.url}/admin/temp-mail/status`);
-    const body = await response.json();
-
-    assert.equal(response.status, 200);
-    assert.equal(refreshCalls, 1);
-    assert.equal(body.ok, true);
-    assert.equal(body.tempMail.runnerReady, true);
-    assert.equal(body.tempMail.runnerVersion, "1.2.3");
   } finally {
     await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
   }

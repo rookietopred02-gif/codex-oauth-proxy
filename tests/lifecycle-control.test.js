@@ -102,14 +102,6 @@ test("admin config accepts a live cloudflared process and persists autoInstall=f
     getActiveUpstreamBaseUrl: () => config.upstreamBaseUrl,
     isCodexMultiAccountEnabled: () => true,
     runDirectChatCompletionTest: async () => ({}),
-    tempMailController: {
-      async start() {
-        return {};
-      },
-      async stop() {
-        return {};
-      }
-    },
     parseNumberEnv: (value) => Number(value)
   });
 
@@ -225,14 +217,6 @@ test("admin config persists runtimePort without changing the active port", async
     getActiveUpstreamBaseUrl: () => config.upstreamBaseUrl,
     isCodexMultiAccountEnabled: () => true,
     runDirectChatCompletionTest: async () => ({}),
-    tempMailController: {
-      async start() {
-        return {};
-      },
-      async stop() {
-        return {};
-      }
-    },
     parseNumberEnv: (value) => Number(value)
   });
 
@@ -357,14 +341,6 @@ test("admin config persists multiAccountPoolFilter", async () => {
     getActiveUpstreamBaseUrl: () => config.upstreamBaseUrl,
     isCodexMultiAccountEnabled: () => true,
     runDirectChatCompletionTest: async () => ({}),
-    tempMailController: {
-      async start() {
-        return {};
-      },
-      async stop() {
-        return {};
-      }
-    },
     parseNumberEnv: (value) => Number(value)
   });
 

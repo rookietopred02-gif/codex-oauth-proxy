@@ -105,13 +105,11 @@ test("startAppServer can restart repeatedly on the same desktop-configured port"
   }
 });
 
-test("configureEmbeddedServerEnv resolves packaged temp-mail and cloudflared resources", async () => {
+test("configureEmbeddedServerEnv resolves packaged cloudflared resources", async () => {
   const appDataDir = await createTempAppDataDir();
   const resourcesDir = path.join(appDataDir, "resources");
   const snapshot = {
-    CODEX_PRO_MAX_TEMP_MAIL_RESOURCES_DIR: process.env.CODEX_PRO_MAX_TEMP_MAIL_RESOURCES_DIR,
-    CODEX_PRO_MAX_CLOUDFLARED_RESOURCES_DIR: process.env.CODEX_PRO_MAX_CLOUDFLARED_RESOURCES_DIR,
-    CODEX_PRO_MAX_DISABLE_TEMP_MAIL_GO_RUN: process.env.CODEX_PRO_MAX_DISABLE_TEMP_MAIL_GO_RUN
+    CODEX_PRO_MAX_CLOUDFLARED_RESOURCES_DIR: process.env.CODEX_PRO_MAX_CLOUDFLARED_RESOURCES_DIR
   };
 
   try {
@@ -125,9 +123,7 @@ test("configureEmbeddedServerEnv resolves packaged temp-mail and cloudflared res
     });
 
     assert.equal(runtime.port, 4242);
-    assert.equal(process.env.CODEX_PRO_MAX_TEMP_MAIL_RESOURCES_DIR, path.join(resourcesDir, "temp-mail-runner"));
     assert.equal(process.env.CODEX_PRO_MAX_CLOUDFLARED_RESOURCES_DIR, path.join(resourcesDir, "cloudflared"));
-    assert.equal(process.env.CODEX_PRO_MAX_DISABLE_TEMP_MAIL_GO_RUN, "1");
   } finally {
     for (const [key, value] of Object.entries(snapshot)) {
       if (value === undefined) {

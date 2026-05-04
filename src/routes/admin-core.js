@@ -7,7 +7,6 @@ export function registerAdminCoreRoutes(app, context) {
     runtimeStats,
     recentRequestsStore,
     cloudflaredRuntime,
-    tempMailController,
     expiredAccountCleanupController,
     getProxyApiKeyStore,
     getAuthStatus,
@@ -55,7 +54,6 @@ export function registerAdminCoreRoutes(app, context) {
     try {
       const authStatus = await getAuthStatus();
       void checkCloudflaredInstalled(false).catch(() => {});
-      void tempMailController.refreshRunner(false).catch(() => {});
       const apiKeySummary = buildApiKeySummary();
       res.json({
         ok: true,
@@ -73,7 +71,6 @@ export function registerAdminCoreRoutes(app, context) {
         publicAccess: getCloudflaredStatus(),
         preheat: getCodexPreheatState(),
         expiredAccountCleanup: expiredAccountCleanupController.getState(),
-        tempMail: tempMailController.getState(),
         stats: {
           totalRequests: runtimeStats.totalRequests,
           okRequests: runtimeStats.okRequests,

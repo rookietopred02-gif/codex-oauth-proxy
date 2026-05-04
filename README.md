@@ -1,6 +1,6 @@
 # codex-pro-max
 
-Local OpenAI-compatible proxy for Codex/ChatGPT OAuth with a built-in dashboard, multi-account pool management, temp-mail assisted account registration, public access tunneling, request audit, and an Electron desktop shell.
+Local OpenAI-compatible proxy for Codex/ChatGPT OAuth with a built-in dashboard, multi-account pool management, public access tunneling, request audit, and an Electron desktop shell.
 
 This project now defaults to `AUTH_MODE=codex-oauth`, so the built-in dashboard can drive ChatGPT/Codex OAuth directly without an external auth bootstrap.
 
@@ -16,9 +16,8 @@ The dashboard and ops workflow take inspiration from:
 - Multi-account Codex OAuth pool with usage probes and account switching
 - `Account Auto RM` background cleanup for invalidated or probe-failed accounts
 - Request audit with recent request history and detail modal
-- Temp Mail workflow with bundled runner support in desktop builds
 - Desktop Electron app with embedded backend and per-user writable data paths
-- Bundled `cloudflared` and Temp Mail runner binaries for packaged desktop builds
+- Bundled `cloudflared` binaries for packaged desktop builds
 - Windows NSIS installer with standard uninstall support
 
 ## Requirements
@@ -28,9 +27,6 @@ Runtime:
 - Node.js 20+
 - npm
 
-Build:
-
-- Go toolchain for Temp Mail runner builds
 - Windows host for `.exe` installer output
 - macOS host for `.dmg`
 - Linux host or compatible AppImage toolchain for final Linux package output
@@ -109,25 +105,7 @@ The dashboard can:
 - run upstream self-test
 - run `Preheat` manually for the selected model or all supported Codex models
 - inspect recent proxy requests and clear request history
-- run or stop Temp Mail
 - configure and start public access through `cloudflared`
-
-## Temp Mail
-
-Temp Mail is available from the dashboard and from packaged desktop builds.
-
-Behavior notes:
-
-- Temp Mail requires `AUTH_MODE=codex-oauth`
-- a password is required before starting a run
-- if the password field is empty, the dashboard now writes a localized warning directly into the Temp Mail output instead of only showing a generic start failure
-- bundled desktop builds prefer the packaged Temp Mail runner; development mode can fall back to `go run`
-
-Relevant implementation:
-
-- [src/temp-mail-controller.js](C:\Users\fi\source\codex-pro-max\src\temp-mail-controller.js)
-- [public/index.html](C:\Users\fi\source\codex-pro-max\public\index.html)
-- [tools/temp-mail-runner/main.go](C:\Users\fi\source\codex-pro-max\tools\temp-mail-runner\main.go)
 
 ## Desktop App
 
@@ -150,7 +128,6 @@ Desktop-mode persistence:
 - token stores / API keys / request history / preheat history -> `userData/data/`
 - cloudflared runtime downloads -> `userData/bin/`
 - bundled `cloudflared` -> app `extraResources/cloudflared/`
-- bundled Temp Mail runner -> app `extraResources/temp-mail-runner/`
 
 Relevant files:
 
@@ -169,7 +146,6 @@ npm run build:desktop-resources
 
 This builds:
 
-- Temp Mail runner binaries for `win32-x64`, `linux-x64`, `darwin-x64`, `darwin-arm64`
 - bundled `cloudflared` binaries for `win32-x64`, `linux-x64`, `darwin-x64`, `darwin-arm64`
 
 Platform packaging commands:
@@ -201,7 +177,7 @@ npm run clean:build-cache
 
 - current packaging target: `AppImage`
 - if `electron-builder` cannot finish `AppImage` on the current host, `dist-electron/linux-unpacked/` is still useful for validation
-- this project was validated on Kali using the unpacked Linux build plus bundled `cloudflared` and Temp Mail runner
+- this project was validated on Kali using the unpacked Linux build plus bundled `cloudflared`
 
 If you copy `linux-unpacked` from Windows to Linux via `scp` or similar, executable bits may be lost. Reapply them before running:
 
@@ -210,13 +186,12 @@ chmod +x dist-electron/linux-unpacked/codex-pro-max
 chmod +x dist-electron/linux-unpacked/chrome-sandbox
 chmod +x dist-electron/linux-unpacked/chrome_crashpad_handler
 chmod +x dist-electron/linux-unpacked/resources/cloudflared/linux-x64/cloudflared
-chmod +x dist-electron/linux-unpacked/resources/temp-mail-runner/linux-x64/temp-mail-runner
 ```
 
 ### macOS
 
 - `.dmg` output must be built on macOS
-- the packaged resources already include both `darwin-x64` and `darwin-arm64` binaries for `cloudflared` and Temp Mail runner
+- the packaged resources already include both `darwin-x64` and `darwin-arm64` binaries for `cloudflared`
 
 ## API Usage
 
@@ -283,6 +258,7 @@ Priority:
 
 - tool calling is supported
 - multi-account follow-up requests are pinned by `previous_response_id`
+- Codex-backed Responses continuations replay known local chains and reject missing chain IDs instead of silently starting a fresh turn
 - vision inputs are translated to the correct provider-compatible payloads
 - SSE responses are normalized into OpenAI-compatible stream shapes where needed
 - recent requests are stored in memory immediately and persisted in debounced batches
@@ -318,7 +294,6 @@ Current validation focus includes:
 - debounced recent-request persistence
 - multi-account token import concurrency
 - account auto-remove behavior
-- Temp Mail bundled-runner detection
 - desktop lifecycle boot/shutdown
 
 ## Release Workflow

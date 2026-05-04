@@ -280,11 +280,11 @@ export function createProxyRouteHandlers(context) {
         ? preparedRequest.parsedBody
         : parseJsonLoose(preparedRequest?.rawBody?.toString("utf8") || "");
     if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
-      return {
-        preparedRequest,
-        previousResponseContinuation: true,
-        compatibilityHint: "previous_response_id_unsupported"
-      };
+      throw createRouteError(
+        400,
+        "previous_response_id_requires_json",
+        "previous_response_id requires a JSON Responses create request body."
+      );
     }
 
     const previousEntry =
@@ -297,18 +297,15 @@ export function createProxyRouteHandlers(context) {
       return {
         preparedRequest: prepareCodexResponsesCreateRequest(expandedRawBody, expandedBody),
         previousResponseContinuation: true,
-        compatibilityHint: "previous_response_id_emulated_locally"
+        compatibilityHint: ""
       };
     }
 
-    const unchainedBody = { ...parsedBody };
-    delete unchainedBody.previous_response_id;
-    const unchainedRawBody = Buffer.from(JSON.stringify(unchainedBody), "utf8");
-    return {
-      preparedRequest: prepareCodexResponsesCreateRequest(unchainedRawBody, unchainedBody),
-      previousResponseContinuation: true,
-      compatibilityHint: "previous_response_id_unsupported"
-    };
+    throw createRouteError(
+      409,
+      "previous_response_id_chain_missing",
+      "previous_response_id cannot be resolved by this proxy. Retry with the full conversation input."
+    );
   }
 
   function rememberCodexResponsesChainEntry(requestBody, completedResponse) {
