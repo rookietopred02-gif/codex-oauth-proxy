@@ -27,6 +27,8 @@ Runtime:
 - Node.js 20+
 - npm
 
+Build:
+
 - Windows host for `.exe` installer output
 - macOS host for `.dmg`
 - Linux host or compatible AppImage toolchain for final Linux package output
