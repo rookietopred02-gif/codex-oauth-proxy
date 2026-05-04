@@ -191,6 +191,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
       ensureResponsesInclude(normalized, "reasoning.encrypted_content");
     }
     preserveExplicitReasoningEffort(normalized, parsed);
+    delete normalized.generate;
     delete normalized.messages;
     delete normalized.reasoning_effort;
     prepareResponsesCollaborationModeForCodexUpstream(normalized, {

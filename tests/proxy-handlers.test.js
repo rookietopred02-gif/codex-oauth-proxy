@@ -673,6 +673,63 @@ test("POST /v1/responses forwards explicit client create fields after normalizat
   session.release();
 });
 
+test("POST /v1/responses strips local generate before forwarding upstream", async () => {
+  let capturedInit = null;
+  const realNormalizer = createRealResponsesNormalizer();
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody, options) {
+      return realNormalizer.normalizeCodexResponsesRequestBody(rawBody, options);
+    },
+    async fetchImpl(_url, init) {
+      capturedInit = init;
+      return new Response(
+        JSON.stringify({
+          id: "resp_generate_stripped",
+          status: "completed",
+          output: [],
+          usage: {}
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    }
+  });
+  const payload = {
+    model: "gpt-5.4",
+    stream: false,
+    input: "hello",
+    generate: true
+  };
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {}
+    },
+    createMockResponse(),
+    {
+      originalUrl: "/v1/responses",
+      requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+      parsedRequestBody: payload
+    }
+  );
+
+  const upstreamPayload = JSON.parse(Buffer.from(capturedInit.body).toString("utf8"));
+  assert.equal(Object.hasOwn(upstreamPayload, "generate"), false);
+  assert.equal(upstreamPayload.stream, false);
+  assert.deepEqual(upstreamPayload.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "hello" }]
+    }
+  ]);
+  session.release();
+});
+
 test("POST /v1/responses injects configured service tier when the client omits it", async () => {
   let capturedInit = null;
   const realNormalizer = createRealResponsesNormalizer();

@@ -44,11 +44,13 @@ test("responses create compat matrix keeps local alias fields separate from offi
   assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("reasoning_effort"), true);
   assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("client_metadata"), true);
   assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("collaborationMode"), true);
+  assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("generate"), true);
   assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("settings"), true);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("messages"), false);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("reasoning_effort"), false);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("client_metadata"), false);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("collaborationMode"), false);
+  assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("generate"), false);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("settings"), false);
 });
 
@@ -58,6 +60,7 @@ test("responses create compat matrix preserves official client create fields for
   assert.equal(getResponsesCreateFieldPolicy("temperature", "codexResponses"), "passthrough");
   assert.equal(getResponsesCreateFieldPolicy("top_p", "codexResponses"), "passthrough");
   assert.equal(getResponsesCreateFieldPolicy("previous_response_id", "codexResponses"), "local_transform");
+  assert.equal(getResponsesCreateFieldPolicy("generate", "codexResponses"), "local_transform");
   assert.equal(getResponsesCreateFieldPolicy("temperature", "anthropicNativeCompat"), "drop");
   assert.equal(getResponsesCreateFieldPolicy("top_p", "anthropicNativeCompat"), "drop");
   assert.equal(getResponsesCreateFieldPolicy("metadata", "anthropicNativeCompat"), "mapped");

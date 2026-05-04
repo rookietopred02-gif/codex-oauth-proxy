@@ -164,6 +164,28 @@ test("normalizeCodexResponsesRequestBody preserves explicit client service tier"
   assert.equal(normalized.json.service_tier, "default");
 });
 
+test("normalizeCodexResponsesRequestBody strips the local generate flag before upstream", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "hello",
+      generate: true
+    }), "utf8")
+  );
+
+  assert.equal(Object.hasOwn(normalized.json, "generate"), false);
+  assert.equal(normalized.json.model, "gpt-5.4");
+  assert.equal(normalized.json.stream, false);
+  assert.deepEqual(normalized.json.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "hello" }]
+    }
+  ]);
+});
+
 test("normalizeCodexResponsesRequestBody rejects unsupported top-level create fields before upstream", () => {
   const helpers = createHelpers();
 
@@ -173,14 +195,14 @@ test("normalizeCodexResponsesRequestBody rejects unsupported top-level create fi
         model: "gpt-5.4",
         stream: false,
         input: "hello",
-        generate: true
+        definitely_not_supported: true
       }), "utf8")
     ),
     (err) => {
       assert.equal(err.statusCode, 400);
       assert.equal(err.code, "unsupported_parameter");
-      assert.equal(err.param, "generate");
-      assert.match(err.message, /generate/);
+      assert.equal(err.param, "definitely_not_supported");
+      assert.match(err.message, /definitely_not_supported/);
       return true;
     }
   );
