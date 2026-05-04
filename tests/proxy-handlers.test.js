@@ -1629,7 +1629,7 @@ test("POST /v1/responses/compact fails locally instead of falling back from the 
   assert.equal(res.jsonPayload?.error, "response_id_account_unavailable");
 });
 
-test("audit middleware omits persisted packets by default", () => {
+test("audit middleware omits persisted packets when capture is disabled", () => {
   let capturedRow = null;
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
@@ -1642,6 +1642,12 @@ test("audit middleware omits persisted packets by default", () => {
     },
     async fetchImpl() {
       throw new Error("not used");
+    },
+    configOverrides: {
+      requestAudit: {
+        capturePackets: false,
+        maxPacketChars: 65536
+      }
     },
     contextOverrides: {
       runtimeStats: { totalRequests: 0, okRequests: 0, errorRequests: 0 },
@@ -1677,7 +1683,7 @@ test("audit middleware omits persisted packets by default", () => {
   assert.equal(capturedRow?.responsePacket, "");
 });
 
-test("audit middleware captures packets only when explicitly enabled", () => {
+test("audit middleware captures bounded packets when enabled", () => {
   let capturedRow = null;
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {

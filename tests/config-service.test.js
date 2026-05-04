@@ -113,7 +113,7 @@ test("createServerConfig defaults Codex to GPT-5.5", () => {
   assert.equal(OFFICIAL_CODEX_MODELS[0], "gpt-5.5");
 });
 
-test("createServerConfig defaults recent request packets to metadata-only capture", () => {
+test("createServerConfig defaults recent request packets to bounded capture", () => {
   const { config } = createServerConfig({
     env: {
       AUTH_MODE: "codex-oauth"
@@ -121,11 +121,24 @@ test("createServerConfig defaults recent request packets to metadata-only captur
     runtimePaths: createRuntimePaths("audit-defaults")
   });
 
+  assert.equal(config.requestAudit.capturePackets, true);
+  assert.equal(config.requestAudit.maxPacketChars, 65536);
+});
+
+test("createServerConfig can explicitly disable recent request packet capture", () => {
+  const { config } = createServerConfig({
+    env: {
+      AUTH_MODE: "codex-oauth",
+      RECENT_REQUESTS_CAPTURE_PACKETS: "false"
+    },
+    runtimePaths: createRuntimePaths("audit-disabled")
+  });
+
   assert.equal(config.requestAudit.capturePackets, false);
   assert.equal(config.requestAudit.maxPacketChars, 65536);
 });
 
-test("createServerConfig can explicitly enable bounded recent request packet capture", () => {
+test("createServerConfig bounds explicit recent request packet capture limits", () => {
   const { config } = createServerConfig({
     env: {
       AUTH_MODE: "codex-oauth",

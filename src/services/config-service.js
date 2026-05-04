@@ -456,7 +456,7 @@ export function createServerConfig(options = {}) {
         max: 1000,
         integer: true
       }),
-      capturePackets: parseBooleanEnv(env.RECENT_REQUESTS_CAPTURE_PACKETS, false),
+      capturePackets: parseBooleanEnv(env.RECENT_REQUESTS_CAPTURE_PACKETS, true),
       maxPacketChars: parseNumberEnv(env.RECENT_REQUESTS_MAX_PACKET_CHARS, 65536, {
         min: 0,
         max: 1024 * 1024,
