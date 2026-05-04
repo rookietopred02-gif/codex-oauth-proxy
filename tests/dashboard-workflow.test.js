@@ -4,7 +4,117 @@ import test from "node:test";
 
 const dashboardHtmlPath = new URL("../public/index.html", import.meta.url);
 const publicAccessFeaturePath = new URL("../public/dashboard/public-access.js", import.meta.url);
+const recentRequestsUiPath = new URL("../public/dashboard/requests.js", import.meta.url);
 const packageJsonPath = new URL("../package.json", import.meta.url);
+
+class FakeClassList {
+  constructor() {
+    this.values = new Set();
+  }
+
+  add(...tokens) {
+    for (const token of tokens) this.values.add(String(token));
+  }
+
+  remove(...tokens) {
+    for (const token of tokens) this.values.delete(String(token));
+  }
+
+  toggle(token, force) {
+    const value = String(token);
+    if (force === true) {
+      this.values.add(value);
+      return true;
+    }
+    if (force === false) {
+      this.values.delete(value);
+      return false;
+    }
+    if (this.values.has(value)) {
+      this.values.delete(value);
+      return false;
+    }
+    this.values.add(value);
+    return true;
+  }
+
+  contains(token) {
+    return this.values.has(String(token));
+  }
+}
+
+class FakeHTMLElement {
+  constructor() {
+    this._textContent = "";
+    this.innerHTML = "";
+    this.hidden = false;
+    this.disabled = false;
+    this.classList = new FakeClassList();
+    this.attributes = new Map();
+  }
+
+  set textContent(value) {
+    this._textContent = String(value ?? "");
+  }
+
+  get textContent() {
+    return this._textContent;
+  }
+
+  replaceChildren() {
+    this._textContent = "";
+  }
+
+  append(node) {
+    this._textContent += String(node?.textContent ?? node ?? "");
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(String(name), String(value));
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(String(name)) ?? null;
+  }
+}
+
+class FakeHTMLButtonElement extends FakeHTMLElement {}
+
+function createFakeDashboardElement(button = false) {
+  return button ? new FakeHTMLButtonElement() : new FakeHTMLElement();
+}
+
+function installFakeDashboardDom() {
+  const originalHTMLElement = globalThis.HTMLElement;
+  const originalHTMLButtonElement = globalThis.HTMLButtonElement;
+  const originalDocument = globalThis.document;
+
+  globalThis.HTMLElement = FakeHTMLElement;
+  globalThis.HTMLButtonElement = FakeHTMLButtonElement;
+  globalThis.document = {
+    body: {
+      style: {
+        overflow: ""
+      }
+    },
+    createTextNode(text) {
+      return { textContent: String(text ?? "") };
+    }
+  };
+
+  const restore = () => {
+    globalThis.HTMLElement = originalHTMLElement;
+    globalThis.HTMLButtonElement = originalHTMLButtonElement;
+    globalThis.document = originalDocument;
+  };
+
+  return {
+    createElement(button = false) {
+      return createFakeDashboardElement(button);
+    },
+    restore
+  };
+}
 
 test("dashboard fallback picker only resolves cancel after focus returns with no files", async () => {
   const html = await fs.readFile(dashboardHtmlPath, "utf8");
@@ -20,6 +130,37 @@ test("token import no longer prompts for file vs directory source", async () => 
   assert.doesNotMatch(html, /confirm\(t\("confirm_token_import_source"\)\)/);
   assert.match(html, /function canPickTokenImportFilesWithDesktopBridge\(\)/);
   assert.match(html, /await desktopBridge\.pickTokenImportFiles\(\)/);
+});
+
+test("dashboard leaves reasoning effort to client requests but keeps service tier config", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.doesNotMatch(html, /id="defaultReasoningEffort"/);
+  assert.doesNotMatch(html, /id="planModeReasoningEffort"/);
+  assert.doesNotMatch(html, /defaultReasoningEffort:/);
+  assert.doesNotMatch(html, /planModeReasoningEffort:/);
+  assert.match(html, /id="defaultServiceTier"/);
+  assert.match(html, /defaultServiceTier: \$\("defaultServiceTier"\)\.value/);
+  assert.match(html, /\$\("defaultServiceTier"\)\.value = state\.config\.defaultServiceTier \|\| "priority";/);
+});
+
+test("dashboard custom select changes force autosave for Account Pool Filter", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.match(html, /multiAccountPoolFilter/);
+  assert.match(html, /select\.dispatchEvent\(new Event\("input", \{ bubbles: true \}\)\);/);
+  assert.match(html, /select\.dispatchEvent\(new Event\("change", \{ bubbles: true \}\)\);/);
+  assert.match(html, /if \(CONFIG_FIELD_IDS\.includes\(select\.id\)\) \{\s*triggerAutoSaveNow\(\);\s*\}/);
+});
+
+test("dashboard account login flow does not seed generated account labels", async () => {
+  const poolFeature = await fs.readFile(new URL("../public/app/features/pool.js", import.meta.url), "utf8");
+
+  assert.match(poolFeature, /const raw = win\.prompt\(t\("runtime_connect_account_email_hint"\), ""\);/);
+  assert.match(poolFeature, /if \(expectedEmail\) params\.set\("email", expectedEmail\);/);
+  assert.match(poolFeature, /params\.set\("slot", String\(slot\)\);/);
+  assert.match(poolFeature, /win\.open\(`\/auth\/login\?\$\{params\.toString\(\)\}`, "_blank"\);/);
+  assert.doesNotMatch(poolFeature, /label=acc/);
 });
 
 test("dashboard copy buttons reuse clipboard fallback helper", async () => {
@@ -39,16 +180,283 @@ test("dashboard auth boot renders state before slow secondary hydration", async 
 
   assert.match(
     html,
-    /loadProtectedData:\s*async \(\)\s*=> \{\s*await refreshState\(true\);\s*void hydrateDashboardSecondaryData\(\{ forceUsage: true \}\);\s*\}/
+    /loadProtectedData:\s*async \(\)\s*=> \{\s*await refreshState\(true\);\s*void hydrateDashboardSecondaryData\(\{ forceUsage: true, refreshUsage: true \}\);\s*\}/
   );
   assert.match(
     html,
-    /setInterval\(\(\) => \{\s*if \(document\.hidden\) return;\s*hydrateDashboardSecondaryData\(\{[\s\S]*refreshModels: false/
+    /const DASHBOARD_SECONDARY_REFRESH_MS = 30 \* 1000;/
+  );
+  assert.match(
+    html,
+    /setInterval\(\(\) => \{\s*if \(document\.hidden\) return;\s*hydrateDashboardSecondaryData\(\{[\s\S]*refreshUsage: false[\s\S]*\}\)\.catch\(\(\) => \{\}\);\s*\}, DASHBOARD_SECONDARY_REFRESH_MS\);/
   );
   assert.doesNotMatch(
     html,
     /loadProtectedData:\s*async \(\)\s*=> \{\s*await loadModelCandidates\(\);\s*await refreshState\(true\);\s*\}/
   );
+});
+
+test("dashboard pool usage refresh stays manual on the toolbar button", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.doesNotMatch(html, /id="refreshUsageBtn"/);
+  assert.doesNotMatch(html, /Dual-window accounts show 5h\/W; single-window plans \(for example free\) auto-switch to one limit badge\./);
+  assert.doesNotMatch(html, /Usage refreshes automatically while the dashboard is open\./);
+  assert.doesNotMatch(html, /\$\("refreshUsageBtn"\)\.addEventListener/);
+  assert.match(html, /\$\("refreshAllAccountsBtn"\)\.addEventListener\("click", async \(\) => \{/);
+  assert.match(html, /await refreshAllAccountStatuses\(\);/);
+});
+
+test("dashboard token export downloads one json bundle without asking for a folder", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.match(html, /function normalizeTokenExportBundle\(data\)/);
+  assert.match(html, /async function exportTokensToJsonFile\(\)/);
+  assert.match(html, /fileName: sanitizeExportFileName\(String\(data\?\.fileName \|\| ""\), "codex-oauth-account-pool\.json"\)/);
+  assert.match(html, /triggerBlobDownload\(fileName, payload\);/);
+  assert.match(html, /const legacyFiles = Array\.isArray\(data\?\.files\) \? data\.files : \[\];/);
+  assert.match(html, /type: "codex-pro-max-auth-pool-export"/);
+  assert.doesNotMatch(html, /showDirectoryPicker\(\{ mode: "readwrite", id: "codex-oauth-token-export" \}\)/);
+});
+
+test("dashboard exposes manual and automatic token refresh controls for the account pool", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.match(html, /id="refreshAllTokensBtn"/);
+  assert.match(html, /id="toggleAutoRefreshTokensBtn"/);
+  assert.match(html, /id="tokenRefreshStatus"/);
+  assert.match(html, /class="preheat-grid preheat-grid--actions"/);
+  assert.match(html, /class="preheat-grid preheat-grid--compact"/);
+  assert.match(html, /const TOKEN_AUTO_REFRESH_ENABLED_STORAGE_KEY = "codex_proxy_dashboard_token_auto_refresh_enabled";/);
+  assert.match(html, /const TOKEN_AUTO_REFRESH_INTERVAL_MS = 30 \* 60 \* 1000;/);
+  assert.match(html, /\$\("refreshAllTokensBtn"\)\.addEventListener\("click"/);
+  assert.match(html, /\$\("toggleAutoRefreshTokensBtn"\)\.addEventListener\("click"/);
+  assert.match(html, /function initAutoTokenRefreshControl\(\)/);
+  assert.match(html, /\.preheat-grid--actions > button,/);
+  assert.match(html, /\.preheat-grid--compact \.custom-select__trigger,/);
+  assert.match(html, /min-height: 36px;/);
+});
+
+test("dashboard request detail modal uses load-full controls for packet-heavy payloads", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.match(html, /id="recentReqCachedInputTotal"/);
+  assert.match(html, /data-i18n="recent_requests_cached_input"/);
+  assert.match(html, /id="reqDetailReqLoadBtn"/);
+  assert.match(html, /id="reqDetailResLoadBtn"/);
+  assert.match(html, /recentRequestsUi\.loadRequestDetailFullPacket\("requestPacket"\)/);
+  assert.match(html, /recentRequestsUi\.loadRequestDetailFullPacket\("responsePacket"\)/);
+  assert.match(html, /recentRequestsUi\.copyRequestDetailLog\("requestPacket", "reqDetailReqCopyBtn"\)/);
+  assert.match(html, /recentRequestsUi\.copyRequestDetailLog\("responsePacket", "reqDetailResCopyBtn"\)/);
+});
+
+test("dashboard self-test preserves the result text and only refreshes dashboard state", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.match(html, /\$\("testResult"\)\.textContent = JSON\.stringify\(result, null, 2\);/);
+  assert.match(html, /await refreshState\(true\);/);
+  assert.doesNotMatch(html, /await refreshAllAccountStatuses\(\);[\s\S]*self-test/i);
+});
+
+test("recent requests UI keeps the split module API and preview/full detail flow intact", { concurrency: false }, async () => {
+  const { createRecentRequestsUi } = await import(recentRequestsUiPath);
+  const dom = installFakeDashboardDom();
+  const elements = new Map();
+  const clipboardWrites = [];
+  const storage = new Map([["recording", "1"]]);
+  const apiCalls = [];
+  const detailFetchCounts = new Map();
+
+  const row1 = {
+    id: "row-1",
+    ts: Date.UTC(2026, 3, 11, 10, 0, 0),
+    method: "WS",
+    transportType: "websocket",
+    path: "/responses/v1",
+    inputTokens: 11,
+    cachedInputTokens: 7,
+    outputTokens: 22,
+    totalTokens: 33,
+    status: 200,
+    durationMs: 45,
+    requestedModel: "gpt-5",
+    mappedModel: "gpt-5.4"
+  };
+  const row2 = {
+    ...row1,
+    id: "row-2",
+    path: "/responses/v1/other"
+  };
+
+  for (const [id, element] of [
+    ["reqTable", dom.createElement()],
+    ["ignoreReqBtn", dom.createElement(true)],
+    ["ignoreReqBtnLabel", dom.createElement()],
+    ["reqDetailTitle", dom.createElement()],
+    ["reqDetailMetaGrid", dom.createElement()],
+    ["reqDetailBackdrop", dom.createElement()],
+    ["reqDetailReqMeta", dom.createElement()],
+    ["reqDetailReqCode", dom.createElement()],
+    ["reqDetailReqLoadBtn", dom.createElement(true)],
+    ["reqDetailReqCopyBtn", dom.createElement(true)],
+    ["reqDetailResMeta", dom.createElement()],
+    ["reqDetailResCode", dom.createElement()],
+    ["reqDetailResLoadBtn", dom.createElement(true)],
+    ["reqDetailResCopyBtn", dom.createElement(true)]
+  ]) {
+    elements.set(id, element);
+  }
+
+  const ui = createRecentRequestsUi({
+    $(id) {
+      const element = elements.get(id);
+      if (!element) throw new Error(`Missing element: ${id}`);
+      return element;
+    },
+    api: async (path) => {
+      apiCalls.push(path);
+      if (path === "/admin/requests/row-1") {
+        detailFetchCounts.set("row-1", (detailFetchCounts.get("row-1") || 0) + 1);
+        return {
+          request: {
+            requestContentType: "application/json",
+            responseContentType: "application/json",
+            packetInfo: {
+              requestPacket: { chars: 300, bytes: 300 },
+              responsePacket: { chars: 100000, bytes: 100000 }
+            }
+          }
+        };
+      }
+      if (path.includes("/admin/requests/row-1/packet?")) {
+        const url = new URL(`https://example.test${path}`);
+        const field = url.searchParams.get("field");
+        const limit = Number(url.searchParams.get("limit"));
+        if (field === "responsePacket" && limit === 65536) {
+          return {
+            packet: {
+              text: "preview-response",
+              totalChars: 100000,
+              totalBytes: 100000,
+              truncated: true
+            }
+          };
+        }
+        if (field === "responsePacket" && limit === 100000) {
+          return {
+            packet: {
+              text: "full-response",
+              totalChars: 100000,
+              totalBytes: 100000,
+              truncated: false
+            }
+          };
+        }
+        if (field === "requestPacket" && limit === 65536) {
+          return {
+            packet: {
+              text: "preview-request",
+              totalChars: 300,
+              totalBytes: 300,
+              truncated: false
+            }
+          };
+        }
+      }
+      throw new Error(`Unexpected API call: ${path}`);
+    },
+    t: (key) => key,
+    tt: (key, vars = {}) => {
+      if (key === "request_detail_title_fmt") return `${vars.method} ${vars.path}`;
+      if (key === "request_detail_packet_meta") return `${vars.type}|${vars.size}|${vars.mode}`;
+      if (key === "token_usage_format") return `${vars.input}/${vars.output}/${vars.cachedInput}`;
+      if (key === "request_detail_load_failed") return `failed:${vars.message}`;
+      if (key === "request_detail_content_type") return String(vars.type || "-");
+      return key;
+    },
+    escapeHtml: (value) => String(value),
+    fmtToken: (value) => String(value ?? 0),
+    copyTextToClipboard: async (text) => {
+      clipboardWrites.push(String(text));
+    },
+    showCopyError(err) {
+      throw err;
+    },
+    readStoredBool(key) {
+      const value = storage.get(key);
+      if (value === "0") return false;
+      if (value === "1") return true;
+      return undefined;
+    },
+    writeStoredString(key, value) {
+      storage.set(key, String(value));
+    },
+    recordingStorageKey: "recording",
+    resolveProtocolLabel: () => "Responses",
+    resolveModelDisplay: () => "gpt-5.4",
+    resolveAccountDisplay: () => "Account A",
+    resolveCompatibilityHint: () => "-"
+  });
+
+  try {
+    assert.deepEqual(Object.keys(ui).sort(), [
+      "closeRequestDetailModal",
+      "copyRequestDetailLog",
+      "hasOpenDetail",
+      "isRecordingEnabled",
+      "loadRequestDetailFullPacket",
+      "openRequestDetailModal",
+      "renderRecordingToggle",
+      "renderRows",
+      "reopenActiveDetail",
+      "toggleRecording"
+    ]);
+
+    ui.renderRecordingToggle();
+    assert.equal(elements.get("ignoreReqBtn").classList.contains("is-recording"), true);
+    assert.equal(ui.toggleRecording(), false);
+    assert.equal(storage.get("recording"), "0");
+
+    ui.renderRows([row1]);
+    assert.match(elements.get("reqTable").innerHTML, /data-req-id="row-1"/);
+    assert.match(elements.get("reqTable").innerHTML, /WebSocket/);
+    assert.match(elements.get("reqTable").innerHTML, /gpt-5 → gpt-5.4/);
+    assert.match(elements.get("reqTable").innerHTML, />7</);
+
+    await ui.openRequestDetailModal("row-1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(ui.hasOpenDetail(), true);
+    assert.equal(elements.get("reqDetailBackdrop").hidden, false);
+    assert.equal(elements.get("reqDetailTitle").textContent, "WS /responses/v1");
+    assert.match(elements.get("reqDetailMetaGrid").innerHTML, /req_meta_transport/);
+    assert.match(elements.get("reqDetailMetaGrid").innerHTML, /11\/22\/7/);
+    assert.match(elements.get("reqDetailMetaGrid").innerHTML, /WebSocket/);
+    assert.match(elements.get("reqDetailResCode").textContent, /preview-response/);
+    assert.match(elements.get("reqDetailReqCode").textContent, /preview-request/);
+    assert.equal(detailFetchCounts.get("row-1"), 1);
+    assert(apiCalls.includes("/admin/requests/row-1/packet?field=responsePacket&offset=0&limit=65536"));
+    assert(apiCalls.includes("/admin/requests/row-1/packet?field=requestPacket&offset=0&limit=65536"));
+
+    await ui.loadRequestDetailFullPacket("responsePacket");
+    assert.equal(elements.get("reqDetailResCode").textContent, "full-response");
+    assert(apiCalls.includes("/admin/requests/row-1/packet?field=responsePacket&offset=0&limit=100000"));
+
+    await ui.copyRequestDetailLog("responsePacket", "reqDetailResCopyBtn");
+    assert.deepEqual(clipboardWrites, ["full-response"]);
+
+    ui.closeRequestDetailModal();
+    assert.equal(ui.hasOpenDetail(), false);
+    assert.equal(elements.get("reqDetailBackdrop").hidden, true);
+
+    ui.renderRows([row2]);
+    ui.renderRows([row1]);
+    await ui.openRequestDetailModal("row-1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(detailFetchCounts.get("row-1"), 2);
+  } finally {
+    dom.restore();
+  }
 });
 
 test("public access start reuses persisted auto-install setting", async () => {
@@ -104,5 +512,20 @@ test("package.json no longer points verify:claude-agent-sdk at a missing file", 
   const pkg = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
 
   assert.equal(pkg.scripts.test, "node --test");
+  assert.equal(
+    pkg.scripts["release:gate"],
+    "npm run check && npm test"
+  );
   assert.equal(Object.prototype.hasOwnProperty.call(pkg.scripts, "verify:claude-agent-sdk"), false);
+});
+
+test("package.json release gate is wired to existing repo validation commands", async () => {
+  const pkg = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
+
+  assert.equal(pkg.scripts.check, "npm run lint && npm run format:check && npm run typecheck && npm run test:smoke");
+  assert.equal(pkg.scripts["release:gate"], "npm run check && npm test");
+
+  for (const scriptName of ["lint", "format:check", "typecheck", "test:smoke", "test", "check", "release:gate"]) {
+    assert.equal(typeof pkg.scripts[scriptName], "string", `expected npm script ${scriptName} to exist`);
+  }
 });

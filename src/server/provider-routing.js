@@ -278,6 +278,16 @@ export function createProviderRoutingHelpers({
     return [...new Set((values || []).filter((x) => typeof x === "string" && x.trim().length > 0))];
   }
 
+  function extractModelId(value, candidateKeys = []) {
+    if (typeof value === "string") return value.trim();
+    if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+    for (const key of candidateKeys) {
+      const candidate = typeof value?.[key] === "string" ? value[key].trim() : "";
+      if (candidate) return candidate;
+    }
+    return "";
+  }
+
   function getOpenAICompatibleModelIds() {
     const ids = [
       config.codex.defaultModel,
@@ -285,7 +295,8 @@ export function createProviderRoutingHelpers({
       config.anthropic.defaultModel,
       ...OFFICIAL_OPENAI_MODELS,
       ...OFFICIAL_GEMINI_MODELS,
-      ...OFFICIAL_ANTHROPIC_MODELS
+      ...OFFICIAL_ANTHROPIC_MODELS,
+      ...(Array.isArray(officialModelCache.ids) ? officialModelCache.ids : [])
     ];
     for (const [sourceModel, targetModel] of Object.entries(config.modelRouter.customMappings || {})) {
       ids.push(sourceModel, targetModel);
@@ -353,7 +364,7 @@ export function createProviderRoutingHelpers({
     if (!resp.ok) return [];
     const json = await resp.json().catch(() => null);
     const models = Array.isArray(json?.models) ? json.models : [];
-    return uniqueNonEmptyModelIds(models.map((m) => (typeof m?.slug === "string" ? m.slug : "")));
+    return uniqueNonEmptyModelIds(models.map((model) => extractModelId(model, ["slug", "id", "name", "model"])));
   }
 
   async function fetchGeminiOfficialModels() {

@@ -1,10 +1,13 @@
 {
-  "generated_at": "2026-03-24",
-  "sources": [
+  "generated_at": "2026-04-10",
+  "official_sources": [
     "https://developers.openai.com/api/reference/resources/responses/methods/create",
     "https://developers.openai.com/api/reference/resources/responses/methods/retrieve",
+    "https://developers.openai.com/api/reference/resources/responses/methods/delete",
     "https://developers.openai.com/api/reference/resources/responses/methods/cancel",
-    "https://developers.openai.com/api/reference/resources/responses/subresources/input_items/methods/list",
+    "https://developers.openai.com/api/reference/resources/responses/subresources/input_items/methods/list"
+  ],
+  "local_extension_sources": [
     "https://api.openai.com/v1/responses/compact",
     "https://api.openai.com/v1/responses/input_tokens"
   ],
@@ -26,6 +29,15 @@
       "expects_create_normalization": false
     },
     {
+      "id": "delete",
+      "method": "DELETE",
+      "path": "/v1/responses/{response_id}",
+      "sample_original_url": "/v1/responses/resp_123",
+      "expected_upstream_url": "https://example.test/codex/responses/resp_123",
+      "sample_body": null,
+      "expects_create_normalization": false
+    },
+    {
       "id": "list_input_items",
       "method": "GET",
       "path": "/v1/responses/{response_id}/input_items",
@@ -41,7 +53,9 @@
       "expected_upstream_url": "https://example.test/codex/responses/resp_123/cancel",
       "sample_body": null,
       "expects_create_normalization": false
-    },
+    }
+  ],
+  "local_extension_methods": [
     {
       "id": "compact",
       "method": "POST",
@@ -235,5 +249,44 @@
       "messages",
       "reasoning_effort"
     ]
-  }
+  },
+  "tool_guides": [
+    {
+      "type": "web_search",
+      "source": "https://developers.openai.com/api/docs/guides/tools-web-search"
+    },
+    {
+      "type": "file_search",
+      "source": "https://developers.openai.com/api/docs/guides/tools-file-search"
+    },
+    {
+      "type": "mcp",
+      "source": "https://developers.openai.com/api/docs/guides/tools-remote-mcp"
+    },
+    {
+      "type": "image_generation",
+      "source": "https://developers.openai.com/api/docs/guides/tools-image-generation"
+    },
+    {
+      "type": "code_interpreter",
+      "source": "https://developers.openai.com/api/docs/guides/tools-code-interpreter"
+    },
+    {
+      "type": "shell",
+      "source": "https://developers.openai.com/api/docs/guides/tools-shell"
+    },
+    {
+      "type": "computer",
+      "source": "https://developers.openai.com/api/docs/guides/tools-computer-use"
+    }
+  ],
+  "built_in_tool_types": [
+    "web_search",
+    "file_search",
+    "mcp",
+    "image_generation",
+    "code_interpreter",
+    "shell",
+    "computer"
+  ]
 }

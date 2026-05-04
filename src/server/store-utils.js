@@ -36,6 +36,8 @@ export function normalizeToken(tokenResponse, currentToken = null) {
   return {
     access_token: tokenResponse.access_token,
     refresh_token: tokenResponse.refresh_token || currentToken?.refresh_token || null,
+    id_token: tokenResponse.id_token || currentToken?.id_token || null,
+    account_id: tokenResponse.account_id || currentToken?.account_id || null,
     token_type: tokenResponse.token_type || "Bearer",
     scope: tokenResponse.scope || null,
     expires_at: expiresAt

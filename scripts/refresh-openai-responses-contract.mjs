@@ -7,11 +7,14 @@ const fixtureDir = path.resolve(__dirname, "../tests/fixtures");
 
 const openapiContract = {
   generated_at: new Date().toISOString().slice(0, 10),
-  sources: [
+  official_sources: [
     "https://developers.openai.com/api/reference/resources/responses/methods/create",
     "https://developers.openai.com/api/reference/resources/responses/methods/retrieve",
+    "https://developers.openai.com/api/reference/resources/responses/methods/delete",
     "https://developers.openai.com/api/reference/resources/responses/methods/cancel",
-    "https://developers.openai.com/api/reference/resources/responses/subresources/input_items/methods/list",
+    "https://developers.openai.com/api/reference/resources/responses/subresources/input_items/methods/list"
+  ],
+  local_extension_sources: [
     "https://api.openai.com/v1/responses/compact",
     "https://api.openai.com/v1/responses/input_tokens"
   ],
@@ -34,6 +37,15 @@ const openapiContract = {
       expects_create_normalization: false
     },
     {
+      id: "delete",
+      method: "DELETE",
+      path: "/v1/responses/{response_id}",
+      sample_original_url: "/v1/responses/resp_123",
+      expected_upstream_url: "https://example.test/codex/responses/resp_123",
+      sample_body: null,
+      expects_create_normalization: false
+    },
+    {
       id: "list_input_items",
       method: "GET",
       path: "/v1/responses/{response_id}/input_items",
@@ -49,7 +61,9 @@ const openapiContract = {
       expected_upstream_url: "https://example.test/codex/responses/resp_123/cancel",
       sample_body: null,
       expects_create_normalization: false
-    },
+    }
+  ],
+  local_extension_methods: [
     {
       id: "compact",
       method: "POST",
@@ -76,6 +90,25 @@ const openapiContract = {
     }
   ],
   create: {
+    sample_create_request: {
+      model: "gpt-5.4",
+      stream: false,
+      messages: [
+        {
+          role: "system",
+          content: "Be concise."
+        },
+        {
+          role: "user",
+          content: "hello"
+        }
+      ],
+      reasoning_effort: "high",
+      background: true,
+      prompt_cache_key: "prompt-cache-key",
+      safety_identifier: "user_hash_123",
+      store: false
+    },
     covered_passthrough_cases: [
       {
         id: "base_request_fields",
@@ -210,8 +243,40 @@ const openapiContract = {
         }
       }
     ],
-    normalized_fields: ["model", "stream", "input", "reasoning", "messages", "reasoning_effort"]
-  }
+    normalized_fields: ["model", "stream", "input", "reasoning", "messages", "reasoning_effort"],
+    removed_fields: ["messages", "reasoning_effort"]
+  },
+  tool_guides: [
+    {
+      type: "web_search",
+      source: "https://developers.openai.com/api/docs/guides/tools-web-search"
+    },
+    {
+      type: "file_search",
+      source: "https://developers.openai.com/api/docs/guides/tools-file-search"
+    },
+    {
+      type: "mcp",
+      source: "https://developers.openai.com/api/docs/guides/tools-remote-mcp"
+    },
+    {
+      type: "image_generation",
+      source: "https://developers.openai.com/api/docs/guides/tools-image-generation"
+    },
+    {
+      type: "code_interpreter",
+      source: "https://developers.openai.com/api/docs/guides/tools-code-interpreter"
+    },
+    {
+      type: "shell",
+      source: "https://developers.openai.com/api/docs/guides/tools-shell"
+    },
+    {
+      type: "computer",
+      source: "https://developers.openai.com/api/docs/guides/tools-computer-use"
+    }
+  ],
+  built_in_tool_types: ["web_search", "file_search", "mcp", "image_generation", "code_interpreter", "shell", "computer"]
 };
 
 const eventContract = {
@@ -221,6 +286,7 @@ const eventContract = {
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.done",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.incomplete",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.failed",
+    "https://developers.openai.com/api/reference/resources/responses/streaming-events/#error",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.content_part.added",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.content_part.done",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.output_text.delta",
@@ -256,7 +322,7 @@ const eventContract = {
         chat_finish_reason: "length"
       }
     ],
-    failure: ["response.failed"]
+    failure: ["response.failed", "error"]
   },
   text_events: {
     delta: "response.output_text.delta",

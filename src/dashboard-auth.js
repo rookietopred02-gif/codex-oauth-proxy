@@ -366,11 +366,27 @@ export async function createDashboardAuthController(options = {}) {
     return verifySessionCookieValue(cookies[DASHBOARD_SESSION_COOKIE], state);
   }
 
-  function authenticateRequest(req) {
+  function authenticateRequest(req, options = {}) {
     if (!state.enabled) {
+      if (options.allowDisabled === true) {
+        return {
+          ok: true,
+          authenticated: false
+        };
+      }
       return {
-        ok: true,
-        authenticated: false
+        ok: false,
+        authenticated: false,
+        error: "dashboard_auth_required",
+        message: "Dashboard authentication must be configured locally before remote admin access is allowed."
+      };
+    }
+    if (!hasConfiguredPassword(state)) {
+      return {
+        ok: false,
+        authenticated: false,
+        error: "dashboard_auth_setup_required",
+        message: "Dashboard password setup is required before protected admin routes can be used."
       };
     }
     const session = getSessionResult(req);

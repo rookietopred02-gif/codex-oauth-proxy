@@ -49,6 +49,15 @@ export function createAnthropicLocalCompatHelpers(context) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
   }
 
+  function isAnthropicBuiltInWebSearchToolType(value) {
+    return /^web_search_\d{8}$/.test(typeof value === "string" ? value.trim() : "");
+  }
+
+  function isAnthropicBuiltInWebSearchToolName(value) {
+    const normalized = typeof value === "string" ? value.trim() : "";
+    return normalized === "web_search" || isAnthropicBuiltInWebSearchToolType(normalized);
+  }
+
   function isAnthropicNativeMessagesPath(pathname) {
     const pathValue = String(pathname || "").replace(/\/+$/, "") || "/";
     return pathValue === "/v1/messages" || pathValue === "/v1/messages/count_tokens";
@@ -692,10 +701,9 @@ export function createAnthropicLocalCompatHelpers(context) {
 
       const toolType = typeof tool.type === "string" ? tool.type.trim() : "";
       const toolName = typeof tool.name === "string" ? tool.name.trim() : "";
-      const isBuiltInWebSearch = /^web_search_\d{8}$/.test(toolType);
-      const isCustomWebBrowseTool = toolName === "WebSearch" || toolName === "WebFetch";
+      const isBuiltInWebSearch = isAnthropicBuiltInWebSearchToolType(toolType);
 
-      if (isBuiltInWebSearch || isCustomWebBrowseTool) {
+      if (isBuiltInWebSearch) {
         const normalizedToolName = typeof tool.name === "string" ? tool.name.trim() : "web_search";
         if (isBuiltInWebSearch && normalizedToolName && normalizedToolName !== "web_search") {
           throw new Error(`Unsupported Anthropic built-in web search tool name "${normalizedToolName}".`);
@@ -774,7 +782,7 @@ export function createAnthropicLocalCompatHelpers(context) {
       if (!name) {
         throw new Error("Anthropic tool_choice tool entries require a non-empty name.");
       }
-      if (hasBuiltInWebSearch && (name === "web_search" || name === "WebSearch" || name === "WebFetch")) {
+      if (hasBuiltInWebSearch && isAnthropicBuiltInWebSearchToolName(name)) {
         return "required";
       }
       return { type: "function", name };

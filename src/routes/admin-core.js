@@ -29,6 +29,28 @@ export function registerAdminCoreRoutes(app, context) {
     getOfficialCodexModelCandidateIds
   } = context;
 
+  function buildRequestDetailSummary(row) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+    const summary = { ...row };
+    const packetFields = ["requestPacket", "upstreamRequestPacket", "responsePacket"];
+    summary.packetInfo = Object.fromEntries(
+      packetFields.map((field) => {
+        const text = typeof row[field] === "string" ? row[field] : "";
+        return [
+          field,
+          {
+            chars: text.length,
+            bytes: Buffer.byteLength(text, "utf8")
+          }
+        ];
+      })
+    );
+    for (const field of packetFields) {
+      delete summary[field];
+    }
+    return summary;
+  }
+
   app.get("/admin/state", async (_req, res) => {
     try {
       const authStatus = await getAuthStatus();
@@ -75,8 +97,11 @@ export function registerAdminCoreRoutes(app, context) {
       return;
     }
 
-    const row = await recentRequestsStore.getById(requestId);
-    if (!row) {
+    const detailSummary =
+      typeof recentRequestsStore.getDetailSummaryById === "function"
+        ? await recentRequestsStore.getDetailSummaryById(requestId)
+        : buildRequestDetailSummary(await recentRequestsStore.getById(requestId));
+    if (!detailSummary) {
       res.status(404).json({
         error: "request_not_found",
         message: "Recent request detail not found."
@@ -86,7 +111,45 @@ export function registerAdminCoreRoutes(app, context) {
 
     res.json({
       ok: true,
-      request: row
+      request: detailSummary
+    });
+  });
+
+  app.get("/admin/requests/:requestId/packet", async (req, res) => {
+    const requestId = String(req.params?.requestId || "").trim();
+    const field = String(req.query?.field || "").trim();
+    const offset = Math.max(0, Math.floor(Number(req.query?.offset || 0)));
+    const limit = Math.max(0, Math.min(20_000_000, Math.floor(Number(req.query?.limit || 65536))));
+    if (!requestId) {
+      res.status(400).json({
+        error: "request_id_required",
+        message: "requestId is required."
+      });
+      return;
+    }
+    if (!["requestPacket", "upstreamRequestPacket", "responsePacket"].includes(field)) {
+      res.status(400).json({
+        error: "invalid_packet_field",
+        message: "field must be requestPacket, upstreamRequestPacket, or responsePacket."
+      });
+      return;
+    }
+
+    const packet =
+      typeof recentRequestsStore.getPacketSliceById === "function"
+        ? await recentRequestsStore.getPacketSliceById(requestId, field, { offset, limit })
+        : null;
+    if (!packet) {
+      res.status(404).json({
+        error: "request_packet_not_found",
+        message: "Recent request packet detail not found."
+      });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      packet
     });
   });
 

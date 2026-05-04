@@ -208,6 +208,148 @@ test("parseResponsesResultFromSse treats error as a failure terminal event", () 
   });
 });
 
+test("parseResponsesResultFromSse preserves streamed function calls when response.completed output is empty", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file"}}',
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\\"path\\":\\"REA"}',
+      'data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{\\"path\\":\\"README.md\\"}"}',
+      'data: {"type":"response.completed","response":{"id":"resp_stream","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.equal(parsed.completed?.id, "resp_stream");
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "fc_1",
+      type: "function_call",
+      call_id: "call_1",
+      name: "read_file",
+      arguments: '{"path":"README.md"}'
+    }
+  ]);
+});
+
+test("parseResponsesResultFromSse preserves streamed annotations and web_search_call items when response.completed output is empty", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.output_item.added","item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}',
+      'data: {"type":"response.content_part.added","item_id":"msg_1","content_index":0,"part":{"type":"output_text","text":"Look"}}',
+      'data: {"type":"response.output_text.annotation.added","item_id":"msg_1","content_index":0,"annotation":{"type":"url_citation","title":"Docs","url":"https://example.test/docs"}}',
+      'data: {"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"latest docs"}}}',
+      'data: {"type":"response.completed","response":{"id":"resp_stream_annotations","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.equal(parsed.completed?.id, "resp_stream_annotations");
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "msg_1",
+      type: "message",
+      role: "assistant",
+      content: [
+        {
+          type: "output_text",
+          text: "Look",
+          annotations: [
+            {
+              type: "url_citation",
+              title: "Docs",
+              url: "https://example.test/docs"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      id: "ws_1",
+      type: "web_search_call",
+      status: "completed",
+      action: {
+        query: "latest docs"
+      }
+    }
+  ]);
+});
+
+test("parseResponsesResultFromSse preserves assistant message phase from streamed output items", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.output_item.added","item":{"id":"msg_commentary","type":"message","role":"assistant","status":"completed","phase":"commentary","content":[{"type":"output_text","text":"Thinking through the approach."}]}}',
+      'data: {"type":"response.completed","response":{"id":"resp_stream_phase","status":"completed","output":[]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "msg_commentary",
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      phase: "commentary",
+      content: [{ type: "output_text", text: "Thinking through the approach." }]
+    }
+  ]);
+});
+
+test("parseResponsesResultFromSse preserves reasoning summary parts when response.completed output is empty", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning","summary":[],"content":[]}}',
+      'data: {"type":"response.reasoning_summary_part.added","item_id":"rs_1","summary_index":0,"part":{"type":"summary_text","text":"seed"}}',
+      'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","summary_index":0,"delta":" detail"}',
+      'data: {"type":"response.reasoning_summary_text.done","item_id":"rs_1","summary_index":0,"text":"seed detail"}',
+      'data: {"type":"response.completed","response":{"id":"resp_stream_reasoning","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.equal(parsed.completed?.id, "resp_stream_reasoning");
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "rs_1",
+      type: "reasoning",
+      summary: [
+        {
+          type: "summary_text",
+          text: "seed detail"
+        }
+      ],
+      content: []
+    }
+  ]);
+});
+
+test("parseResponsesResultFromSse preserves newer official built-in tool output items when response.completed output is empty", () => {
+  const helpers = createHelpers();
+  const streamedItems = [
+    { id: "fs_1", type: "file_search_call", status: "completed", queries: ["latest spec"] },
+    { id: "ci_1", type: "code_interpreter_call", status: "completed", code: "print('hi')" },
+    { id: "ig_1", type: "image_generation_call", status: "completed", result: { file_id: "file_img" } },
+    { id: "sh_1", type: "shell_call", call_id: "call_shell", status: "completed" },
+    { id: "cp_1", type: "computer_call", call_id: "call_computer", status: "completed" },
+    { id: "mcp_1", type: "mcp_call", call_id: "call_mcp", name: "list_docs", arguments: "{}" },
+    { id: "ct_1", type: "custom_tool_call", call_id: "call_custom", name: "internal_tool", input: "{}" }
+  ];
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      ...streamedItems.map((item) => `data: ${JSON.stringify({ type: "response.output_item.added", item })}`),
+      'data: {"type":"response.completed","response":{"id":"resp_stream_builtin_items","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.equal(parsed.completed?.id, "resp_stream_builtin_items");
+  assert.deepEqual(parsed.completed?.output, streamedItems);
+});
+
 test("pipeSseAndCaptureTokenUsage accepts error as a terminal failure event", async () => {
   const helpers = createHelpers();
   const res = createMockResponse();
@@ -259,6 +401,37 @@ test("pipeSseAndCaptureTokenUsage does not arm heartbeats before the first upstr
     global.setInterval = originalSetInterval;
     global.clearInterval = originalClearInterval;
   }
+});
+
+test("pipeSseAndCaptureTokenUsage returns merged completed output when terminal response omits streamed items", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file"}}\n\n',
+      'data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{\\"path\\":\\"README.md\\"}"}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_stream","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}\n\n'
+    ])
+  };
+
+  const result = await helpers.pipeSseAndCaptureTokenUsage(upstream, res);
+
+  assert.equal(result.failed, null);
+  assert.equal(result.completed?.id, "resp_stream");
+  assert.deepEqual(result.completed?.output, [
+    {
+      id: "fc_1",
+      type: "function_call",
+      call_id: "call_1",
+      name: "read_file",
+      arguments: '{"path":"README.md"}'
+    }
+  ]);
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 1,
+    completion_tokens: 2,
+    total_tokens: 3
+  });
 });
 
 test("pipeSseAndCaptureTokenUsage returns the completed response for raw responses streams", async () => {

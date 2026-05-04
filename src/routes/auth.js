@@ -69,6 +69,7 @@ export function registerAuthRoutes(app, context) {
       createdAt: Date.now(),
       mode: config.authMode,
       label: typeof req.query.label === "string" ? req.query.label.trim() : "",
+      expectedEmail: typeof req.query.email === "string" ? req.query.email.trim().toLowerCase() : "",
       slot: parseSlotValue(req.query.slot),
       force: String(req.query.force || "").trim() === "1"
     });
@@ -87,6 +88,10 @@ export function registerAuthRoutes(app, context) {
       authUrl.searchParams.set("codex_cli_simplified_flow", "true");
       authUrl.searchParams.set("originator", config.codexOAuth.originator);
       authUrl.searchParams.set("max_age", "0");
+      const expectedEmail = typeof req.query.email === "string" ? req.query.email.trim() : "";
+      if (expectedEmail) {
+        authUrl.searchParams.set("login_hint", expectedEmail);
+      }
     }
 
     if (req.query.prompt) {

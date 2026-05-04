@@ -86,6 +86,143 @@ test("Codex collaboration mode resolver bridges plan mode and mode-default instr
   assert.equal(bridged.settings?.developer_instructions, null);
 });
 
+test("Codex collaboration mode resolver preserves official mode instructions from turn context", async () => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-collab-mode-instructions-"));
+  const sessionDir = path.join(codexHome, "sessions", "2026", "04", "24");
+  await fs.mkdir(sessionDir, { recursive: true });
+  const sessionId = "sess_plan_instructions_123";
+  const turnId = "turn_plan_instructions_456";
+  const planInstructions = "# Plan Mode (Conversational)\nUse request_user_input before finalizing a plan.";
+  const sessionFile = path.join(sessionDir, `rollout-2026-04-24T00-00-00-${sessionId}.jsonl`);
+  await fs.writeFile(
+    sessionFile,
+    [
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          id: sessionId,
+          base_instructions: {
+            text: "Base instructions"
+          }
+        }
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "task_started",
+          turn_id: turnId,
+          collaboration_mode_kind: "plan"
+        }
+      }),
+      JSON.stringify({
+        type: "turn_context",
+        payload: {
+          turn_id: turnId,
+          collaboration_mode: {
+            mode: "plan",
+            settings: {
+              developer_instructions: planInstructions
+            }
+          }
+        }
+      })
+    ].join("\n"),
+    "utf8"
+  );
+
+  const resolver = createCodexCollaborationModeResolver({ codexHome });
+  const bridged = await resolver.bridgeRequest({
+    model: "gpt-5.4",
+    prompt_cache_key: sessionId,
+    instructions: "Base instructions",
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({
+        session_id: sessionId,
+        turn_id: turnId
+      })
+    },
+    input: "hello"
+  });
+
+  assert.equal(bridged.collaborationMode, "plan");
+  assert.equal(bridged.settings?.developer_instructions, null);
+  assert.equal(bridged.settings?._codex_resolved_developer_instructions, planInstructions);
+});
+
+test("Codex collaboration mode resolver waits for turn context before using task_started mode", async () => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-collab-mode-context-race-"));
+  const sessionDir = path.join(codexHome, "sessions", "2026", "04", "24");
+  await fs.mkdir(sessionDir, { recursive: true });
+  const sessionId = "sess_plan_context_race_123";
+  const turnId = "turn_plan_context_race_456";
+  const planInstructions = "# Plan Mode (Conversational)\nAsk a focused question if the plan is blocked.";
+  const sessionFile = path.join(sessionDir, `rollout-2026-04-24T00-00-00-${sessionId}.jsonl`);
+  await fs.writeFile(
+    sessionFile,
+    [
+      JSON.stringify({
+        type: "session_meta",
+        payload: {
+          id: sessionId,
+          base_instructions: {
+            text: "Base instructions"
+          }
+        }
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "task_started",
+          turn_id: turnId,
+          collaboration_mode_kind: "plan"
+        }
+      })
+    ].join("\n") + "\n",
+    "utf8"
+  );
+
+  const resolver = createCodexCollaborationModeResolver({ codexHome, turnModeResolveTimeoutMs: 300 });
+  const appendTurnContext = new Promise((resolve) => {
+    setTimeout(async () => {
+      await fs.appendFile(
+        sessionFile,
+        JSON.stringify({
+          type: "turn_context",
+          payload: {
+            turn_id: turnId,
+            collaboration_mode: {
+              mode: "plan",
+              settings: {
+                developer_instructions: planInstructions
+              }
+            }
+          }
+        }) + "\n",
+        "utf8"
+      );
+      resolve();
+    }, 50);
+  });
+
+  const bridged = await resolver.bridgeRequest({
+    model: "gpt-5.4",
+    prompt_cache_key: sessionId,
+    instructions: "Base instructions",
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({
+        session_id: sessionId,
+        turn_id: turnId
+      })
+    },
+    input: "hello"
+  });
+  await appendTurnContext;
+
+  assert.equal(bridged.collaborationMode, "plan");
+  assert.equal(bridged.settings?.developer_instructions, null);
+  assert.equal(bridged.settings?._codex_resolved_developer_instructions, planInstructions);
+});
+
 test("Codex collaboration mode resolver ignores session filename substring collisions", async () => {
   const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-collab-mode-collision-"));
   const sessionDir = path.join(codexHome, "sessions", "2026", "04", "24");
@@ -126,7 +263,7 @@ test("Codex collaboration mode resolver ignores session filename substring colli
   assert.equal(await resolver.findSessionFile(sessionId), exactFile);
 });
 
-test("Codex collaboration mode resolver falls back to latest structured session mode without turn metadata", async () => {
+test("Codex collaboration mode resolver does not inherit plan mode from session state without current turn metadata", async () => {
   const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-collab-mode-latest-"));
   const sessionDir = path.join(codexHome, "sessions", "2026", "04", "24");
   await fs.mkdir(sessionDir, { recursive: true });
@@ -165,8 +302,7 @@ test("Codex collaboration mode resolver falls back to latest structured session 
     "utf8"
   );
 
-  const resolver = createCodexCollaborationModeResolver({ codexHome, turnModeResolveTimeoutMs: 300 });
-  const startedAt = Date.now();
+  const resolver = createCodexCollaborationModeResolver({ codexHome, turnModeResolveTimeoutMs: 0 });
   const bridged = await resolver.bridgeRequest({
     model: "gpt-5.4",
     prompt_cache_key: sessionId,
@@ -176,14 +312,12 @@ test("Codex collaboration mode resolver falls back to latest structured session 
     },
     input: "hello"
   });
-  const elapsedMs = Date.now() - startedAt;
 
-  assert.equal(bridged.collaborationMode, "plan");
-  assert.equal(bridged.settings?.developer_instructions, null);
-  assert.ok(elapsedMs < 250, `expected latest plan mode to resolve without waiting, took ${elapsedMs}ms`);
+  assert.equal(Object.hasOwn(bridged, "collaborationMode"), false);
+  assert.equal(Object.hasOwn(bridged, "settings"), false);
 });
 
-test("Codex collaboration mode resolver waits for latest session mode when request lacks turn metadata", async () => {
+test("Codex collaboration mode resolver ignores newly written session mode when request lacks current turn metadata", async () => {
   const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-collab-mode-latest-race-"));
   const sessionDir = path.join(codexHome, "sessions", "2026", "04", "24");
   await fs.mkdir(sessionDir, { recursive: true });
@@ -243,8 +377,8 @@ test("Codex collaboration mode resolver waits for latest session mode when reque
   });
   await appendTurn;
 
-  assert.equal(bridged.collaborationMode, "plan");
-  assert.equal(bridged.settings?.developer_instructions, null);
+  assert.equal(Object.hasOwn(bridged, "collaborationMode"), false);
+  assert.equal(Object.hasOwn(bridged, "settings"), false);
 });
 
 test("Codex collaboration mode resolver re-scans newer rollout files for the same session", async () => {

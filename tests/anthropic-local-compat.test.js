@@ -464,6 +464,223 @@ test("Anthropic native stream drops explicit sampling parameters for codex-backe
   assert.equal(res.statusCode, 200);
 });
 
+test("Anthropic native non-stream forwards custom WebSearch and WebFetch as function tools", async () => {
+  let captured = null;
+  const helpers = createHelpers({
+    async executeCodexResponsesViaOAuth(options) {
+      captured = options;
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        completed: {
+          status: "completed",
+          usage: {
+            input_tokens: 3,
+            output_tokens: 4
+          },
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        }
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    tool_choice: { type: "tool", name: "WebSearch" },
+    tools: [
+      {
+        name: "WebSearch",
+        description: "Search the web",
+        input_schema: {
+          type: "object",
+          properties: {
+            query: { type: "string" }
+          }
+        }
+      },
+      {
+        name: "WebFetch",
+        description: "Fetch a page",
+        input_schema: {
+          type: "object",
+          properties: {
+            url: { type: "string" }
+          }
+        }
+      }
+    ],
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.deepEqual(captured?.tools, [
+    {
+      type: "function",
+      name: "WebSearch",
+      description: "Search the web",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" }
+        }
+      }
+    },
+    {
+      type: "function",
+      name: "WebFetch",
+      description: "Fetch a page",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string" }
+        }
+      }
+    }
+  ]);
+  assert.deepEqual(captured?.toolChoice, { type: "function", name: "WebSearch" });
+  assert.equal(captured?.include, undefined);
+  assert.equal(res.statusCode, 200);
+});
+
+test("Anthropic native stream keeps built-in web search on the native path", async () => {
+  let captured = null;
+  const helpers = createHelpers({
+    async openCodexResponsesStreamViaOAuth(options) {
+      captured = options;
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        upstream: null,
+        bufferedCompletion: {
+          status: "completed",
+          usage: {
+            input_tokens: 4,
+            output_tokens: 5,
+            total_tokens: 9
+          },
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        },
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    stream: true,
+    tools: [
+      {
+        type: "web_search_20250305",
+        allowed_domains: ["example.com"],
+        user_location: { type: "approximate", city: "Taipei" }
+      }
+    ],
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.deepEqual(captured?.tools, [
+    {
+      type: "web_search",
+      filters: {
+        allowed_domains: ["example.com"]
+      },
+      user_location: { type: "approximate", city: "Taipei" }
+    }
+  ]);
+  assert.equal(captured?.toolChoice, "auto");
+  assert.deepEqual(captured?.include, ["web_search_call.action.sources"]);
+  assert.equal(res.statusCode, 200);
+});
+
+test("Anthropic native non-stream keeps mixed built-in and custom web tools split correctly", async () => {
+  let captured = null;
+  const helpers = createHelpers({
+    async executeCodexResponsesViaOAuth(options) {
+      captured = options;
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        completed: {
+          status: "completed",
+          usage: {
+            input_tokens: 3,
+            output_tokens: 4
+          },
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        }
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    tool_choice: { type: "tool", name: "WebFetch" },
+    tools: [
+      {
+        type: "web_search_20250305",
+        blocked_domains: ["blocked.example"]
+      },
+      {
+        name: "WebFetch",
+        input_schema: {
+          type: "object",
+          properties: {
+            url: { type: "string" }
+          }
+        }
+      }
+    ],
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.deepEqual(captured?.tools, [
+    {
+      type: "web_search",
+      filters: {
+        blocked_domains: ["blocked.example"]
+      }
+    },
+    {
+      type: "function",
+      name: "WebFetch",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string" }
+        }
+      }
+    }
+  ]);
+  assert.deepEqual(captured?.toolChoice, { type: "function", name: "WebFetch" });
+  assert.deepEqual(captured?.include, ["web_search_call.action.sources"]);
+  assert.equal(res.statusCode, 200);
+});
+
 test("Anthropic native rejects unsupported documents with an explicit compatibility error", async () => {
   const helpers = createHelpers();
   const req = createMockRequest({

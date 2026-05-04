@@ -7,9 +7,57 @@ const PLAN_COLLABORATION_MODE = "plan";
 const TURN_METADATA_KEY = "x-codex-turn-metadata";
 const DEFAULT_TURN_MODE_RESOLVE_TIMEOUT_MS = 500;
 const TURN_MODE_RESOLVE_POLL_MS = 25;
+const RESOLVED_DEVELOPER_INSTRUCTIONS_KEY = "_codex_resolved_developer_instructions";
 
 function normalizeSettingObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function extractDeveloperInstructionsFromCollaborationMode(value) {
+  const collaborationMode = normalizeSettingObject(value);
+  if (!collaborationMode) return "";
+
+  const settings = normalizeSettingObject(collaborationMode.settings);
+  if (typeof settings?.developer_instructions === "string") {
+    return settings.developer_instructions;
+  }
+  if (typeof collaborationMode.developer_instructions === "string") {
+    return collaborationMode.developer_instructions;
+  }
+  return "";
+}
+
+function extractDeveloperInstructionsFromTurnPayload(payload) {
+  const fromCollaborationMode = extractDeveloperInstructionsFromCollaborationMode(payload?.collaboration_mode);
+  if (fromCollaborationMode) return fromCollaborationMode;
+
+  const settings = normalizeSettingObject(payload?.settings);
+  if (typeof settings?.developer_instructions === "string") {
+    return settings.developer_instructions;
+  }
+  if (typeof payload?.developer_instructions === "string") {
+    return payload.developer_instructions;
+  }
+  return "";
+}
+
+function normalizeModeDetail(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const mode = normalizeCodexCollaborationMode(value.mode);
+  if (!mode) return null;
+  return {
+    mode,
+    source: String(value.source || "").trim(),
+    developerInstructions: typeof value.developerInstructions === "string" ? value.developerInstructions : ""
+  };
+}
+
+function isResolvedTurnModeReady(result) {
+  const mode = normalizeCodexCollaborationMode(result?.mode);
+  if (!mode) return false;
+  if (mode !== PLAN_COLLABORATION_MODE) return true;
+  if (typeof result.developerInstructions === "string" && result.developerInstructions.length > 0) return true;
+  return String(result.modeSource || "").trim() === "turn_context";
 }
 
 function delay(ms) {
@@ -153,19 +201,35 @@ async function readSessionStateFromFile(filePath) {
   const raw = await fs.readFile(filePath, "utf8");
   const lines = raw.split(/\r?\n/);
   const turnModes = new Map();
+  const turnModeDetails = new Map();
   let latestTurnId = "";
   let latestTurnMode = "";
+  let latestTurnModeDetail = null;
   let baseInstructions = "";
 
-  function rememberTurnMode(turnId, collaborationMode) {
+  function rememberTurnMode(turnId, collaborationMode, options = {}) {
     const normalizedTurnId = String(turnId || "").trim();
     const normalizedMode = normalizeCodexCollaborationMode(collaborationMode);
     if (!normalizedMode) return;
+    const existingDetail = normalizedTurnId ? turnModeDetails.get(normalizedTurnId) : latestTurnModeDetail;
+    const inheritedDetail = existingDetail?.mode === normalizedMode ? existingDetail : null;
+    const detail = {
+      mode: normalizedMode,
+      source: String(options.source || inheritedDetail?.source || "").trim(),
+      developerInstructions:
+        typeof options.developerInstructions === "string" && options.developerInstructions.length > 0
+          ? options.developerInstructions
+          : typeof inheritedDetail?.developerInstructions === "string"
+            ? inheritedDetail.developerInstructions
+            : ""
+    };
     if (normalizedTurnId) {
       turnModes.set(normalizedTurnId, normalizedMode);
+      turnModeDetails.set(normalizedTurnId, detail);
       latestTurnId = normalizedTurnId;
     }
     latestTurnMode = normalizedMode;
+    latestTurnModeDetail = detail;
   }
 
   for (const line of lines) {
@@ -186,13 +250,17 @@ async function readSessionStateFromFile(filePath) {
 
     if (recordType === "turn_context") {
       const turnId = String(payload.turn_id || payload.turnId || "").trim();
+      const collaborationModePayload = normalizeSettingObject(payload.collaboration_mode);
       const collaborationMode = normalizeCodexCollaborationMode(
-        normalizeSettingObject(payload.collaboration_mode)?.mode ||
+        collaborationModePayload?.mode ||
           payload.collaboration_mode_kind ||
           payload.collaborationMode ||
           payload.collaboration_mode
       );
-      rememberTurnMode(turnId, collaborationMode);
+      rememberTurnMode(turnId, collaborationMode, {
+        source: "turn_context",
+        developerInstructions: extractDeveloperInstructionsFromTurnPayload(payload)
+      });
       continue;
     }
 
@@ -203,13 +271,18 @@ async function readSessionStateFromFile(filePath) {
     const collaborationMode = normalizeCodexCollaborationMode(
       payload.collaboration_mode_kind || payload.collaborationMode || payload.collaboration_mode
     );
-    rememberTurnMode(turnId, collaborationMode);
+    rememberTurnMode(turnId, collaborationMode, {
+      source: "task_started",
+      developerInstructions: extractDeveloperInstructionsFromTurnPayload(payload)
+    });
   }
 
   return {
     baseInstructions,
     latestTurnId,
     latestTurnMode,
+    latestTurnModeDetail,
+    turnModeDetails,
     turnModes
   };
 }
@@ -280,7 +353,7 @@ export function createCodexCollaborationModeResolver(options = {}) {
 
   async function resolveTurnMode(requestBody) {
     const { sessionId, turnId } = extractCodexTurnMetadata(requestBody);
-    if (!sessionId) return null;
+    if (!sessionId || !turnId) return null;
 
     const startedAt = Date.now();
     let lastResult = {
@@ -289,48 +362,26 @@ export function createCodexCollaborationModeResolver(options = {}) {
       turnId,
       baseInstructions: ""
     };
-    let initialLatestSnapshot = null;
 
     while (true) {
       const sessionState = await loadSessionState(sessionId);
-      const exactMode = turnId ? normalizeCodexCollaborationMode(sessionState?.turnModes?.get(turnId) || "") : "";
-      const latestTurnId = String(sessionState?.latestTurnId || "");
-      const latestMode = !turnId ? normalizeCodexCollaborationMode(sessionState?.latestTurnMode || "") : "";
-      const mode = exactMode || latestMode;
+      const exactMode = normalizeCodexCollaborationMode(sessionState?.turnModes?.get(turnId) || "");
+      const exactModeDetail = normalizeModeDetail(sessionState?.turnModeDetails?.get(turnId));
+      const mode = exactMode;
+      const modeDetail = exactModeDetail;
       lastResult = {
         mode,
         sessionId,
-        turnId: turnId || latestTurnId,
-        baseInstructions: typeof sessionState?.baseInstructions === "string" ? sessionState.baseInstructions : ""
+        turnId,
+        baseInstructions: typeof sessionState?.baseInstructions === "string" ? sessionState.baseInstructions : "",
+        developerInstructions:
+          typeof modeDetail?.developerInstructions === "string" ? modeDetail.developerInstructions : "",
+        modeSource: typeof modeDetail?.source === "string" ? modeDetail.source : ""
       };
-      if (turnId && mode) return lastResult;
-
-      if (!turnId) {
-        if (latestMode === PLAN_COLLABORATION_MODE) {
-          return lastResult;
-        }
-
-        if (initialLatestSnapshot === null) {
-          initialLatestSnapshot = {
-            latestTurnId,
-            latestMode
-          };
-        } else if (
-          latestMode &&
-          (latestTurnId !== initialLatestSnapshot.latestTurnId || latestMode !== initialLatestSnapshot.latestMode)
-        ) {
-          return lastResult;
-        }
-      }
+      if (mode && isResolvedTurnModeReady(lastResult)) return lastResult;
 
       const elapsed = Date.now() - startedAt;
       if (elapsed >= turnModeResolveTimeoutMs) {
-        if (!turnId && latestMode !== PLAN_COLLABORATION_MODE) {
-          return {
-            ...lastResult,
-            mode: ""
-          };
-        }
         return lastResult;
       }
       await delay(Math.min(TURN_MODE_RESOLVE_POLL_MS, turnModeResolveTimeoutMs - elapsed));
@@ -358,7 +409,15 @@ export function createCodexCollaborationModeResolver(options = {}) {
       !hasExplicitDeveloperInstructions(bridged) &&
       requestInstructions === String(resolvedTurnMode?.baseInstructions || "")
     ) {
+      const resolvedDeveloperInstructions =
+        normalizeCodexCollaborationMode(resolvedTurnMode?.mode || "") === bridgedMode &&
+        typeof resolvedTurnMode?.developerInstructions === "string"
+          ? resolvedTurnMode.developerInstructions
+          : "";
       settings.developer_instructions = null;
+      if (resolvedDeveloperInstructions.length > 0) {
+        settings[RESOLVED_DEVELOPER_INSTRUCTIONS_KEY] = resolvedDeveloperInstructions;
+      }
       bridged.settings = settings;
     }
 

@@ -316,6 +316,83 @@ test("openCodexResponsesStreamViaOAuth buffers completed JSON responses on strea
   assert.equal(getReleaseCount(), 1);
 });
 
+test("openCodexResponsesStreamViaOAuth marks the final pool failure before throwing", async () => {
+  const failureMarks = [];
+  const releaseOrder = [];
+  const authQueue = [
+    {
+      accessToken: "token-1",
+      accountId: "acct_1",
+      poolAccountId: "pool_1",
+      releaseLease() {
+        releaseOrder.push("pool_1");
+      }
+    },
+    {
+      accessToken: "token-2",
+      accountId: "acct_2",
+      poolAccountId: "pool_2",
+      releaseLease() {
+        releaseOrder.push("pool_2");
+      }
+    }
+  ];
+
+  const { helpers } = createHelpers({
+    async getValidAuthContext() {
+      return authQueue.shift();
+    },
+    isCodexPoolRetryEnabled() {
+      return true;
+    },
+    shouldRotateCodexAccountForStatus(statusCode) {
+      return Number(statusCode || 0) === 429;
+    },
+    async fetchWithUpstreamRetry() {
+      return {
+        response: new Response("rate limited", {
+          status: 429,
+          headers: {
+            "content-type": "text/plain"
+          }
+        }),
+        attempts: 1,
+        retryCount: 0,
+        lastTransportError: null
+      };
+    },
+    async readUpstreamTextOrThrow(response) {
+      return await response.text();
+    },
+    async maybeMarkCodexPoolFailure(auth, message, statusCode) {
+      failureMarks.push({
+        poolAccountId: auth?.poolAccountId || null,
+        message,
+        statusCode
+      });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      helpers.openCodexResponsesStreamViaOAuth({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+      }),
+    /HTTP 429/
+  );
+
+  assert.deepEqual(
+    failureMarks.map((entry) => entry.poolAccountId),
+    ["pool_1", "pool_2"]
+  );
+  assert.deepEqual(
+    failureMarks.map((entry) => entry.statusCode),
+    [429, 429]
+  );
+  assert.deepEqual(releaseOrder, ["pool_1", "pool_2"]);
+});
+
 test("buildCodexResponsesRequestBody preserves official additional create fields excluding unsupported sampling fields", () => {
   const { helpers } = createHelpers();
 

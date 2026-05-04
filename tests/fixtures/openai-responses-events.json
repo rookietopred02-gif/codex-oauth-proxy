@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-03-24",
+  "generated_at": "2026-04-10",
   "sources": [
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.completed",
     "https://developers.openai.com/api/reference/resources/responses/streaming-events/#response.done",

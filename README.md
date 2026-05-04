@@ -70,9 +70,8 @@ Minimal default setup:
 AUTH_MODE=codex-oauth
 UPSTREAM_MODE=codex-chatgpt
 UPSTREAM_BASE_URL=https://chatgpt.com/backend-api
-CODEX_DEFAULT_MODEL=gpt-5.4
-CODEX_DEFAULT_SERVICE_TIER=default
-CODEX_DEFAULT_REASONING_EFFORT=adaptive
+CODEX_DEFAULT_MODEL=gpt-5.5
+CODEX_DEFAULT_SERVICE_TIER=priority
 CODEX_MULTI_ACCOUNT_ENABLED=true
 CODEX_MULTI_ACCOUNT_STRATEGY=smart
 CODEX_AUTO_LOGOUT_EXPIRED_ACCOUNTS=false
@@ -95,7 +94,7 @@ ANTHROPIC_DEFAULT_MODEL=claude-sonnet-4-20250514
 
 See [.env.example](C:\Users\fi\source\codex-pro-max\.env.example) for the current env surface.
 
-`UPSTREAM_STREAM_IDLE_TIMEOUT_MS` controls how long the proxy will tolerate a silent upstream SSE stream before aborting it. The default is `900000` (15 minutes), which is safer for long-running `gpt-5.4` `xhigh` or multi-step agent tasks than the previous 3-minute default.
+`UPSTREAM_STREAM_IDLE_TIMEOUT_MS` controls how long the proxy will tolerate a silent upstream SSE stream before aborting it. The default is `900000` (15 minutes), which is safer for long-running `gpt-5.5` `xhigh` or multi-step agent tasks than the previous 3-minute default.
 
 ## Dashboard Capabilities
 
@@ -106,7 +105,7 @@ The dashboard can:
 - refresh usage and inspect the account pool
 - autosave `Proxy Config` into `.env`
 - edit Model Router mappings
-- change default `service_tier` and `reasoning effort`
+- preserve client-provided `service_tier`, or inject the configured service tier when the client omits it
 - run upstream self-test
 - run `Preheat` manually for the selected model or all supported Codex models
 - inspect recent proxy requests and clear request history
@@ -183,6 +182,12 @@ npm run dist:linux
 
 Artifacts are written to `dist-electron/`.
 
+If you want to remove only rebuildable desktop packaging output without touching runtime data in `data/`, run:
+
+```bash
+npm run clean:build-cache
+```
+
 ### Windows
 
 - packaging target: NSIS
@@ -239,7 +244,7 @@ Example:
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model":"gpt-5.4",
+    "model":"gpt-5.5",
     "messages":[{"role":"user","content":"say hello"}],
     "stream": true
   }'
@@ -251,7 +256,7 @@ Model Router supports exact and wildcard mappings:
 
 ```json
 {
-  "gpt-5.4": "gemini-2.5-pro",
+  "gpt-5.5": "gemini-2.5-pro",
   "gpt-4*": "gemini-2.5-flash",
   "claude-*": "claude-sonnet-4-6"
 }
@@ -281,7 +286,8 @@ Priority:
 - vision inputs are translated to the correct provider-compatible payloads
 - SSE responses are normalized into OpenAI-compatible stream shapes where needed
 - recent requests are stored in memory immediately and persisted in debounced batches
-- `Proxy Config` autosave persists into `.env`, including reasoning effort and service tier
+- `Proxy Config` autosave persists operational proxy settings into `.env`; request-level reasoning effort stays owned by the Codex client request, while missing `service_tier` is filled from the dashboard setting
+- docs/openai-responses-v1-alignment-audit.md tracks the current OpenAI Responses v1 parity audit, official-vs-extension surface split, and known compatibility divergences
 
 ## Development and Validation
 
@@ -290,6 +296,20 @@ Run tests:
 ```bash
 npm test
 ```
+
+Run the full release gate:
+
+```bash
+npm run release:gate
+```
+
+Use that as the canonical pre-release validation command. It chains the repo's real validation entrypoints in one place:
+
+- `npm run lint`
+- `npm run format:check`
+- `npm run typecheck`
+- `npm run test:smoke`
+- `npm test`
 
 Current validation focus includes:
 
@@ -306,7 +326,7 @@ Current validation focus includes:
 Typical release sequence:
 
 ```bash
-npm test
+npm run release:gate
 npm run dist:win
 git add .
 git commit -m "..."

@@ -48,3 +48,25 @@ test("findManagedProxyApiKeyByValue accepts a unique case-insensitive match", as
   const matched = service.findManagedProxyApiKeyByValue("sk-ZnuNesPaDbHOXJkEyagnYidxM4BzLYo3");
   assert.equal(matched?.id, "key_1");
 });
+
+test("buildApiKeySummary never exposes reusable API key values", async () => {
+  const service = createService();
+  const store = service.getProxyApiKeyStore();
+  store.keys.push({
+    id: "key_1",
+    label: "generated-key",
+    prefix: "sk-ZnuNesP",
+    value: "sk-ZnuNesPaDbhOXJkEyagnYidxM4BzLYo3",
+    hash: service.hashProxyApiKey("sk-ZnuNesPaDbhOXJkEyagnYidxM4BzLYo3"),
+    created_at: 1,
+    last_used_at: 0,
+    use_count: 0,
+    revoked_at: 0,
+    expires_at: 0
+  });
+
+  const summary = service.buildApiKeySummary();
+  assert.equal(summary.keys.length, 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(summary.keys[0], "value"), false);
+  assert.equal(JSON.stringify(summary).includes("sk-ZnuNesPaDbhOXJkEyagnYidxM4BzLYo3"), false);
+});

@@ -8,6 +8,7 @@ export function createCodexPoolSelectionHelpers(options) {
     isCodexAccountLeased,
     normalizePlanType,
     getStrategy,
+    getPoolFilter,
     lowQuotaThresholdDualWindow,
     lowQuotaThresholdSingleWindow,
     randomInt = defaultRandomInt
@@ -27,14 +28,73 @@ export function createCodexPoolSelectionHelpers(options) {
         : () => false;
   const normalizePlanTypeSafe =
     typeof normalizePlanType === "function" ? normalizePlanType : (value) => String(value || "").trim().toLowerCase() || null;
+  const getPoolFilterSafe = typeof getPoolFilter === "function" ? getPoolFilter : () => "all";
 
   const SMART_ACTIVE_STICKY_SECONDARY_MARGIN = 8;
   const SMART_ACTIVE_STICKY_PRIMARY_MARGIN = 12;
+  const SMART_LOW_QUOTA_PAUSE_SEC = 15 * 60;
 
   function parsePercentOrNull(value) {
     const n = Number(value);
     if (!Number.isFinite(n)) return null;
     return Math.max(0, Math.min(100, n));
+  }
+
+  function normalizeCodexPoolFilter(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "exclude-free") return "exclude-free";
+    if (normalized === "standard-only") return "standard-only";
+    if (normalized === "team-only") return "team-only";
+    if (normalized === "free-only") return "free-only";
+    return "all";
+  }
+
+  function readCodexPlanTypeFromEntryId(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (!raw) return "";
+    const marker = "::plan:";
+    const markerIndex = raw.lastIndexOf(marker);
+    if (markerIndex < 0) return "";
+    return raw.slice(markerIndex + marker.length).trim();
+  }
+
+  function readCodexAccountPlanType(account) {
+    return (
+      normalizePlanTypeSafe(
+        account?.usage_snapshot?.plan_type ||
+          account?.usageSnapshot?.plan_type ||
+          account?.plan_type ||
+          account?.planType ||
+          readCodexPlanTypeFromEntryId(getEntryId?.(account)) ||
+          readCodexPlanTypeFromEntryId(account?.identity_id) ||
+          readCodexPlanTypeFromEntryId(account?.entry_id) ||
+          readCodexPlanTypeFromEntryId(account?.entryId)
+      ) || ""
+    )
+      .trim()
+      .toLowerCase();
+  }
+
+  function matchesCodexPoolFilter(account, filter) {
+    const normalizedFilter = normalizeCodexPoolFilter(filter);
+    if (normalizedFilter === "all") return true;
+
+    const planType = readCodexAccountPlanType(account);
+    const isFree = planType === "free";
+    const isTeam = planType.includes("team");
+    const isStandard = Boolean(planType) && !isFree && !isTeam;
+
+    if (normalizedFilter === "exclude-free") return !isFree;
+    if (normalizedFilter === "standard-only") return isStandard;
+    if (normalizedFilter === "team-only") return isTeam;
+    if (normalizedFilter === "free-only") return isFree;
+    return true;
+  }
+
+  function filterCodexPoolAccounts(accounts, filter = getPoolFilterSafe()) {
+    const normalizedFilter = normalizeCodexPoolFilter(filter);
+    if (normalizedFilter === "all") return Array.isArray(accounts) ? [...accounts] : [];
+    return (Array.isArray(accounts) ? accounts : []).filter((account) => matchesCodexPoolFilter(account, normalizedFilter));
   }
 
   function hasCodexUsageWindow(usageWindow) {
@@ -141,6 +201,73 @@ export function createCodexPoolSelectionHelpers(options) {
     if (usageStats.isSingleWindow) return lowQuotaThresholdSingleWindow;
     if (usageStats.planType === "free") return lowQuotaThresholdSingleWindow;
     return lowQuotaThresholdDualWindow;
+  }
+
+  function getCodexUsageWindowResetAt(usageWindow, snapshotTimestampSec = 0) {
+    const resetAt = Number(usageWindow?.reset_at);
+    if (Number.isFinite(resetAt) && resetAt > 0) return Math.floor(resetAt);
+
+    const resetAfterSec = Number(usageWindow?.reset_after_seconds);
+    if (!Number.isFinite(resetAfterSec) || resetAfterSec <= 0) return null;
+
+    const baseTimestamp =
+      Number.isFinite(snapshotTimestampSec) && snapshotTimestampSec > 0
+        ? Math.floor(snapshotTimestampSec)
+        : Math.floor(Date.now() / 1000);
+    return baseTimestamp + Math.floor(resetAfterSec);
+  }
+
+  function getCodexSmartQuotaPauseUntil(account, nowSec = Math.floor(Date.now() / 1000), usage = null) {
+    const usageStats = usage || getCodexUsageWindowStats(account);
+    const usageSnapshot = account?.usage_snapshot && typeof account.usage_snapshot === "object" ? account.usage_snapshot : null;
+    const snapshotTimestamp =
+      Number(account?.usage_updated_at || usageSnapshot?.fetched_at || 0) || 0;
+    if (snapshotTimestamp <= 0) return 0;
+
+    const lowQuotaThreshold = resolveCodexLowQuotaThreshold(usageStats);
+    const impactedResetTimes = [];
+
+    const primaryResetAt = getCodexUsageWindowResetAt(usageSnapshot?.primary, snapshotTimestamp);
+    const secondaryResetAt = getCodexUsageWindowResetAt(usageSnapshot?.secondary, snapshotTimestamp);
+
+    if (
+      Number.isFinite(usageStats.primaryRemaining) &&
+      usageStats.primaryRemaining !== null &&
+      usageStats.primaryRemaining <= lowQuotaThreshold &&
+      Number.isFinite(primaryResetAt)
+    ) {
+      impactedResetTimes.push(primaryResetAt);
+    }
+
+    if (
+      Number.isFinite(usageStats.secondaryRemaining) &&
+      usageStats.secondaryRemaining !== null &&
+      usageStats.secondaryRemaining <= lowQuotaThresholdDualWindow &&
+      Number.isFinite(secondaryResetAt)
+    ) {
+      impactedResetTimes.push(secondaryResetAt);
+    }
+
+    const nearestResetAt = impactedResetTimes.length > 0 ? Math.min(...impactedResetTimes) : null;
+    const hardLimited = usageStats.isSingleWindow
+      ? usageStats.primaryRemaining !== null && usageStats.primaryRemaining <= 0
+      : (usageStats.primaryRemaining !== null && usageStats.primaryRemaining <= 0) ||
+        (usageStats.secondaryRemaining !== null && usageStats.secondaryRemaining <= 0);
+    if (hardLimited) {
+      if (Number.isFinite(nearestResetAt) && nearestResetAt > nowSec) return nearestResetAt;
+      return snapshotTimestamp + SMART_LOW_QUOTA_PAUSE_SEC;
+    }
+
+    const lowQuota =
+      (usageStats.primaryRemaining !== null && usageStats.primaryRemaining <= lowQuotaThreshold) ||
+      (usageStats.secondaryRemaining !== null && usageStats.secondaryRemaining <= lowQuotaThresholdDualWindow);
+    if (!lowQuota) return 0;
+
+    const shortPauseUntil = snapshotTimestamp + SMART_LOW_QUOTA_PAUSE_SEC;
+    if (Number.isFinite(nearestResetAt) && nearestResetAt > nowSec) {
+      return Math.min(nearestResetAt, shortPauseUntil);
+    }
+    return shortPauseUntil;
   }
 
   function classifyCodexPoolHealth(account, nowSec = Math.floor(Date.now() / 1000), usage = null) {
@@ -329,6 +456,10 @@ export function createCodexPoolSelectionHelpers(options) {
       .map((account) => account.secondaryRemaining)
       .filter((value) => Number.isFinite(value));
     const enabled = decorated.filter((account) => account.account?.enabled !== false);
+    const selectionEligible = filterCodexPoolAccounts(
+      enabled.map((account) => account.account),
+      getPoolFilterSafe()
+    );
     const healthy = decorated.filter((account) => account.healthStatus === "healthy");
     const cooldown = decorated.filter((account) => account.healthStatus === "cooldown");
     const atRisk = decorated.filter((account) =>
@@ -336,7 +467,9 @@ export function createCodexPoolSelectionHelpers(options) {
     );
     const lowQuotaCount = decorated.filter((account) => account.lowQuota).length;
     const hardLimitedCount = decorated.filter((account) => account.hardLimited).length;
-    const recommended = [...enabled]
+    const recommended = selectionEligible
+      .map((account) => decorated.find((item) => item.account === account) || null)
+      .filter(Boolean)
       .sort(compareCodexSmartDecorated)
       .slice(0, 5)
       .map((account) => account.entryId);
@@ -366,9 +499,16 @@ export function createCodexPoolSelectionHelpers(options) {
   function getCodexEnabledAccounts(store) {
     if (!Array.isArray(store?.accounts)) return [];
     const nowSec = Math.floor(Date.now() / 1000);
-    const enabledAccounts = store.accounts.filter((account) => account && account.enabled !== false);
+    const enabledAccounts = store.accounts.filter(
+      (account) =>
+        account &&
+        account.enabled !== false &&
+        Number(account.token_invalidated_at || account.tokenInvalidatedAt || 0) <= 0
+    );
     if (enabledAccounts.length === 0) return [];
-    const eligible = enabledAccounts.filter((account) => Number(account.cooldown_until || 0) <= nowSec);
+    const filteredEnabledAccounts = filterCodexPoolAccounts(enabledAccounts, getPoolFilterSafe());
+    if (filteredEnabledAccounts.length === 0) return [];
+    const eligible = filteredEnabledAccounts.filter((account) => Number(account.cooldown_until || 0) <= nowSec);
     return eligible.filter((account) => {
       const health = classifyCodexPoolHealth(account, nowSec);
       return !health.hardLimited;
@@ -412,18 +552,32 @@ export function createCodexPoolSelectionHelpers(options) {
         : typeof getStrategy === "function"
           ? String(getStrategy() || "").trim()
           : "";
+    const nowSec = Math.floor(Date.now() / 1000);
 
     let candidates;
     if (strategy === "smart") {
       if (enabled.length === 0) return [];
-      const decorated = enabled.map((account) => decorateCodexPoolAccount(account, store.active_account_id || ""));
+      const smartEligible = enabled.filter((account) => {
+        const usage = getCodexUsageWindowStats(account);
+        const pauseUntil = getCodexSmartQuotaPauseUntil(account, nowSec, usage);
+        return !Number.isFinite(pauseUntil) || pauseUntil <= nowSec;
+      });
+      if (smartEligible.length === 0) return [];
+      const decorated = smartEligible.map((account) => decorateCodexPoolAccount(account, store.active_account_id || ""));
       const ranked = [...decorated].sort(compareCodexSmartDecorated);
       candidates = ranked.map((account) => account.account);
     } else if (strategy === "manual") {
       const activeRef = String(store.active_account_id || "").trim();
-      const pool = Array.isArray(store.accounts) ? store.accounts : [];
+      const pool = filterCodexPoolAccounts(Array.isArray(store.accounts) ? store.accounts : [], getPoolFilterSafe());
       const activeAccount = pool.find((account) => account && getEntryId?.(account) === activeRef) || null;
-      candidates = activeAccount && activeAccount.enabled !== false ? [activeAccount] : [];
+      candidates =
+        activeAccount &&
+        activeAccount.enabled !== false &&
+        Number(activeAccount.token_invalidated_at || activeAccount.tokenInvalidatedAt || 0) <= 0 &&
+        Number(activeAccount.cooldown_until || 0) <= nowSec &&
+        !classifyCodexPoolHealth(activeAccount, nowSec).hardLimited
+          ? [activeAccount]
+          : [];
     } else if (strategy === "sticky" && store.active_account_id) {
       if (enabled.length === 0) return [];
       const primary = enabled.find((account) => getEntryId?.(account) === String(store.active_account_id));
@@ -455,9 +609,9 @@ export function createCodexPoolSelectionHelpers(options) {
       return prioritizeUnleasedCodexAccounts(candidates);
     }
 
-    const preferredPool = (Array.isArray(store?.accounts) ? store.accounts : []).filter(
+    const preferredPool = filterCodexPoolAccounts((Array.isArray(store?.accounts) ? store.accounts : []).filter(
       (account) => account && account.enabled !== false
-    );
+    ));
     const preferred = preferredPool.find((account) => getEntryId?.(account) === preferredPoolEntryId);
     if (!preferred) return prioritizeUnleasedCodexAccounts(candidates);
 
@@ -479,8 +633,10 @@ export function createCodexPoolSelectionHelpers(options) {
     getCodexUsageWindowStats,
     parsePercentOrNull,
     pickCodexAccountCandidates,
+    filterCodexPoolAccounts,
     readUsageRemainingPercent,
     readUsageUsedPercent,
-    resolveCodexLowQuotaThreshold
+    resolveCodexLowQuotaThreshold,
+    getCodexSmartQuotaPauseUntil
   };
 }

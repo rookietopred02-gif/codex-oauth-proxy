@@ -1,6 +1,20 @@
 const RAW_BODY_CACHE = Symbol("codexProMax.rawBody");
 const RAW_BODY_PROMISE = Symbol("codexProMax.rawBodyPromise");
 const JSON_BODY_CACHE = Symbol("codexProMax.jsonBody");
+export const DEFAULT_MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
+
+function resolveMaxBodyBytes(options = {}) {
+  const configured = Number(options.maxBytes ?? options.maxBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES);
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_MAX_REQUEST_BODY_BYTES;
+  return Math.max(1, Math.floor(configured));
+}
+
+function createBodyTooLargeError(maxBytes) {
+  const error = new Error(`Request body exceeds the ${maxBytes} byte limit.`);
+  error.code = "request_body_too_large";
+  error.statusCode = 413;
+  return error;
+}
 
 function setRawBodyCache(req, rawBody) {
   const normalized = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody || "");
@@ -23,7 +37,7 @@ export function getCachedJsonBody(req) {
   return cached.value;
 }
 
-export async function readRawBody(req) {
+export async function readRawBody(req, options = {}) {
   const cached = getCachedRawBody(req);
   if (cached) return cached;
 
@@ -40,9 +54,20 @@ export async function readRawBody(req) {
   }
 
   req[RAW_BODY_PROMISE] = (async () => {
+    const maxBytes = resolveMaxBodyBytes(options);
+    const contentLength = Number(req.headers?.["content-length"] || 0);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw createBodyTooLargeError(maxBytes);
+    }
     const chunks = [];
+    let totalBytes = 0;
     for await (const chunk of req) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += buffer.length;
+      if (totalBytes > maxBytes) {
+        throw createBodyTooLargeError(maxBytes);
+      }
+      chunks.push(buffer);
     }
     return setRawBodyCache(req, chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0));
   })();
@@ -62,7 +87,7 @@ export async function readJsonBody(req, options = {}) {
     throw cached.error;
   }
 
-  const rawBody = await readRawBody(req);
+  const rawBody = await readRawBody(req, options);
   if (!rawBody || rawBody.length === 0) {
     const emptyValue = allowEmpty ? {} : null;
     if (req && typeof req === "object") {

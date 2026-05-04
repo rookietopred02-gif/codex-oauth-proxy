@@ -155,7 +155,7 @@ test("GET /admin/state does not block on slow auxiliary probes", async () => {
   }
 });
 
-test("GET /admin/requests/:id returns the full persisted request row", async () => {
+test("GET /admin/requests/:id returns a lightweight request detail summary", async () => {
   const app = express();
 
   registerAdminCoreRoutes(app, {
@@ -173,7 +173,8 @@ test("GET /admin/requests/:id returns the full persisted request row", async () 
           ? {
               id: "req_1",
               requestPacket: "request body",
-              responsePacket: "response body"
+              responsePacket: "response body",
+              responseContentType: "application/json"
             }
           : null
     },
@@ -215,8 +216,85 @@ test("GET /admin/requests/:id returns the full persisted request row", async () 
     const body = await response.json();
     assert.equal(response.status, 200);
     assert.equal(body.ok, true);
-    assert.equal(body.request.requestPacket, "request body");
-    assert.equal(body.request.responsePacket, "response body");
+    assert.equal(body.request.id, "req_1");
+    assert.equal(body.request.requestPacket, undefined);
+    assert.equal(body.request.responsePacket, undefined);
+    assert.equal(body.request.packetInfo.requestPacket.chars, "request body".length);
+    assert.equal(body.request.packetInfo.responsePacket.chars, "response body".length);
+  } finally {
+    await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test("GET /admin/requests/:id/packet returns a packet preview slice", async () => {
+  const app = express();
+
+  registerAdminCoreRoutes(app, {
+    config: createConfig(),
+    runtimeStats: {
+      startedAt: Date.now() - 1000,
+      totalRequests: 0,
+      okRequests: 0,
+      errorRequests: 0,
+      recentRequests: []
+    },
+    recentRequestsStore: {
+      getById: async () => null,
+      getPacketSliceById: async (requestId, field, options = {}) =>
+        requestId === "req_1" && field === "responsePacket"
+          ? {
+              field,
+              offset: Number(options.offset || 0),
+              limit: Number(options.limit || 0),
+              text: "response preview",
+              totalChars: 120000,
+              totalBytes: 120000,
+              returnedChars: "response preview".length,
+              truncated: true
+            }
+          : null
+    },
+    cloudflaredRuntime: {
+      mode: "quick",
+      useHttp2: true,
+      localPort: 8787
+    },
+    tempMailController: {
+      refreshRunner: async () => ({}),
+      getState: () => ({ supported: true, runnerReady: false, logs: [] })
+    },
+    expiredAccountCleanupController: {
+      getState: () => ({ enabled: false })
+    },
+    getProxyApiKeyStore: () => ({ keys: [] }),
+    getAuthStatus: async () => ({ authenticated: false, accounts: [], enabledAccountCount: 0 }),
+    checkCloudflaredInstalled: async () => ({ installed: false }),
+    buildApiKeySummary: () => ({ enforced: false, keys: [] }),
+    getActiveUpstreamBaseUrl: () => "https://example.invalid",
+    isCodexMultiAccountEnabled: () => false,
+    getCloudflaredStatus: () => ({ installed: false, running: false, mode: "quick", useHttp2: true, localPort: 8787 }),
+    getCodexPreheatState: () => ({ running: false }),
+    createProxyApiKey: () => "sk-test",
+    hashProxyApiKey: () => "hash",
+    sanitizeProxyApiKeyLabel: (value) => String(value || ""),
+    persistProxyApiKeyStore: async () => {},
+    readJsonBody: async () => ({}),
+    startCloudflaredTunnel: async () => ({ mode: "quick", localPort: 8787, useHttp2: true }),
+    stopCloudflaredTunnel: async () => ({ running: false }),
+    validCloudflaredModes: new Set(["quick", "auth"]),
+    getOfficialModelCandidateIds: async () => [],
+    getOfficialCodexModelCandidateIds: async () => []
+  });
+
+  const backend = await listen(app);
+  try {
+    const response = await fetch(`${backend.url}/admin/requests/req_1/packet?field=responsePacket&offset=0&limit=65536`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.packet.field, "responsePacket");
+    assert.equal(body.packet.text, "response preview");
+    assert.equal(body.packet.truncated, true);
   } finally {
     await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
   }

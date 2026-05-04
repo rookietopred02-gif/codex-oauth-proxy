@@ -19,11 +19,14 @@ export const VALID_REASONING_EFFORTS = new Set(["none", "low", "medium", "high",
 export const VALID_REASONING_EFFORT_MODES = new Set(["none", "low", "medium", "high", "xhigh", "adaptive"]);
 export const VALID_MULTI_ACCOUNT_STRATEGIES = new Set(["smart", "manual", "round-robin", "random", "sticky"]);
 export const MULTI_ACCOUNT_STRATEGY_LIST = [...VALID_MULTI_ACCOUNT_STRATEGIES].join(", ");
+export const VALID_MULTI_ACCOUNT_POOL_FILTERS = new Set(["all", "exclude-free", "standard-only", "team-only", "free-only"]);
+export const MULTI_ACCOUNT_POOL_FILTER_LIST = [...VALID_MULTI_ACCOUNT_POOL_FILTERS].join(", ");
 export const VALID_CLOUDFLARED_MODES = new Set(["quick", "auth"]);
 export const VALID_CODEX_SERVICE_TIERS = new Set(["default", "priority"]);
 export const LOW_QUOTA_THRESHOLD_DUAL_WINDOW = 20;
 export const LOW_QUOTA_THRESHOLD_SINGLE_WINDOW = 30;
 export const OFFICIAL_CODEX_MODELS = [
+  "gpt-5.5",
   "gpt-5.4",
   "gpt-5-codex",
   "gpt-5.3-codex",
@@ -326,6 +329,13 @@ export function validateServerConfig(config, { logger = console } = {}) {
     config.codexOAuth.multiAccountStrategy = "smart";
   }
 
+  if (!VALID_MULTI_ACCOUNT_POOL_FILTERS.has(config.codexOAuth.multiAccountPoolFilter)) {
+    logger.warn(
+      `Invalid CODEX_MULTI_ACCOUNT_POOL_FILTER="${config.codexOAuth.multiAccountPoolFilter}", fallback to all. Supported: ${MULTI_ACCOUNT_POOL_FILTER_LIST}.`
+    );
+    config.codexOAuth.multiAccountPoolFilter = "all";
+  }
+
   if (!VALID_CLOUDFLARED_MODES.has(config.publicAccess.defaultMode)) {
     config.publicAccess.defaultMode = "quick";
   }
@@ -400,6 +410,7 @@ export function createServerConfig(options = {}) {
       originator: env.CODEX_OAUTH_ORIGINATOR || "pi",
       multiAccountEnabled: parseBooleanEnv(env.CODEX_MULTI_ACCOUNT_ENABLED, true),
       multiAccountStrategy: String(env.CODEX_MULTI_ACCOUNT_STRATEGY || "smart").trim().toLowerCase(),
+      multiAccountPoolFilter: String(env.CODEX_MULTI_ACCOUNT_POOL_FILTER || "all").trim().toLowerCase(),
       sharedApiKey: String(env.LOCAL_API_KEY || env.PROXY_API_KEY || "").trim(),
       usageBaseUrl: env.CODEX_USAGE_BASE_URL || DEFAULT_CODEX_UPSTREAM_BASE_URL,
       tokenStorePath: resolveRuntimeDataPath(paths.runtimeDataDir, env, "CODEX_TOKEN_STORE_PATH", "codex-oauth-store.json")
@@ -425,12 +436,13 @@ export function createServerConfig(options = {}) {
       }
     ),
     codex: {
-      defaultModel: env.CODEX_DEFAULT_MODEL || "gpt-5.4",
+      defaultModel: env.CODEX_DEFAULT_MODEL || "gpt-5.5",
       defaultInstructions: env.CODEX_DEFAULT_INSTRUCTIONS || "You are a helpful assistant.",
-      defaultServiceTier: normalizeCodexServiceTier(env.CODEX_DEFAULT_SERVICE_TIER, "default"),
+      defaultServiceTier: normalizeCodexServiceTier(env.CODEX_DEFAULT_SERVICE_TIER, "priority"),
       defaultReasoningEffort: parseReasoningEffortOrFallback(env.CODEX_DEFAULT_REASONING_EFFORT, "medium", {
         allowAdaptive: true
-      })
+      }),
+      planModeReasoningEffort: parseReasoningEffortOrFallback(env.CODEX_PLAN_MODE_REASONING_EFFORT, "")
     },
     modelRouter: {
       enabled: parseBooleanEnv(env.MODEL_ROUTER_ENABLED, true),

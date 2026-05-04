@@ -11,14 +11,29 @@ function extractDashboardClientAddress(req) {
   );
 }
 
+function hasProxyForwardingHeaders(req) {
+  const headers = req?.headers && typeof req.headers === "object" ? req.headers : {};
+  return [
+    "cf-connecting-ip",
+    "cf-ray",
+    "cf-visitor",
+    "cdn-loop",
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip"
+  ].some((name) => String(headers[name] || "").trim().length > 0);
+}
+
 function requestOriginatesLocally(req) {
   const address = extractDashboardClientAddress(req);
-  return (
+  const loopback =
     address === "127.0.0.1" ||
     address === "::1" ||
     address === "::ffff:127.0.0.1" ||
-    address.toLowerCase() === "localhost"
-  );
+    address.toLowerCase() === "localhost";
+  return loopback && !hasProxyForwardingHeaders(req);
 }
 
 function writeDashboardAuthError(res, authResult) {
@@ -46,7 +61,9 @@ export function registerDashboardAuthProtection(app, context) {
     }
 
     setNoStoreHeaders(res);
-    const authResult = dashboardAuth.authenticateRequest(req);
+    const authResult = dashboardAuth.authenticateRequest(req, {
+      allowDisabled: requestOriginatesLocally(req)
+    });
     if (authResult.ok) {
       next();
       return;
@@ -114,7 +131,6 @@ export function registerDashboardAuthRoutes(app, context) {
 
   app.post("/dashboard-auth/config", async (req, res) => {
     setNoStoreHeaders(res);
-    const authResult = dashboardAuth.authenticateRequest(req);
     if (!dashboardAuth.isEnabled() && !requestOriginatesLocally(req)) {
       res.status(403).json({
         error: "dashboard_auth_local_only",
@@ -122,6 +138,9 @@ export function registerDashboardAuthRoutes(app, context) {
       });
       return;
     }
+    const authResult = dashboardAuth.authenticateRequest(req, {
+      allowDisabled: requestOriginatesLocally(req)
+    });
     if (dashboardAuth.isEnabled() && !authResult.ok) {
       dashboardAuth.clearSessionCookie(res, req);
       writeDashboardAuthError(res, authResult);

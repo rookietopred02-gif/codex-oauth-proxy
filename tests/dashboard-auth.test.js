@@ -65,6 +65,16 @@ test("dashboard password protection locks admin routes and stores only a local h
     response = await fetch(`${backend.url}/admin/state`);
     assert.equal(response.status, 200);
 
+    response = await fetch(`${backend.url}/admin/state`, {
+      headers: {
+        "cf-visitor": "{\"scheme\":\"https\"}",
+        "x-forwarded-for": "203.0.113.10"
+      }
+    });
+    assert.equal(response.status, 401);
+    body = await response.json();
+    assert.equal(body.error, "dashboard_auth_required");
+
     response = await fetch(`${backend.url}/dashboard/`);
     assert.equal(response.status, 200);
     const dashboardHtml = await response.text();
@@ -175,14 +185,25 @@ test("dashboard auth sets a secure session cookie when proxied through Cloudflar
       host: "127.0.0.1"
     });
 
-    const response = await fetch(`${backend.url}/dashboard-auth/config`, {
+    let response = await fetch(`${backend.url}/dashboard-auth/config`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        enabled: true,
+        password: "supersecret123"
+      })
+    });
+    assert.equal(response.status, 200);
+
+    response = await fetch(`${backend.url}/dashboard-auth/login`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "cf-visitor": "{\"scheme\":\"https\"}"
       },
       body: JSON.stringify({
-        enabled: true,
         password: "supersecret123"
       })
     });
@@ -199,7 +220,7 @@ test("dashboard auth sets a secure session cookie when proxied through Cloudflar
   }
 });
 
-test("dashboard auth ignores spoofed forwarded client headers during initial password configuration", async () => {
+test("dashboard auth rejects proxied initial password configuration even over a local tunnel socket", async () => {
   const appDataDir = await createTempAppDataDir();
   const port = await reserveFreePort();
 
@@ -224,11 +245,9 @@ test("dashboard auth ignores spoofed forwarded client headers during initial pas
       })
     });
 
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 403);
     const body = await response.json();
-    assert.equal(body.enabled, true);
-    assert.equal(body.configured, true);
-    assert.equal(body.authenticated, true);
+    assert.equal(body.error, "dashboard_auth_local_only");
   } finally {
     await stopAppServer("TEST");
     await fs.rm(appDataDir, { recursive: true, force: true });

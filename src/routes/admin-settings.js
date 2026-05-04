@@ -9,16 +9,17 @@ export function registerAdminSettingsRoutes(app, context) {
     persistProxyConfigEnv,
     readJsonBody,
     normalizeUpstreamMode,
-    normalizeCodexServiceTier,
-    parseReasoningEffortOrFallback,
     validMultiAccountStrategies,
     multiAccountStrategyList,
+    validMultiAccountPoolFilters,
+    multiAccountPoolFilterList,
     expiredAccountCleanupController,
     sanitizeModelMappings,
     getActiveUpstreamBaseUrl,
     isCodexMultiAccountEnabled,
     runDirectChatCompletionTest,
     tempMailController,
+    normalizeCodexServiceTier,
     parseNumberEnv
   } = context;
 
@@ -68,16 +69,7 @@ export function registerAdminSettingsRoutes(app, context) {
         nextConfig.codex.defaultInstructions = body.defaultInstructions.trim();
       }
       if (typeof body.defaultServiceTier === "string") {
-        nextConfig.codex.defaultServiceTier = normalizeCodexServiceTier(body.defaultServiceTier, "default");
-      }
-      if (typeof body.defaultReasoningEffort === "string") {
-        const normalized = parseReasoningEffortOrFallback(body.defaultReasoningEffort, null, {
-          allowAdaptive: true
-        });
-        if (!normalized) {
-          throw new Error("defaultReasoningEffort must be one of: none, low, medium, high, xhigh, adaptive");
-        }
-        nextConfig.codex.defaultReasoningEffort = normalized;
+        nextConfig.codex.defaultServiceTier = normalizeCodexServiceTier(body.defaultServiceTier, "priority");
       }
       if (typeof body.multiAccountEnabled === "boolean") {
         nextConfig.codexOAuth.multiAccountEnabled = body.multiAccountEnabled;
@@ -88,6 +80,13 @@ export function registerAdminSettingsRoutes(app, context) {
           throw new Error(`multiAccountStrategy must be one of: ${multiAccountStrategyList}`);
         }
         nextConfig.codexOAuth.multiAccountStrategy = strategy;
+      }
+      if (typeof body.multiAccountPoolFilter === "string") {
+        const filter = body.multiAccountPoolFilter.trim().toLowerCase();
+        if (!validMultiAccountPoolFilters.has(filter)) {
+          throw new Error(`multiAccountPoolFilter must be one of: ${multiAccountPoolFilterList}`);
+        }
+        nextConfig.codexOAuth.multiAccountPoolFilter = filter;
       }
       if (typeof body.autoLogoutExpiredAccounts === "boolean") {
         nextConfig.expiredAccountCleanup.enabled = body.autoLogoutExpiredAccounts;

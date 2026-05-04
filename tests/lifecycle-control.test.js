@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import fs from "node:fs/promises";
 import test from "node:test";
 
 import { stopAppServer } from "../src/app-server.js";
@@ -38,7 +39,8 @@ test("admin config accepts a live cloudflared process and persists autoInstall=f
     },
     codexOAuth: {
       multiAccountEnabled: true,
-      multiAccountStrategy: "smart"
+      multiAccountStrategy: "smart",
+      multiAccountPoolFilter: "all"
     },
     expiredAccountCleanup: {
       enabled: false,
@@ -82,12 +84,14 @@ test("admin config accepts a live cloudflared process and persists autoInstall=f
     persistProxyConfigEnv: async (nextConfig) => {
       persistedConfig = structuredClone(nextConfig);
     },
-    readJsonBody: async () => ({ publicAccessAutoInstall: false }),
+    readJsonBody: async () => ({ publicAccessAutoInstall: false, defaultServiceTier: "priority" }),
     normalizeUpstreamMode: (value) => value,
     normalizeCodexServiceTier: (value) => value,
     parseReasoningEffortOrFallback: (value) => value,
     validMultiAccountStrategies: new Set(["smart"]),
     multiAccountStrategyList: "smart",
+    validMultiAccountPoolFilters: new Set(["all", "team-only"]),
+    multiAccountPoolFilterList: "all, team-only",
     expiredAccountCleanupController: {
       configure() {},
       run() {
@@ -129,7 +133,9 @@ test("admin config accepts a live cloudflared process and persists autoInstall=f
 
   assert.equal(response.statusCode, 200);
   assert.equal(config.publicAccess.autoInstall, false);
+  assert.equal(config.codex.defaultServiceTier, "priority");
   assert.equal(persistedConfig?.publicAccess?.autoInstall, false);
+  assert.equal(persistedConfig?.codex?.defaultServiceTier, "priority");
 });
 
 test("admin config persists runtimePort without changing the active port", async () => {
@@ -156,7 +162,8 @@ test("admin config persists runtimePort without changing the active port", async
     },
     codexOAuth: {
       multiAccountEnabled: true,
-      multiAccountStrategy: "smart"
+      multiAccountStrategy: "smart",
+      multiAccountPoolFilter: "all"
     },
     expiredAccountCleanup: {
       enabled: false,
@@ -206,6 +213,8 @@ test("admin config persists runtimePort without changing the active port", async
     parseReasoningEffortOrFallback: (value) => value,
     validMultiAccountStrategies: new Set(["smart"]),
     multiAccountStrategyList: "smart",
+    validMultiAccountPoolFilters: new Set(["all", "team-only"]),
+    multiAccountPoolFilterList: "all, team-only",
     expiredAccountCleanupController: {
       configure() {},
       run() {
@@ -252,6 +261,135 @@ test("admin config persists runtimePort without changing the active port", async
   assert.equal(persistedConfig?.runtimePort, 8899);
   assert.equal(response.payload?.config?.activeRuntimePort, 8787);
   assert.equal(response.payload?.config?.runtimePort, 8899);
+});
+
+test("registerServerApp forwards pool filter validation settings into admin config routes", async () => {
+  const source = await fs.readFile(new URL("../src/server/app-runtime.js", import.meta.url), "utf8");
+
+  assert.match(source, /validMultiAccountPoolFilters,/);
+  assert.match(source, /multiAccountPoolFilterList,/);
+  assert.match(source, /settings:\s*\{[\s\S]*validMultiAccountPoolFilters,[\s\S]*multiAccountPoolFilterList,[\s\S]*\}/);
+});
+
+test("admin config persists multiAccountPoolFilter", async () => {
+  const routes = new Map();
+  const app = {
+    get() {},
+    post(path, handler) {
+      routes.set(`POST ${path}`, handler);
+    }
+  };
+  const config = {
+    host: "127.0.0.1",
+    port: 8787,
+    runtimePort: 8787,
+    upstreamMode: "codex-chatgpt",
+    upstreamBaseUrl: "https://example.test",
+    gemini: { baseUrl: "https://gemini.example.test" },
+    anthropic: { baseUrl: "https://anthropic.example.test" },
+    codex: {
+      defaultModel: "gpt-5.4",
+      defaultInstructions: "",
+      defaultServiceTier: "default",
+      defaultReasoningEffort: "medium"
+    },
+    codexOAuth: {
+      multiAccountEnabled: true,
+      multiAccountStrategy: "smart",
+      multiAccountPoolFilter: "all"
+    },
+    expiredAccountCleanup: {
+      enabled: false,
+      intervalSeconds: 30
+    },
+    modelRouter: {
+      enabled: true,
+      customMappings: {}
+    },
+    requestAudit: {
+      historyPath: "C:/tmp/recent-requests.json"
+    },
+    publicAccess: {
+      defaultMode: "quick",
+      defaultUseHttp2: true,
+      autoInstall: true,
+      defaultTunnelToken: "",
+      localPort: 8787
+    }
+  };
+  let persistedConfig = null;
+
+  registerAdminSettingsRoutes(app, {
+    config,
+    cloudflaredRuntime: {
+      process: null,
+      mode: "quick",
+      useHttp2: true,
+      tunnelToken: "",
+      localPort: 8787,
+      outputTail: []
+    },
+    runtimeStats: { recentRequests: [] },
+    recentRequestsStore: {
+      clear() {
+        return { recentRequests: [] };
+      },
+      async flush() {}
+    },
+    persistProxyConfigEnv: async (nextConfig) => {
+      persistedConfig = structuredClone(nextConfig);
+    },
+    readJsonBody: async () => ({ multiAccountPoolFilter: "team-only" }),
+    normalizeUpstreamMode: (value) => value,
+    normalizeCodexServiceTier: (value) => value,
+    parseReasoningEffortOrFallback: (value) => value,
+    validMultiAccountStrategies: new Set(["smart"]),
+    multiAccountStrategyList: "smart",
+    validMultiAccountPoolFilters: new Set(["all", "team-only"]),
+    multiAccountPoolFilterList: "all, team-only",
+    expiredAccountCleanupController: {
+      configure() {},
+      run() {
+        return Promise.resolve();
+      }
+    },
+    sanitizeModelMappings: (value) => value,
+    getActiveUpstreamBaseUrl: () => config.upstreamBaseUrl,
+    isCodexMultiAccountEnabled: () => true,
+    runDirectChatCompletionTest: async () => ({}),
+    tempMailController: {
+      async start() {
+        return {};
+      },
+      async stop() {
+        return {};
+      }
+    },
+    parseNumberEnv: (value) => Number(value)
+  });
+
+  const handler = routes.get("POST /admin/config");
+  assert.equal(typeof handler, "function");
+
+  const response = {
+    statusCode: 200,
+    payload: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload) {
+      this.payload = payload;
+      return this;
+    }
+  };
+
+  await handler({}, response);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(config.codexOAuth.multiAccountPoolFilter, "team-only");
+  assert.equal(persistedConfig?.codexOAuth?.multiAccountPoolFilter, "team-only");
+  assert.equal(response.payload?.config?.multiAccountPoolFilter, "team-only");
 });
 
 test("stopCloudflaredTunnel waits for the child exit before resolving", async () => {

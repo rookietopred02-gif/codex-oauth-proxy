@@ -1,27 +1,70 @@
+function toFiniteTokenNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function readNestedTokenValue(object, keys) {
+  if (!object || typeof object !== "object") return null;
+  for (const key of keys) {
+    const value = object[key];
+    const parsed = toFiniteTokenNumber(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function readCachedInputTokens(usage) {
+  const direct = readNestedTokenValue(usage, [
+    "cachedInputTokens",
+    "cached_input_tokens",
+    "cachedPromptTokens",
+    "cached_prompt_tokens"
+  ]);
+  if (direct !== null) return direct;
+
+  for (const detailsKey of [
+    "input_tokens_details",
+    "prompt_tokens_details",
+    "inputTokensDetails",
+    "promptTokensDetails"
+  ]) {
+    const nested = readNestedTokenValue(usage?.[detailsKey], ["cached_tokens", "cachedTokens"]);
+    if (nested !== null) return nested;
+  }
+  return null;
+}
+
 export function normalizeTokenUsage(usage) {
   if (!usage || typeof usage !== "object") return null;
 
-  const inputTokens = Number(
+  const inputTokens = toFiniteTokenNumber(
     usage.input_tokens ?? usage.prompt_tokens ?? usage.inputTokens ?? usage.promptTokens
   );
-  const outputTokens = Number(
+  const outputTokens = toFiniteTokenNumber(
     usage.output_tokens ?? usage.completion_tokens ?? usage.outputTokens ?? usage.completionTokens
   );
-  const totalTokens = Number(usage.total_tokens ?? usage.totalTokens);
+  const totalTokens = toFiniteTokenNumber(usage.total_tokens ?? usage.totalTokens);
+  const cachedInputTokens = readCachedInputTokens(usage);
 
-  const hasInput = Number.isFinite(inputTokens);
-  const hasOutput = Number.isFinite(outputTokens);
-  const hasTotal = Number.isFinite(totalTokens);
+  const hasInput = inputTokens !== null;
+  const hasOutput = outputTokens !== null;
+  const hasTotal = totalTokens !== null;
+  const hasCachedInput = cachedInputTokens !== null;
 
-  if (!hasInput && !hasOutput && !hasTotal) return null;
+  if (!hasInput && !hasOutput && !hasTotal && !hasCachedInput) return null;
 
-  const resolvedTotalTokens =
-    hasTotal ? totalTokens : (hasInput ? inputTokens : 0) + (hasOutput ? outputTokens : 0);
+  const resolvedTotalTokens = hasTotal
+    ? totalTokens
+    : hasInput || hasOutput
+      ? (hasInput ? inputTokens : 0) + (hasOutput ? outputTokens : 0)
+      : null;
 
   return {
     inputTokens: hasInput ? inputTokens : null,
     outputTokens: hasOutput ? outputTokens : null,
-    totalTokens: Number.isFinite(resolvedTotalTokens) ? resolvedTotalTokens : null
+    totalTokens: Number.isFinite(resolvedTotalTokens) ? resolvedTotalTokens : null,
+    cachedInputTokens: hasCachedInput ? cachedInputTokens : null
   };
 }
 
@@ -34,25 +77,27 @@ export function mergeNormalizedTokenUsage(current, next) {
   return normalizeTokenUsage({
     inputTokens: nextUsage.inputTokens ?? currentUsage.inputTokens,
     outputTokens: nextUsage.outputTokens ?? currentUsage.outputTokens,
-    totalTokens: nextUsage.totalTokens ?? currentUsage.totalTokens
+    totalTokens: nextUsage.totalTokens ?? currentUsage.totalTokens,
+    cachedInputTokens: nextUsage.cachedInputTokens ?? currentUsage.cachedInputTokens
   });
 }
 
 export function toChatUsageFromNormalizedTokenUsage(usage) {
   const normalized = normalizeTokenUsage(usage);
   if (!normalized) return null;
-  return {
+  const chatUsage = {
     prompt_tokens: Number(normalized.inputTokens || 0),
     completion_tokens: Number(normalized.outputTokens || 0),
     total_tokens: Number(normalized.totalTokens || 0)
   };
+  if (normalized.cachedInputTokens !== null) {
+    chatUsage.prompt_tokens_details = {
+      cached_tokens: Number(normalized.cachedInputTokens || 0)
+    };
+  }
+  return chatUsage;
 }
 
 export function mapResponsesUsageToChatUsage(usage) {
-  if (!usage || typeof usage !== "object") return null;
-  return {
-    prompt_tokens: Number(usage.input_tokens || 0),
-    completion_tokens: Number(usage.output_tokens || 0),
-    total_tokens: Number(usage.total_tokens || 0)
-  };
+  return toChatUsageFromNormalizedTokenUsage(usage);
 }

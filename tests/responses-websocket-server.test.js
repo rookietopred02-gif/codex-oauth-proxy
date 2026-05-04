@@ -275,6 +275,8 @@ test("Responses WebSocket forwards upstream response events and remembers comple
     const completed = await queue.next();
 
     assert.deepEqual(capturedPayload, {
+      stream: true,
+      background: true,
       model: "gpt-5.4",
       input: "hello"
     });
@@ -282,6 +284,8 @@ test("Responses WebSocket forwards upstream response events and remembers comple
     assert.equal(completed.type, "response.completed");
     assert.equal(rememberedCompletion?.id, "resp_ws_1");
     assert.equal(successCount, 1);
+    assert.equal(recordedRequest?.method, "WS");
+    assert.equal(recordedRequest?.transportType, "websocket");
     assert.equal(recordedRequest?.statusCode, 200);
     assert.equal(recordedRequest?.authAccountId, "acct_ws_1");
     assert.match(String(recordedRequest?.responseBody || ""), /response\.completed/);
@@ -414,10 +418,13 @@ test("Responses WebSocket preserves non-JSON upstream error bodies without trunc
   }
 });
 
-test("Responses WebSocket converts completed JSON fallback into response.completed", async () => {
+test("Responses WebSocket rejects completed JSON instead of falling back to HTTP-style replay", async () => {
   const server = createServer();
   const helpers = createResponsesHelpers();
   let rememberedCompletion = null;
+  let failureCount = 0;
+  let successCount = 0;
+  let recordedRequest = null;
 
   const runtime = attachResponsesWebSocketServer(server, {
     ...createAuthContext(),
@@ -448,8 +455,12 @@ test("Responses WebSocket converts completed JSON fallback into response.complet
           }
         ),
         release() {},
-        async markFailure() {},
-        async markSuccess() {},
+        async markFailure() {
+          failureCount += 1;
+        },
+        async markSuccess() {
+          successCount += 1;
+        },
         authAccountId: "acct_ws_json",
         compatibilityHint: "",
         rememberCompletion(completed) {
@@ -470,6 +481,9 @@ test("Responses WebSocket converts completed JSON fallback into response.complet
       } catch {
         return null;
       }
+    },
+    recordRecentProxyRequest(row) {
+      recordedRequest = row;
     }
   });
 
@@ -489,10 +503,17 @@ test("Responses WebSocket converts completed JSON fallback into response.complet
       })
     );
 
-    const completed = await queue.next();
-    assert.equal(completed.type, "response.completed");
-    assert.equal(completed.response?.id, "resp_ws_json");
-    assert.equal(rememberedCompletion?.id, "resp_ws_json");
+    const failed = await queue.next();
+    assert.equal(failed.type, "response.failed");
+    assert.equal(failed.response?.status_code, 502);
+    assert.equal(failed.response?.error?.code, "invalid_upstream_sse");
+    assert.match(failed.response?.error?.message || "", /non-SSE responses are not replayed as HTTP fallbacks/i);
+    assert.equal(rememberedCompletion, null);
+    assert.equal(failureCount, 1);
+    assert.equal(successCount, 0);
+    assert.equal(recordedRequest?.method, "WS");
+    assert.equal(recordedRequest?.transportType, "websocket");
+    assert.equal(recordedRequest?.statusCode, 502);
   } finally {
     ws?.close();
     await runtime.close();

@@ -255,7 +255,6 @@ export function createAuthService({
             id: String(entry.id || ""),
             label: String(entry.label || ""),
             prefix: String(entry.prefix || "sk-"),
-            value: String(entry.value || ""),
             createdAt: Number(entry.created_at || 0) || null,
             lastUsedAt: Number(entry.last_used_at || 0) || null,
             useCount: Number(entry.use_count || 0) || 0,

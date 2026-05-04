@@ -1,10 +1,19 @@
-export const RESPONSES_METHOD_CONTRACT = Object.freeze([
+export const OFFICIAL_RESPONSES_METHOD_CONTRACT = Object.freeze([
   Object.freeze({ id: "create", method: "POST", path: "/v1/responses" }),
   Object.freeze({ id: "retrieve", method: "GET", path: "/v1/responses/{response_id}" }),
+  Object.freeze({ id: "delete", method: "DELETE", path: "/v1/responses/{response_id}" }),
   Object.freeze({ id: "list_input_items", method: "GET", path: "/v1/responses/{response_id}/input_items" }),
-  Object.freeze({ id: "cancel", method: "POST", path: "/v1/responses/{response_id}/cancel" }),
+  Object.freeze({ id: "cancel", method: "POST", path: "/v1/responses/{response_id}/cancel" })
+]);
+
+export const RESPONSES_EXTENSION_METHOD_CONTRACT = Object.freeze([
   Object.freeze({ id: "compact", method: "POST", path: "/v1/responses/compact" }),
   Object.freeze({ id: "input_tokens", method: "POST", path: "/v1/responses/input_tokens" })
+]);
+
+export const RESPONSES_METHOD_CONTRACT = Object.freeze([
+  ...OFFICIAL_RESPONSES_METHOD_CONTRACT,
+  ...RESPONSES_EXTENSION_METHOD_CONTRACT
 ]);
 
 export const RESPONSES_SUCCESS_TERMINAL_EVENT_TYPES = Object.freeze([

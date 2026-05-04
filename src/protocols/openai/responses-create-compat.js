@@ -17,19 +17,22 @@ const MATRIX = Object.freeze({
   reasoning: Object.freeze({ official: true, codexResponses: "passthrough" }),
   safety_identifier: Object.freeze({ official: true, codexResponses: "passthrough" }),
   service_tier: Object.freeze({ official: true, codexResponses: "passthrough" }),
-  store: Object.freeze({ official: true, codexResponses: "forced_value" }),
-  stream: Object.freeze({ official: true, codexResponses: "forced_value", anthropicNativeCompat: "mapped" }),
+  store: Object.freeze({ official: true, codexResponses: "passthrough" }),
+  stream: Object.freeze({ official: true, codexResponses: "passthrough", anthropicNativeCompat: "mapped" }),
   stream_options: Object.freeze({ official: true, codexResponses: "passthrough" }),
-  temperature: Object.freeze({ official: true, codexResponses: "drop", anthropicNativeCompat: "drop" }),
+  temperature: Object.freeze({ official: true, codexResponses: "passthrough", anthropicNativeCompat: "drop" }),
   text: Object.freeze({ official: true, codexResponses: "passthrough" }),
   tool_choice: Object.freeze({ official: true, codexResponses: "passthrough", anthropicNativeCompat: "mapped" }),
   tools: Object.freeze({ official: true, codexResponses: "passthrough", anthropicNativeCompat: "mapped" }),
   top_logprobs: Object.freeze({ official: true, codexResponses: "passthrough" }),
-  top_p: Object.freeze({ official: true, codexResponses: "drop", anthropicNativeCompat: "drop" }),
+  top_p: Object.freeze({ official: true, codexResponses: "passthrough", anthropicNativeCompat: "drop" }),
   truncation: Object.freeze({ official: true, codexResponses: "passthrough" }),
   user: Object.freeze({ official: true, codexResponses: "passthrough" }),
+  client_metadata: Object.freeze({ official: false, codexResponses: "passthrough" }),
+  collaborationMode: Object.freeze({ official: false, codexResponses: "local_transform" }),
   messages: Object.freeze({ official: false, codexResponses: "alias" }),
-  reasoning_effort: Object.freeze({ official: false, codexResponses: "alias" })
+  reasoning_effort: Object.freeze({ official: false, codexResponses: "alias" }),
+  settings: Object.freeze({ official: false, codexResponses: "local_transform" })
 });
 
 export const RESPONSES_CREATE_FIELD_MATRIX = MATRIX;

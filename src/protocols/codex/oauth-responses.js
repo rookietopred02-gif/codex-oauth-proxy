@@ -488,6 +488,11 @@ export function createCodexOAuthResponsesHelpers(context) {
       }
 
       if (!opened) {
+        await maybeMarkCodexPoolFailure(
+          auth,
+          lastError?.message || "Upstream request failed.",
+          Number(lastError?.statusCode || 0)
+        ).catch(() => {});
         throw lastError || new Error("Upstream request failed.");
       }
 

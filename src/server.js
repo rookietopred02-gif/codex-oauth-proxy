@@ -16,9 +16,10 @@ import { createExpiredAccountCleanupController } from "./expired-account-cleanup
 import { createResponseAffinityStore, extractPreviousResponseId } from "./response-affinity.js";
 import {
   buildResponsesChainEntry,
-  expandResponsesRequestBodyFromChain,
-  createResponsesChainStore
+  createResponsesChainStore,
+  expandResponsesRequestBodyFromChain
 } from "./responses-chain-store.js";
+import { createCodexCollaborationModeResolver } from "./codex-collaboration-mode.js";
 import { createTempMailController } from "./temp-mail-controller.js";
 import { createCodexPoolSelectionHelpers } from "./runtime/codex-pool-selection.js";
 import { createCodexAuthPoolCoreHelpers } from "./runtime/codex-auth-pool-core.js";
@@ -53,9 +54,12 @@ import { createOpenAIRequestNormalizationHelpers } from "./protocols/openai/requ
 import { createOpenAIResponsesCompatHelpers } from "./protocols/openai/responses-compat.js";
 import { createServerLifecycleRuntime, registerServerApp } from "./server/app-runtime.js";
 import { createAuthContextRuntime } from "./server/auth-context-runtime.js";
+import { refreshAccessToken } from "./server/oauth-token-client.js";
 import { createAuthService } from "./services/auth-service.js";
 import { createAuditService } from "./services/audit-service.js";
 import { createCloudflaredService } from "./services/cloudflared-service.js";
+import { resetCodexAccountHealth } from "./services/codex-account-state.js";
+import { createCodexLocalAuthSwitchService } from "./services/codex-local-auth-switch.js";
 import { createCodexOAuthCallbackRuntime } from "./server/oauth-callback-runtime.js";
 import {
   createProviderRoutingHelpers,
@@ -76,6 +80,7 @@ import {
   DEFAULT_CODEX_UPSTREAM_BASE_URL,
   LOW_QUOTA_THRESHOLD_DUAL_WINDOW,
   LOW_QUOTA_THRESHOLD_SINGLE_WINDOW,
+  MULTI_ACCOUNT_POOL_FILTER_LIST,
   MULTI_ACCOUNT_STRATEGY_LIST,
   OAUTH_CALLBACK_SUCCESS_HTML,
   OFFICIAL_ANTHROPIC_MODELS,
@@ -86,6 +91,7 @@ import {
   OPENAI_CODEX_JWT_CLAIM_PATH,
   OPENAI_CODEX_TOKEN_URL,
   VALID_CLOUDFLARED_MODES,
+  VALID_MULTI_ACCOUNT_POOL_FILTERS,
   VALID_MULTI_ACCOUNT_STRATEGIES,
   clampReasoningEffortForModel,
   createServerConfig,
@@ -108,6 +114,7 @@ const rootDir = path.resolve(__dirname, "..");
 const runtimePaths = resolveServerRuntimePaths({ rootDir, env: process.env });
 const { runtimeBinDir, bundledCloudflaredResourcesDir, publicDir, envFilePath } = runtimePaths;
 const DEFAULT_CODEX_CLIENT_VERSION = getDefaultCodexClientVersion(process.env);
+const codexCollaborationModeResolver = createCodexCollaborationModeResolver();
 const codexAccountIdentity = createCodexAccountIdentityHelpers({
   jwtClaimPath: OPENAI_CODEX_JWT_CLAIM_PATH
 });
@@ -116,8 +123,12 @@ const {
   extractOpenAICodexPrincipalId,
   normalizeOpenAICodexPlanType,
   extractOpenAICodexPlanType,
-  extractOpenAICodexEmail
+  extractOpenAICodexEmail,
+  extractOpenAICodexOrganizationIds
 } = codexAccountIdentity;
+const codexLocalAuthSwitchService = createCodexLocalAuthSwitchService({
+  extractOpenAICodexAccountId
+});
 let config;
 let hasExplicitCustomOAuthRedirectUri = false;
 let hasExplicitCloudflaredLocalPort = false;
@@ -264,6 +275,7 @@ const codexOAuthCallbackRuntime = createCodexOAuthCallbackRuntime({
   extractOpenAICodexAccountId,
   extractOpenAICodexPrincipalId,
   extractOpenAICodexEmail,
+  extractOpenAICodexOrganizationIds,
   parseSlotValue,
   ensureCodexOAuthStoreShape,
   normalizeOpenAICodexPlanType,
@@ -463,6 +475,7 @@ const codexPoolSelection = createCodexPoolSelectionHelpers({
   getCodexPoolEntryId,
   isCodexAccountLeased: (ref, account) => isCodexAccountLeased(ref, account),
   getStrategy: () => config.codexOAuth.multiAccountStrategy,
+  getPoolFilter: () => config.codexOAuth.multiAccountPoolFilter,
   randomInt: crypto.randomInt
 });
 
@@ -581,7 +594,8 @@ const authContextRuntime = createAuthContextRuntime({
   clearAuthContextCache,
   expiredAccountCleanupController,
   isCodexTokenInvalidatedError,
-  applyCodexInvalidatedAccountState
+  applyCodexInvalidatedAccountState,
+  refreshAccessToken
 });
 const { getValidAuthContextFromCodexOAuthStore, getValidAuthContextFromOAuthStore } = authContextRuntime;
 
@@ -747,8 +761,9 @@ const proxyRouteHandlerDeps = {
   normalizeChatCompletionsRequestBody,
   parseJsonLoose,
   buildResponsesChainEntry,
-  expandResponsesRequestBodyFromChain,
   codexResponsesChain,
+  expandResponsesRequestBodyFromChain,
+  bridgeCodexResponsesCollaborationMode: codexCollaborationModeResolver.bridgeRequest,
   isCodexMultiAccountEnabled,
   isCodexPoolRetryEnabled,
   shouldRotateCodexAccountForStatus,
@@ -771,6 +786,8 @@ const proxyRouteHandlerDeps = {
   resolveAuditAccountLabel,
   handleAnthropicModelsList,
   isAnthropicNativeRequest,
+  getExecutableModelCandidateIds,
+  getOfficialModelCandidateIds,
   getOpenAICompatibleModelIds,
   isCodexTokenInvalidatedError,
   codexResponseAffinity,
@@ -842,6 +859,7 @@ const { proxyRouteHandlers } = registerServerApp({
   normalizeOpenAICodexPlanType,
   refreshCodexUsageSnapshotInStore,
   refreshCodexTokensInStore,
+  switchLocalCodexToChatgptAccount: codexLocalAuthSwitchService.switchLocalCodexToChatgptAccount,
   runCodexPreheat,
   persistProxyConfigEnv,
   envFilePath,
@@ -851,6 +869,8 @@ const { proxyRouteHandlers } = registerServerApp({
   parseReasoningEffortOrFallback,
   validMultiAccountStrategies: VALID_MULTI_ACCOUNT_STRATEGIES,
   multiAccountStrategyList: MULTI_ACCOUNT_STRATEGY_LIST,
+  validMultiAccountPoolFilters: VALID_MULTI_ACCOUNT_POOL_FILTERS,
+  multiAccountPoolFilterList: MULTI_ACCOUNT_POOL_FILTER_LIST,
   sanitizeModelMappings,
   runDirectChatCompletionTest,
   proxyRouteHandlerDeps
@@ -962,6 +982,7 @@ async function getAuthStatus() {
       sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
       multiAccountEnabled: isCodexMultiAccountEnabled(),
       multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
+      multiAccountPoolFilter: config.codexOAuth.multiAccountPoolFilter || "all",
       accountPoolSize: accounts.length,
       enabledAccountCount: enabledCount,
       activeEntryId,
@@ -1047,6 +1068,131 @@ async function getValidAuthContext(options = {}) {
     };
   }
   return context;
+}
+
+function normalizeScopedModelIds(values) {
+  return [...new Set((Array.isArray(values) ? values : []).filter((value) => typeof value === "string" && value.trim()))]
+    .map((value) => value.trim())
+    .sort();
+}
+
+function extractCodexModelId(value) {
+  if (typeof value === "string") return value.trim();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  for (const key of ["slug", "id", "name", "model"]) {
+    const candidate = typeof value?.[key] === "string" ? value[key].trim() : "";
+    if (candidate) return candidate;
+  }
+  return "";
+}
+
+function readCachedCodexModelIdsForAccount(account, nowMs = Date.now()) {
+  const codexCapabilities = account?.model_capabilities?.codex;
+  const fetchedAtRaw = Number(codexCapabilities?.fetched_at || 0);
+  const fetchedAtMs = fetchedAtRaw > 100000000000 ? fetchedAtRaw : fetchedAtRaw * 1000;
+  if (!Number.isFinite(fetchedAtMs) || fetchedAtMs <= 0 || nowMs - fetchedAtMs > 5 * 60 * 1000) {
+    return null;
+  }
+  const modelIds = normalizeScopedModelIds(codexCapabilities?.supported_models || []);
+  return modelIds.length > 0 ? modelIds : null;
+}
+
+function rememberCodexModelIdsForAccount(account, modelIds, nowMs = Date.now()) {
+  if (!account || typeof account !== "object" || Array.isArray(account)) return false;
+  const supportedModels = normalizeScopedModelIds(modelIds);
+  account.model_capabilities = {
+    ...(account.model_capabilities && typeof account.model_capabilities === "object" && !Array.isArray(account.model_capabilities)
+      ? account.model_capabilities
+      : {}),
+    codex: {
+      supported_models: supportedModels,
+      fetched_at: nowMs
+    }
+  };
+  return true;
+}
+
+async function fetchCodexModelIdsForAccountToken(accessToken, accountId) {
+  const token = String(accessToken || "").trim();
+  const chatgptAccountId = String(accountId || "").trim();
+  if (!token || !chatgptAccountId) return [];
+
+  const url = new URL(`${config.upstreamBaseUrl.replace(/\/+$/, "")}/codex/models`);
+  url.searchParams.set("client_version", DEFAULT_CODEX_CLIENT_VERSION);
+  const resp = await withTimeout(
+    fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "chatgpt-account-id": chatgptAccountId,
+        "openai-beta": "responses=experimental",
+        originator: getCodexOriginator(),
+        accept: "application/json",
+        "user-agent": "codex-pro-max-model-catalog"
+      }
+    }),
+    5000,
+    "Codex model catalog request timed out."
+  );
+  if (!resp.ok) return [];
+  const json = await resp.json().catch(() => null);
+  const models = Array.isArray(json?.models) ? json.models : Array.isArray(json?.data) ? json.data : [];
+  return normalizeScopedModelIds(models.map(extractCodexModelId));
+}
+
+async function getExecutableModelCandidateIds({ forceRefresh = false } = {}) {
+  if (config.authMode !== "codex-oauth") return null;
+
+  const nowMs = Date.now();
+  const accountRefs = [];
+  let scopedStoreChanged = false;
+
+  if (isCodexMultiAccountEnabled()) {
+    const normalized = ensureCodexOAuthStoreShape(codexOAuthStore);
+    codexOAuthStore = normalized.store;
+    scopedStoreChanged = normalized.changed === true;
+    for (const account of pickCodexAccountCandidates(codexOAuthStore)) {
+      if (account?.token?.access_token) {
+        accountRefs.push({ account });
+      }
+    }
+  } else {
+    const auth = await getValidAuthContext().catch(() => null);
+    if (auth?.accessToken && auth?.accountId) {
+      accountRefs.push({
+        accessToken: auth.accessToken,
+        accountId: auth.accountId
+      });
+    }
+  }
+
+  if (accountRefs.length === 0) return [];
+
+  const results = await Promise.all(
+    accountRefs.map(async (ref) => {
+      const account = ref.account || null;
+      const cached = !forceRefresh && account ? readCachedCodexModelIdsForAccount(account, nowMs) : null;
+      if (cached) return cached;
+
+      const accessToken = ref.accessToken || account?.token?.access_token || "";
+      const accountId =
+        ref.accountId ||
+        extractOpenAICodexAccountId(account?.token?.access_token || "") ||
+        String(account?.account_id || "").trim();
+      const modelIds = await fetchCodexModelIdsForAccountToken(accessToken, accountId).catch(() => []);
+      if (account && modelIds.length > 0) {
+        scopedStoreChanged = rememberCodexModelIdsForAccount(account, modelIds, nowMs) || scopedStoreChanged;
+      }
+      return modelIds;
+    })
+  );
+
+  if (scopedStoreChanged && isCodexMultiAccountEnabled()) {
+    await saveTokenStore(config.codexOAuth.tokenStorePath, codexOAuthStore).catch(() => {});
+  }
+
+  const scopedModelIds = normalizeScopedModelIds(results.flat());
+  return scopedModelIds;
 }
 
 async function loadProfileStoreProfile() {
@@ -1303,11 +1449,7 @@ async function markCodexPoolAccountSuccess(accountRef) {
   const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], accountRef);
   if (!target) return;
   target.last_used_at = Math.floor(Date.now() / 1000);
-  target.failure_count = 0;
-  target.cooldown_until = 0;
-  target.last_error = "";
-  target.last_status_code = 0;
-  target.token_invalidated_at = 0;
+  resetCodexAccountHealth(target, { enable: false });
   if (config.codexOAuth.multiAccountStrategy === "sticky") {
     codexOAuthStore.active_account_id = getCodexPoolEntryId(target);
   }
@@ -1315,11 +1457,13 @@ async function markCodexPoolAccountSuccess(accountRef) {
 }
 
 function isCodexPoolRetryEnabled() {
-  return config.authMode === "codex-oauth" && isCodexMultiAccountEnabled();
+  if (config.authMode !== "codex-oauth" || !isCodexMultiAccountEnabled()) return false;
+  const strategy = String(config.codexOAuth.multiAccountStrategy || "").trim().toLowerCase();
+  return strategy !== "manual" && strategy !== "smart";
 }
 
 async function maybeMarkCodexPoolFailure(authContext, reason, statusCode = 0) {
-  if (!isCodexPoolRetryEnabled()) return false;
+  if (!isCodexMultiAccountEnabled()) return false;
   const poolRef = authContext?.poolEntryId || authContext?.poolAccountId || null;
   if (!poolRef) return false;
   const code = Number(statusCode || 0);
@@ -1329,7 +1473,7 @@ async function maybeMarkCodexPoolFailure(authContext, reason, statusCode = 0) {
 }
 
 async function maybeMarkCodexPoolSuccess(authContext) {
-  if (!isCodexPoolRetryEnabled()) return;
+  if (!isCodexMultiAccountEnabled()) return;
   const poolRef = authContext?.poolEntryId || authContext?.poolAccountId || null;
   if (!poolRef) return;
   await markCodexPoolAccountSuccess(poolRef);
@@ -1346,6 +1490,12 @@ function parseCodexHeaderBoolean(value) {
   if (v === "true") return true;
   if (v === "false") return false;
   return null;
+}
+
+function isExpiredOrNearExpirySec(expiresAtSec) {
+  if (!Number.isFinite(expiresAtSec)) return false;
+  const nowSec = Math.floor(Date.now() / 1000);
+  return expiresAtSec - nowSec < 60;
 }
 
 function extractCodexUsageSnapshotFromHeaders(headers, source = "response") {
@@ -1492,6 +1642,20 @@ function extractCodexUsageSnapshotFromLimitError(rawText, previousSnapshot = nul
   };
 }
 
+function shouldTryNextCodexUsageProbeModel(error) {
+  const statusCode = Number(error?.statusCode || 0) || 0;
+  if (![400, 403, 404].includes(statusCode)) return false;
+  const message = String(error?.message || error || "").toLowerCase();
+  return (
+    message.includes("model") ||
+    message.includes("permission") ||
+    message.includes("access") ||
+    message.includes("unsupported") ||
+    message.includes("not found") ||
+    message.includes("does not exist")
+  );
+}
+
 async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, options = {}) {
   if (!store || !Array.isArray(store.accounts)) {
     return {
@@ -1523,27 +1687,71 @@ async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, 
     };
   }
 
+  const activeRefBefore = String(store.active_account_id || "").trim();
+  const previousAccessToken = String(target?.token?.access_token || "");
+  const targetWasActive =
+    activeRefBefore.length > 0 &&
+    (activeRefBefore === entryId || activeRefBefore === String(target?.account_id || "").trim());
+  const storeTokenMatchedTarget =
+    previousAccessToken.length > 0 && String(store?.token?.access_token || "") === previousAccessToken;
+
   try {
-    const hadFailureMarkers =
-      Number(target.last_status_code || 0) !== 0 ||
-      Number(target.token_invalidated_at || 0) !== 0 ||
-      String(target.last_error || "").trim().length > 0;
-    const probeModel = String(options.model || "").trim() || config.codex.defaultModel;
-    const snapshot = await fetchCodexUsageSnapshotForAccount(target, oauthConfig, { model: probeModel });
-    const applied = applyCodexUsageSnapshotToStore(store, entryId || accountId, snapshot);
-    target.last_error = "";
-    target.last_status_code = 0;
-    target.token_invalidated_at = 0;
+    const requestedModelCandidates = Array.isArray(options.modelCandidates)
+      ? options.modelCandidates
+      : [];
+    const explicitModel = String(options.model || "").trim();
+    const probeModelCandidates = [
+      explicitModel,
+      config.codex.defaultModel,
+      ...requestedModelCandidates
+    ].filter((value, index, list) => {
+      const normalized = String(value || "").trim();
+      if (!normalized) return false;
+      return list.findIndex((entry) => String(entry || "").trim() === normalized) === index;
+    });
+
+    let probeModel = probeModelCandidates[0] || config.codex.defaultModel;
+    let snapshot = null;
+    let lastError = null;
+    const modelAttempts = [];
+    for (const candidateModel of probeModelCandidates) {
+      modelAttempts.push(candidateModel);
+      probeModel = candidateModel;
+      try {
+        snapshot = await fetchCodexUsageSnapshotForAccount(target, oauthConfig, { model: candidateModel });
+        lastError = null;
+        break;
+      } catch (err) {
+        lastError = err;
+        if (!shouldTryNextCodexUsageProbeModel(err)) {
+          break;
+        }
+      }
+    }
+
+    if (!snapshot) {
+      throw lastError || new Error("usage_probe_failed");
+    }
+    target.usage_snapshot = snapshot;
+    target.usage_updated_at = Number(snapshot?.fetched_at || 0) || Math.floor(Date.now() / 1000);
+    const currentEntryId = getCodexPoolEntryId(target) || entryId || accountId;
+    const currentAccountId = target.account_id || accountId;
+    resetCodexAccountHealth(target, { enable: false });
+    if (targetWasActive || storeTokenMatchedTarget) {
+      store.active_account_id = currentEntryId;
+      store.token = target.token || store.token || null;
+    }
     return {
       ok: true,
-      entryId,
-      accountId,
+      entryId: currentEntryId,
+      accountId: currentAccountId,
       model: probeModel,
       snapshot,
-      applied,
-      changed: applied || hadFailureMarkers,
+      applied: true,
+      changed: true,
       planType: String(snapshot?.plan_type || "").trim().toLowerCase() || null,
-      usageUpdatedAt: Number(snapshot?.fetched_at || 0) || Math.floor(Date.now() / 1000)
+      usageUpdatedAt: Number(snapshot?.fetched_at || 0) || Math.floor(Date.now() / 1000),
+      modelAttempts: probeModelCandidates
     };
   } catch (err) {
     const message = String(err?.message || err || "usage_probe_failed");
@@ -1551,7 +1759,11 @@ async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, 
     const tokenInvalidated = isCodexTokenInvalidatedError(statusCode, message);
     target.last_error = message;
     target.last_status_code = statusCode;
-    target.token_invalidated_at = tokenInvalidated ? Math.floor(Date.now() / 1000) : 0;
+    if (tokenInvalidated) {
+      applyCodexInvalidatedAccountState(store, target, Math.floor(Date.now() / 1000));
+    } else {
+      target.token_invalidated_at = 0;
+    }
     return {
       ok: false,
       entryId,
@@ -1560,7 +1772,8 @@ async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, 
       error: message,
       statusCode,
       tokenInvalidated,
-      changed: true
+      changed: true,
+      modelAttempts: Array.isArray(options.modelCandidates) ? options.modelCandidates : []
     };
   }
 }
@@ -1622,9 +1835,10 @@ async function refreshCodexTokensInStore(store, oauthConfig, options = {}) {
       const refreshedToken = await refreshAccessToken(target.token.refresh_token, oauthConfig);
       const nextToken = normalizeToken(refreshedToken, target.token);
       const nextAccountId =
-        extractOpenAICodexAccountId(nextToken.access_token || "") || target.account_id || accountIdBefore;
+        target.account_id || accountIdBefore || extractOpenAICodexAccountId(nextToken.access_token || "");
       const nextEntryId =
         deriveCodexPoolEntryIdFromToken(nextToken, {
+          accountId: nextAccountId,
           planType:
             normalizeOpenAICodexPlanType(target?.usage_snapshot?.plan_type) ||
             normalizeOpenAICodexPlanType(target?.plan_type)
@@ -1634,11 +1848,7 @@ async function refreshCodexTokensInStore(store, oauthConfig, options = {}) {
       target.token = nextToken;
       target.account_id = nextAccountId;
       target.identity_id = nextEntryId;
-      target.last_error = "";
-      target.last_status_code = 0;
-      target.token_invalidated_at = 0;
-      target.cooldown_until = 0;
-      target.failure_count = 0;
+      resetCodexAccountHealth(target, { enable: false });
       target.last_used_at = Math.floor(Date.now() / 1000);
 
       if (isActive) {
@@ -1661,6 +1871,9 @@ async function refreshCodexTokensInStore(store, oauthConfig, options = {}) {
       const statusCode = Number(err?.statusCode || 0) || 0;
       target.last_error = message;
       target.last_status_code = statusCode;
+      if (isCodexTokenInvalidatedError(statusCode, message)) {
+        applyCodexInvalidatedAccountState(store, target, Math.floor(Date.now() / 1000));
+      }
       changed = true;
       results.push({
         entryId: entryIdBefore || null,
@@ -1737,8 +1950,22 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig, options =
     throw new Error("Missing access token.");
   }
 
-  let accountIdFromToken = extractOpenAICodexAccountId(account.token.access_token || "") || account.account_id;
-  let entryIdFromToken = deriveCodexPoolEntryIdFromToken(account.token) || getCodexPoolEntryId(account);
+  const currentPlanType =
+    normalizeOpenAICodexPlanType(account?.usage_snapshot?.plan_type) ||
+    normalizeOpenAICodexPlanType(account?.plan_type) ||
+    (() => {
+      const rawEntryId = String(getCodexPoolEntryId(account) || "").trim();
+      const marker = "::plan:";
+      const markerIndex = rawEntryId.lastIndexOf(marker);
+      if (markerIndex < 0) return null;
+      return normalizeOpenAICodexPlanType(rawEntryId.slice(markerIndex + marker.length));
+    })();
+  let accountIdFromToken = account.account_id || extractOpenAICodexAccountId(account.token.access_token || "");
+  let entryIdFromToken =
+    deriveCodexPoolEntryIdFromToken(account.token, {
+      planType: currentPlanType,
+      accountId: account.account_id || null
+    }) || getCodexPoolEntryId(account);
 
   if (isExpiredOrNearExpirySec(account.token.expires_at)) {
     if (!account.token.refresh_token) {
@@ -1746,8 +1973,12 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig, options =
     }
     const refreshed = await refreshAccessToken(account.token.refresh_token, oauthConfig);
     account.token = normalizeToken(refreshed, account.token);
-    accountIdFromToken = extractOpenAICodexAccountId(account.token.access_token || "") || accountIdFromToken;
-    entryIdFromToken = deriveCodexPoolEntryIdFromToken(account.token) || entryIdFromToken;
+    accountIdFromToken = account.account_id || extractOpenAICodexAccountId(account.token.access_token || "") || accountIdFromToken;
+    entryIdFromToken =
+      deriveCodexPoolEntryIdFromToken(account.token, {
+        planType: currentPlanType,
+        accountId: account.account_id || null
+      }) || entryIdFromToken;
   }
   if (!accountIdFromToken) {
     throw new Error("Could not resolve chatgpt account id from OAuth token.");
@@ -1760,20 +1991,15 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig, options =
 
   const url = `${getCodexUsageProbeBaseUrl().replace(/\/+$/, "")}/codex/responses`;
   const probeModel = String(options.model || "").trim() || config.codex.defaultModel;
-  const body = {
+  const probeInstructions = "Return one character.";
+  const buildProbeBody = (includeMaxOutputTokens = true) => ({
     model: probeModel,
     stream: true,
     store: false,
-    instructions: "Return one character.",
+    instructions: probeInstructions,
+    ...(includeMaxOutputTokens ? { max_output_tokens: 1 } : {}),
     reasoning: {
-      effort: resolveReasoningEffort(
-        undefined,
-        {
-          input: [{ role: "user", content: [{ type: "input_text", text: "." }] }],
-          instructions: "Return one character."
-        },
-        probeModel
-      )
+      effort: clampReasoningEffortForModel("none", probeModel)
     },
     input: [
       {
@@ -1781,33 +2007,47 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig, options =
         content: [{ type: "input_text", text: "." }]
       }
     ]
-  };
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${account.token.access_token}`,
-      "chatgpt-account-id": accountIdFromToken,
-      "openai-beta": "responses=experimental",
-      originator: getCodexOriginator(),
-      accept: "text/event-stream",
-      "content-type": "application/json",
-      "user-agent": "codex-pro-max-usage-probe"
-    },
-    body: JSON.stringify(body)
   });
 
-  const snapshot = extractCodexUsageSnapshotFromHeaders(response.headers, "probe");
+  async function sendProbeRequest(body) {
+    return await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${account.token.access_token}`,
+        "chatgpt-account-id": accountIdFromToken,
+        "openai-beta": "responses=experimental",
+        originator: getCodexOriginator(),
+        accept: "text/event-stream",
+        "accept-encoding": "identity",
+        "content-type": "application/json",
+        "user-agent": "codex-pro-max-usage-probe"
+      },
+      body: JSON.stringify(body)
+    });
+  }
+
+  let probeBody = buildProbeBody(true);
+  let response = await sendProbeRequest(probeBody);
+  let snapshot = extractCodexUsageSnapshotFromHeaders(response.headers, "probe");
   if (!response.ok) {
-    const raw = await response.text().catch(() => "");
-    const fallback = extractCodexUsageSnapshotFromLimitError(raw, account?.usage_snapshot || null, "probe_error");
-    if (fallback) {
-      return fallback;
+    let raw = await response.text().catch(() => "");
+    if (isUnsupportedMaxOutputTokensError(response.status, raw)) {
+      probeBody = buildProbeBody(false);
+      response = await sendProbeRequest(probeBody);
+      snapshot = extractCodexUsageSnapshotFromHeaders(response.headers, "probe");
+      raw = response.ok ? raw : await response.text().catch(() => "");
     }
-    const error = new Error(`HTTP ${response.status}: ${truncate(raw, 180)}`);
-    error.statusCode = Number(response.status || 0) || 0;
-    error.responseText = raw;
-    error.tokenInvalidated = isCodexTokenInvalidatedError(response.status, raw);
-    throw error;
+    if (!response.ok) {
+      const fallback = extractCodexUsageSnapshotFromLimitError(raw, account?.usage_snapshot || null, "probe_error");
+      if (fallback) {
+        return fallback;
+      }
+      const error = new Error(`HTTP ${response.status}: ${truncate(raw, 180)}`);
+      error.statusCode = Number(response.status || 0) || 0;
+      error.responseText = raw;
+      error.tokenInvalidated = isCodexTokenInvalidatedError(response.status, raw);
+      throw error;
+    }
   }
   if (response.body) {
     response.body.cancel().catch(() => {});
@@ -3080,12 +3320,14 @@ async function runCodexDirectSelfTest(prompt, reasoningEffort) {
       "openai-beta": "responses=experimental",
       originator: getCodexOriginator(),
       accept: "text/event-stream",
+      "accept-encoding": "identity",
       "content-type": "application/json",
       "user-agent": "codex-pro-max-admin-test"
     },
     body: JSON.stringify(body)
   });
 
+  await maybeCaptureCodexUsageFromHeaders(auth, response.headers, "self_test").catch(() => {});
   const raw = await response.text();
   if (!response.ok) {
     throw new Error(`Upstream test failed: HTTP ${response.status}: ${truncate(raw, 400)}`);
@@ -3227,7 +3469,7 @@ function resolveReasoningEffort(value, context = null, modelId = null) {
   }
 
   const planModeReasoningEffort =
-    !resolved && !hasExplicitRequest && context && typeof context === "object" && context.planMode === true
+    !resolved && !hasExplicitRequest && context && typeof context === "object" && context.collaborationMode === "plan"
       ? parseReasoningEffortOrFallback(context.planModeReasoningEffort, null)
       : null;
   if (planModeReasoningEffort) {
@@ -3418,6 +3660,7 @@ export const __testing = createServerTestingExports({
   acquireCodexAccountLease,
   applyCodexInvalidatedAccountState,
   isCodexAccountLeased,
+  isCodexPoolRetryEnabled,
   pickCodexAccountCandidates,
   removeCodexPoolAccountFromStore,
   isCodexTokenInvalidatedError,
@@ -3429,13 +3672,18 @@ export const __testing = createServerTestingExports({
   getCodexOAuthCallbackServer,
   getCloudflaredRuntime: () => cloudflaredRuntime,
   stopCloudflaredTunnel,
+  getCodexOAuthStore,
+  setCodexOAuthStore,
   ensureCodexOAuthStoreShape,
   buildOfficialCodexModelCandidateIds,
+  getExecutableModelCandidateIds,
   resolveCodexPreheatModelSelection,
   normalizeCodexServiceTier,
+  refreshCodexUsageSnapshotInStore,
   normalizeCodexResponsesRequestBody,
   normalizeChatCompletionsRequestBody,
   parseResponsesResultFromSse,
+  runDirectChatCompletionTest,
   anthropicLocalCompatHelpers,
   buildCodexResponsesRequestBody,
   handleAnthropicNativeProxy

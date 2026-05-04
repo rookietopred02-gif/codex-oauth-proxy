@@ -10,18 +10,37 @@ export function createPoolFeature(deps) {
   let lastActiveEntryId = "";
   let usageRefreshInFlight = false;
   let lastUsageRefreshAtMs = 0;
+  let tokenRefreshInFlight = false;
+  let lastTokenRefreshAtMs = 0;
+  let autoTokenRefreshEnabled = false;
 
   function syncRefreshControls() {
-    const busy = usageRefreshInFlight === true;
+    const usageBusy = usageRefreshInFlight === true;
     const toolbarBtn = $("refreshUsageBtn");
-    if (toolbarBtn instanceof HTMLButtonElement) toolbarBtn.disabled = busy;
+    if (toolbarBtn instanceof HTMLButtonElement) toolbarBtn.disabled = usageBusy;
     const iconBtn = $("refreshAllAccountsBtn");
-    if (!(iconBtn instanceof HTMLButtonElement)) return;
-    const label = t(busy ? "all_accounts_refreshing" : "all_accounts_refresh");
-    iconBtn.disabled = busy;
-    iconBtn.title = label;
-    iconBtn.setAttribute("aria-label", label);
-    iconBtn.classList.toggle("is-spinning", busy);
+    if (iconBtn instanceof HTMLButtonElement) {
+      const label = t(usageBusy ? "all_accounts_refreshing" : "all_accounts_refresh");
+      iconBtn.disabled = usageBusy;
+      iconBtn.title = label;
+      iconBtn.setAttribute("aria-label", label);
+      iconBtn.classList.toggle("is-spinning", usageBusy);
+    }
+
+    const tokenBusy = tokenRefreshInFlight === true;
+    const refreshTokensBtn = $("refreshAllTokensBtn");
+    if (refreshTokensBtn instanceof HTMLButtonElement) {
+      refreshTokensBtn.disabled = tokenBusy;
+      refreshTokensBtn.textContent = t(tokenBusy ? "token_refresh_running" : "token_refresh_run");
+    }
+    const toggleAutoTokensBtn = $("toggleAutoRefreshTokensBtn");
+    if (toggleAutoTokensBtn instanceof HTMLButtonElement) {
+      toggleAutoTokensBtn.disabled = tokenBusy;
+      toggleAutoTokensBtn.textContent = t(
+        autoTokenRefreshEnabled ? "token_refresh_auto_disable" : "token_refresh_auto_enable"
+      );
+      toggleAutoTokensBtn.classList.toggle("button-strong", autoTokenRefreshEnabled);
+    }
   }
 
   function getNextAccountSlot(minSlot = 2) {
@@ -33,6 +52,13 @@ export function createPoolFeature(deps) {
     let slot = Math.max(1, Number(minSlot) || 1);
     while (occupied.has(slot)) slot += 1;
     return slot;
+  }
+
+  function readExpectedAccountEmail(win = window) {
+    if (typeof win?.prompt !== "function") return "";
+    const raw = win.prompt(t("runtime_connect_account_email_hint"), "");
+    if (raw === null) return null;
+    return String(raw || "").trim();
   }
 
   function render(state) {
@@ -171,6 +197,80 @@ export function createPoolFeature(deps) {
     }
   }
 
+  function renderTokenRefreshStatus(summary = null) {
+    const statusEl = $("tokenRefreshStatus");
+    if (!(statusEl instanceof HTMLElement)) return;
+
+    if (!summary) {
+      statusEl.className = "preheat-status";
+      statusEl.textContent = t("token_refresh_idle");
+      return;
+    }
+
+    if (summary.state === "running") {
+      statusEl.className = "preheat-status";
+      statusEl.textContent = t("token_refresh_running");
+      return;
+    }
+
+    if (summary.state === "error") {
+      statusEl.className = "preheat-status bad";
+      statusEl.textContent = tt("token_refresh_failed", { message: summary.message || "token_refresh_failed" });
+      return;
+    }
+
+    const ok = Number(summary.refreshed || 0) === Number(summary.total || 0);
+    statusEl.className = `preheat-status ${ok ? "ok" : "bad"}`;
+    statusEl.textContent = tt("token_refresh_status", {
+      refreshed: Number(summary.refreshed || 0),
+      total: Number(summary.total || 0),
+      mode: autoTokenRefreshEnabled ? t("token_refresh_mode_auto") : t("token_refresh_mode_manual")
+    });
+  }
+
+  async function refreshTokens(force = false, options = {}) {
+    if (typeof options.isLocked === "function" && options.isLocked()) return null;
+    if (tokenRefreshInFlight) return null;
+    const minIntervalMs = Number(options.minIntervalMs || 0);
+    const now = Date.now();
+    if (!force && minIntervalMs > 0 && now - lastTokenRefreshAtMs < minIntervalMs) {
+      return null;
+    }
+
+    tokenRefreshInFlight = true;
+    renderTokenRefreshStatus({ state: "running" });
+    syncRefreshControls();
+    try {
+      const result = await api("/admin/auth-pool/refresh-tokens", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ includeDisabled: true })
+      });
+      lastTokenRefreshAtMs = Date.now();
+      renderTokenRefreshStatus({
+        state: "done",
+        refreshed: Number(result?.refreshed || 0),
+        total: Number(result?.total || 0)
+      });
+      return result;
+    } catch (err) {
+      renderTokenRefreshStatus({ state: "error", message: err.message });
+      throw err;
+    } finally {
+      tokenRefreshInFlight = false;
+      syncRefreshControls();
+    }
+  }
+
+  function setAutoTokenRefreshEnabled(enabled) {
+    autoTokenRefreshEnabled = enabled === true;
+    syncRefreshControls();
+  }
+
+  function isAutoTokenRefreshEnabled() {
+    return autoTokenRefreshEnabled === true;
+  }
+
   async function refreshAllAccountStatuses(options = {}) {
     const didRefresh = await refreshUsage(true, options);
     if (!didRefresh) return false;
@@ -206,6 +306,20 @@ export function createPoolFeature(deps) {
     }
   }
 
+  async function switchLocalCodexAccountTo(targetRef, refreshState) {
+    const ref = String(targetRef || "").trim();
+    if (!ref) throw new Error(t("alert_switch_target_missing"));
+    const result = await api("/admin/auth-pool/switch-local", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ entryId: ref })
+    });
+    if (typeof refreshState === "function") {
+      await refreshState(true);
+    }
+    return result;
+  }
+
   async function switchCurrentAccount(refreshState) {
     const sorted = (Array.isArray(lastAccounts) ? lastAccounts : [])
       .map((account, idx) => ({ ...account, _slot: renderer.getAccountSlotNumber(account, idx) || 999 }))
@@ -226,24 +340,35 @@ export function createPoolFeature(deps) {
 
   function openAccountLoginFlow(win = window) {
     const hasAccounts = Array.isArray(lastAccounts) && lastAccounts.length > 0;
+    const expectedEmail = readExpectedAccountEmail(win);
+    if (expectedEmail === null) return;
+    const params = new URLSearchParams();
+    params.set("prompt", "login");
+    if (expectedEmail) params.set("email", expectedEmail);
     if (!hasAccounts) {
-      win.open("/auth/login?prompt=login", "_blank");
+      win.open(`/auth/login?${params.toString()}`, "_blank");
       return;
     }
     const slot = getNextAccountSlot(2);
-    win.open(`/auth/login?slot=${slot}&label=acc${slot}&prompt=login`, "_blank");
+    params.set("slot", String(slot));
+    win.open(`/auth/login?${params.toString()}`, "_blank");
   }
 
   return {
     getLastAccounts: () => [...lastAccounts],
     getLastActiveEntryId: () => lastActiveEntryId,
+    isAutoTokenRefreshEnabled,
     openAccountLoginFlow,
     refreshAllAccountStatuses,
+    refreshTokens,
     refreshUsage,
     render,
+    renderTokenRefreshStatus,
+    setAutoTokenRefreshEnabled,
     syncRefreshControls,
     switchCurrentAccount,
     switchCurrentAccountTo,
+    switchLocalCodexAccountTo,
     logoutAccountByEntry
   };
 }

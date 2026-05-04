@@ -25,7 +25,7 @@ export function createCodexAccountIdentityHelpers(options = {}) {
   function extractOpenAICodexEmail(accessToken) {
     const payload = decodeJwtPayload(accessToken);
     const profileClaim = payload?.["https://api.openai.com/profile"];
-    const email = profileClaim?.email;
+    const email = profileClaim?.email || payload?.email;
     return typeof email === "string" && email.length > 0 ? email : null;
   }
 
@@ -54,6 +54,41 @@ export function createCodexAccountIdentityHelpers(options = {}) {
     return normalizeOpenAICodexPlanType(authClaim?.chatgpt_plan_type || authClaim?.plan_type || "");
   }
 
+  function extractOpenAICodexOrganizationIds(token) {
+    const payload = decodeJwtPayload(token);
+    const authClaim = extractOpenAICodexAuthClaim(token);
+    const collections = [
+      payload?.organizations,
+      authClaim?.organizations,
+      payload?.orgs,
+      authClaim?.orgs,
+      payload?.organization_ids,
+      authClaim?.organization_ids
+    ];
+    const ids = [];
+    for (const collection of collections) {
+      if (!Array.isArray(collection)) continue;
+      for (const entry of collection) {
+        const candidate =
+          typeof entry === "string"
+            ? entry
+            : typeof entry?.id === "string"
+              ? entry.id
+              : typeof entry?.account_id === "string"
+                ? entry.account_id
+                : typeof entry?.chatgpt_account_id === "string"
+                  ? entry.chatgpt_account_id
+                  : typeof entry?.organization_id === "string"
+                    ? entry.organization_id
+                    : "";
+        const normalized = String(candidate || "").trim();
+        if (!normalized || ids.includes(normalized)) continue;
+        ids.push(normalized);
+      }
+    }
+    return ids;
+  }
+
   return {
     decodeJwtPayload,
     extractOpenAICodexAuthClaim,
@@ -61,6 +96,7 @@ export function createCodexAccountIdentityHelpers(options = {}) {
     extractOpenAICodexPrincipalId,
     normalizeOpenAICodexPlanType,
     extractOpenAICodexPlanType,
-    extractOpenAICodexEmail
+    extractOpenAICodexEmail,
+    extractOpenAICodexOrganizationIds
   };
 }

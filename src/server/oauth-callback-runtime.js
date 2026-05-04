@@ -16,9 +16,11 @@ function describeOAuthUpsertAction(action) {
     case "updated_existing_account":
       return "existing account token refreshed";
     case "already_exists_same_account":
-      return "same account detected (not added again)";
+      return "same account + same plan detected (not added again)";
     case "replaced_slot":
       return "slot owner replaced";
+    case "unexpected_account_email":
+      return "login returned a different account than requested";
     default:
       return "updated";
   }
@@ -42,6 +44,7 @@ export function createCodexOAuthCallbackRuntime({
   extractOpenAICodexAccountId,
   extractOpenAICodexPrincipalId,
   extractOpenAICodexEmail,
+  extractOpenAICodexOrganizationIds,
   parseSlotValue,
   ensureCodexOAuthStoreShape,
   normalizeOpenAICodexPlanType,
@@ -56,6 +59,16 @@ export function createCodexOAuthCallbackRuntime({
   const pendingAuth = new Map();
   let codexCallbackServer = null;
   let codexCallbackServerStartPromise = null;
+
+  function uniqueNonEmpty(values) {
+    const out = [];
+    for (const value of Array.isArray(values) ? values : []) {
+      const normalized = String(value || "").trim();
+      if (!normalized || out.includes(normalized)) continue;
+      out.push(normalized);
+    }
+    return out;
+  }
 
   async function completeOAuthCallback({ code, state }) {
     const pending = pendingAuth.get(state);
@@ -74,7 +87,10 @@ export function createCodexOAuthCallbackRuntime({
 
     const token = await exchangeCodeForToken(code, pending.verifier, oauthRuntime.oauth);
     const normalizedToken = normalizeToken(token, oauthRuntime.store.token);
-    oauthRuntime.store.token = normalizedToken;
+    if (config.authMode !== "codex-oauth") {
+      oauthRuntime.store.token = normalizedToken;
+    }
+    const expectedEmail = String(pending.expectedEmail || "").trim().toLowerCase();
 
     let callbackSummary = {
       accountId: extractOpenAICodexAccountId(normalizedToken.access_token || "") || null,
@@ -83,68 +99,118 @@ export function createCodexOAuthCallbackRuntime({
       slot: parseSlotValue(pending.slot),
       action: "updated"
     };
+    const actualEmail = String(callbackSummary.email || "").trim().toLowerCase();
+    if (config.authMode === "codex-oauth" && expectedEmail && actualEmail !== expectedEmail) {
+      return {
+        ...callbackSummary,
+        action: "unexpected_account_email",
+        expectedEmail,
+        actualEmail: callbackSummary.email || ""
+      };
+    }
 
     if (config.authMode === "codex-oauth") {
       const shaped = ensureCodexOAuthStoreShape(oauthRuntime.store);
       Object.keys(oauthRuntime.store).forEach((key) => delete oauthRuntime.store[key]);
       Object.assign(oauthRuntime.store, shaped.store);
-      let probe = null;
-      let probedSnapshot = null;
-      let detectedPlanType =
+      const tokenAccountId = String(callbackSummary.accountId || "").trim();
+      const tokenPlanType =
         normalizeOpenAICodexPlanType(callbackSummary?.planType) ||
         extractOpenAICodexPlanType(normalizedToken.access_token || "");
+      const candidateAccountIds = uniqueNonEmpty([
+        tokenAccountId,
+        ...(typeof extractOpenAICodexOrganizationIds === "function"
+          ? extractOpenAICodexOrganizationIds(normalizedToken.id_token || "")
+          : []),
+        ...(typeof extractOpenAICodexOrganizationIds === "function"
+          ? extractOpenAICodexOrganizationIds(normalizedToken.access_token || "")
+          : [])
+      ]);
+      const probeResults = [];
+      let primaryProbeError = "";
 
-      try {
-        probedSnapshot = await withTimeout(
-          fetchCodexUsageSnapshotForAccount(
-            {
-              token: normalizeToken(normalizedToken, normalizedToken),
-              account_id: callbackSummary.accountId || null,
-              identity_id: callbackSummary.entryId || null,
-              usage_snapshot: null
-            },
-            oauthRuntime.oauth
-          ),
-          12000,
-          "Usage probe timed out."
-        );
-        detectedPlanType =
-          normalizeOpenAICodexPlanType(probedSnapshot?.plan_type) || detectedPlanType;
-        probe = {
-          ok: true,
-          planType: detectedPlanType,
-          snapshot: probedSnapshot
-        };
-      } catch (err) {
-        probe = {
-          ok: false,
-          error: String(err?.message || err || "usage_probe_failed")
-        };
+      for (const [index, candidateAccountId] of candidateAccountIds.entries()) {
+        let probedSnapshot = null;
+        let usageFetched = false;
+        let usageFetchError = "";
+        let detectedPlanType =
+          tokenPlanType;
+
+        try {
+          probedSnapshot = await withTimeout(
+            fetchCodexUsageSnapshotForAccount(
+              {
+                token: normalizeToken(normalizedToken, normalizedToken),
+                account_id: candidateAccountId || null,
+                identity_id: callbackSummary.entryId || null,
+                usage_snapshot: null
+              },
+              oauthRuntime.oauth
+            ),
+            12000,
+            "Usage probe timed out."
+          );
+          detectedPlanType =
+            normalizeOpenAICodexPlanType(probedSnapshot?.plan_type) || detectedPlanType;
+          usageFetched = true;
+        } catch (err) {
+          usageFetchError = String(err?.message || err || "usage_probe_failed");
+          if (!primaryProbeError && candidateAccountId === tokenAccountId) {
+            primaryProbeError = usageFetchError;
+          }
+        }
+
+        if (!usageFetched && index !== 0 && candidateAccountId !== tokenAccountId) {
+          continue;
+        }
+
+        probeResults.push({
+          candidateAccountId,
+          detectedPlanType,
+          usageFetched,
+          usageFetchError,
+          usageSnapshot: probedSnapshot,
+          isPrimaryCandidate: index === 0 || candidateAccountId === tokenAccountId
+        });
       }
 
-      const upsert = upsertCodexOAuthAccount(oauthRuntime.store, normalizedToken, {
-        label: pending.label || "",
-        slot: pending.slot,
-        force: pending.force,
-        planType: detectedPlanType,
-        usageSnapshot: probedSnapshot
-      });
-      callbackSummary = {
-        accountId: upsert.accountId,
-        entryId: upsert.entryId || callbackSummary.entryId,
-        email: upsert.email || callbackSummary.email,
-        slot: upsert.slot,
-        action: upsert.action,
-        planType: upsert.planType || detectedPlanType || null
-      };
+      const successfulProbeResults = probeResults.filter((result) => result.usageFetched);
+      const selectedProbeResult =
+        successfulProbeResults.find((result) => result.candidateAccountId === tokenAccountId) ||
+        successfulProbeResults.find((result) => result.detectedPlanType === tokenPlanType) ||
+        successfulProbeResults[0] ||
+        probeResults.find((result) => result.isPrimaryCandidate) ||
+        null;
 
-      if (probe?.ok) {
-        callbackSummary.planType = probe.planType || callbackSummary.planType || null;
-        callbackSummary.usageFetched = true;
-      } else if (probe) {
+      if (selectedProbeResult) {
+        const upsert = upsertCodexOAuthAccount(oauthRuntime.store, normalizedToken, {
+          label: pending.label || "",
+          slot: pending.slot,
+          force: pending.force,
+          planType: selectedProbeResult.detectedPlanType || tokenPlanType || null,
+          usageSnapshot: selectedProbeResult.usageSnapshot,
+          accountId: selectedProbeResult.candidateAccountId || tokenAccountId || null
+        });
+        callbackSummary = {
+          accountId: upsert.accountId,
+          entryId: upsert.entryId || callbackSummary.entryId,
+          email: upsert.email || callbackSummary.email,
+          slot: upsert.slot,
+          action: upsert.action,
+          planType: upsert.planType || selectedProbeResult.detectedPlanType || tokenPlanType || null,
+          usageFetched: selectedProbeResult.usageFetched,
+          usageFetchError: selectedProbeResult.usageFetchError
+        };
+        oauthRuntime.store.active_account_id =
+          callbackSummary.entryId || oauthRuntime.store.active_account_id || null;
+      } else {
         callbackSummary.usageFetched = false;
-        callbackSummary.usageFetchError = probe.error || probe.skipped || "usage_probe_failed";
+        callbackSummary.usageFetchError = primaryProbeError || "usage_probe_failed";
       }
+
+      const normalizedAfterUpsert = ensureCodexOAuthStoreShape(oauthRuntime.store);
+      Object.keys(oauthRuntime.store).forEach((key) => delete oauthRuntime.store[key]);
+      Object.assign(oauthRuntime.store, normalizedAfterUpsert.store);
     }
 
     await saveTokenStore(oauthRuntime.oauth.tokenStorePath, oauthRuntime.store);
@@ -161,6 +227,8 @@ export function createCodexOAuthCallbackRuntime({
     const planType = String(summary?.planType || "").trim();
     const usageFetched = summary?.usageFetched === true;
     const usageFetchError = String(summary?.usageFetchError || "").trim();
+    const expectedEmail = String(summary?.expectedEmail || "").trim();
+    const actualEmail = String(summary?.actualEmail || email || "").trim();
     const actionLabel = describeOAuthUpsertAction(action);
     const emailLine = email ? `<p>Email: ${escapeHtml(email)}</p>` : "";
     const entryLine = entryId ? `<p>Entry: ${escapeHtml(truncate(String(entryId), 80))}</p>` : "";
@@ -172,7 +240,9 @@ export function createCodexOAuthCallbackRuntime({
         : "";
     const warning =
       action === "already_exists_same_account"
-        ? `<p style="color:#b45309"><strong>Notice:</strong> This login returned the same ChatGPT account ID, so no new account was added.</p><p style="color:#b45309">Use another browser profile/incognito and login with a different account.</p>`
+        ? `<p style="color:#b45309"><strong>Notice:</strong> This login returned the same ChatGPT account and plan variant, so no new account was added.</p><p style="color:#b45309">Use another browser profile/incognito or a different plan/account if you want a separate pool entry.</p>`
+        : action === "unexpected_account_email"
+          ? `<p style="color:#b91c1c"><strong>Requested:</strong> ${escapeHtml(expectedEmail || "(unspecified)")}</p><p style="color:#b91c1c"><strong>Returned:</strong> ${escapeHtml(actualEmail || "(unknown)")}</p><p style="color:#b91c1c"><strong>Notice:</strong> This login returned a different ChatGPT account, so the account pool was not changed.</p>`
         : "";
     return `<p>Account: ${escapeHtml(accountId)}</p>${entryLine}${emailLine}<p>Action: ${escapeHtml(actionLabel)}</p><p>Slot: ${escapeHtml(String(slot))}</p>${planLine}${usageLine}${warning}`;
   }

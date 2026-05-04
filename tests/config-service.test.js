@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { buildProxyConfigEnvEntries } from "../src/env-config-store.js";
 import {
+  OFFICIAL_CODEX_MODELS,
   clampReasoningEffortForModel,
   createServerConfig,
   normalizeUpstreamMode,
@@ -64,6 +65,26 @@ test("createServerConfig normalizes invalid strategy and tunnel mode", () => {
   assert.equal(warnings.length, 1);
 });
 
+test("createServerConfig normalizes an invalid pool filter", () => {
+  const warnings = [];
+  const { config } = createServerConfig({
+    env: {
+      AUTH_MODE: "codex-oauth",
+      CODEX_MULTI_ACCOUNT_POOL_FILTER: "broken"
+    },
+    runtimePaths: createRuntimePaths("pool-filter"),
+    logger: {
+      warn(message) {
+        warnings.push(String(message || ""));
+      }
+    }
+  });
+
+  assert.equal(config.codexOAuth.multiAccountPoolFilter, "all");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /CODEX_MULTI_ACCOUNT_POOL_FILTER/);
+});
+
 test("createServerConfig binds public access to the runtime port", () => {
   const { config } = createServerConfig({
     env: {
@@ -79,6 +100,19 @@ test("createServerConfig binds public access to the runtime port", () => {
   assert.equal(config.publicAccess.localPort, 8899);
 });
 
+test("createServerConfig defaults Codex to GPT-5.5", () => {
+  const { config } = createServerConfig({
+    env: {
+      AUTH_MODE: "codex-oauth"
+    },
+    runtimePaths: createRuntimePaths("default-model")
+  });
+
+  assert.equal(config.codex.defaultModel, "gpt-5.5");
+  assert.equal(config.codex.defaultServiceTier, "priority");
+  assert.equal(OFFICIAL_CODEX_MODELS[0], "gpt-5.5");
+});
+
 test("buildProxyConfigEnvEntries persists runtime port for proxy and cloudflared", () => {
   const entries = buildProxyConfigEnvEntries({
     port: 8787,
@@ -91,11 +125,13 @@ test("buildProxyConfigEnvEntries persists runtime port for proxy and cloudflared
       defaultModel: "gpt-5.4",
       defaultInstructions: "",
       defaultServiceTier: "default",
-      defaultReasoningEffort: "medium"
+      defaultReasoningEffort: "medium",
+      planModeReasoningEffort: "high"
     },
     codexOAuth: {
       multiAccountEnabled: true,
-      multiAccountStrategy: "smart"
+      multiAccountStrategy: "smart",
+      multiAccountPoolFilter: "team-only"
     },
     expiredAccountCleanup: {
       enabled: false
@@ -114,6 +150,10 @@ test("buildProxyConfigEnvEntries persists runtime port for proxy and cloudflared
 
   assert.equal(entries.PORT, 9988);
   assert.equal(entries.CLOUDFLARED_LOCAL_PORT, 9988);
+  assert.equal(entries.CODEX_DEFAULT_SERVICE_TIER, "default");
+  assert.equal(Object.hasOwn(entries, "CODEX_DEFAULT_REASONING_EFFORT"), false);
+  assert.equal(Object.hasOwn(entries, "CODEX_PLAN_MODE_REASONING_EFFORT"), false);
+  assert.equal(entries.CODEX_MULTI_ACCOUNT_POOL_FILTER, "team-only");
 });
 
 test("createServerConfig rejects incomplete custom oauth config", () => {
@@ -128,6 +168,18 @@ test("createServerConfig rejects incomplete custom oauth config", () => {
       }),
     /Missing OAuth config/
   );
+});
+
+test("createServerConfig reads plan mode reasoning effort from env", () => {
+  const { config } = createServerConfig({
+    env: {
+      AUTH_MODE: "codex-oauth",
+      CODEX_PLAN_MODE_REASONING_EFFORT: "high"
+    },
+    runtimePaths: createRuntimePaths("plan-mode-reasoning")
+  });
+
+  assert.equal(config.codex.planModeReasoningEffort, "high");
 });
 
 test("clampReasoningEffortForModel downgrades unsupported GPT-5 modes", () => {

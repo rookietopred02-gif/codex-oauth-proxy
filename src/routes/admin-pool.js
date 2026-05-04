@@ -1,4 +1,9 @@
 import { assertCodexOAuthMode } from "./admin-shared.js";
+import {
+  captureActiveCodexAccountPointer,
+  resetCodexAccountHealth,
+  restoreActiveCodexAccountPointer
+} from "../services/codex-account-state.js";
 
 function sanitizeExportSegment(value, fallback) {
   const cleaned = String(value || "")
@@ -27,7 +32,10 @@ export function registerAdminPoolRoutes(app, context) {
     importIntoCodexAuthPool,
     extractCodexOAuthImportItems,
     normalizeOpenAICodexPlanType,
+    getOfficialCodexModelCandidateIds,
     refreshCodexUsageSnapshotInStore,
+    refreshCodexTokensInStore,
+    switchLocalCodexToChatgptAccount,
     runCodexPreheat,
     getCodexPreheatState
   } = context;
@@ -52,6 +60,7 @@ export function registerAdminPoolRoutes(app, context) {
       ok: true,
       multiAccountEnabled: isCodexMultiAccountEnabled(),
       strategy: config.codexOAuth.multiAccountStrategy,
+      poolFilter: config.codexOAuth.multiAccountPoolFilter || "all",
       sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
       activeEntryId,
       activeAccountId:
@@ -129,11 +138,12 @@ export function registerAdminPoolRoutes(app, context) {
       res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
       return;
     }
-    target.enabled = true;
-    target.cooldown_until = 0;
-    target.last_error = "";
+    resetCodexAccountHealth(target);
     const targetEntryId = getCodexPoolEntryId(target);
     store.active_account_id = targetEntryId;
+    if (target?.token?.access_token) {
+      store.token = target.token;
+    }
     await saveTokenStore(config.codexOAuth.tokenStorePath, store);
     clearAuthContextCache();
     res.json({ ok: true, entryId: targetEntryId, accountId: target.account_id });
@@ -208,41 +218,47 @@ export function registerAdminPoolRoutes(app, context) {
 
     const { store } = await syncCodexOAuthStore();
     const accounts = Array.isArray(store.accounts) ? store.accounts : [];
-    const files = accounts.map((account, index) => {
+    const exportedAccounts = accounts.map((account, index) => {
       const entryId = getCodexPoolEntryId(account) || `entry_${index + 1}`;
       const slot = Number(account?.slot || 0) || index + 1;
-      const labelPart = sanitizeExportSegment(account?.label || "", "account");
-      const accountPart = sanitizeExportSegment(account?.account_id || "", `slot-${slot}`);
-      const fileName = `slot-${slot}-${labelPart}-${accountPart}`.slice(0, 96) + ".json";
       const token = account?.token || {};
       const usageSnapshot =
         account?.usage_snapshot && typeof account.usage_snapshot === "object" ? account.usage_snapshot : null;
       const planType = normalizeOpenAICodexPlanType(usageSnapshot?.plan_type || account?.plan_type);
       return {
-        fileName,
-        payload: {
-          label: typeof account?.label === "string" ? account.label : "",
-          slot,
-          enabled: account?.enabled !== false,
-          entry_id: entryId,
-          account_id: account?.account_id || null,
-          plan_type: planType || null,
-          usage_snapshot: usageSnapshot,
-          usage_updated_at: Number(account?.usage_updated_at || 0) || 0,
-          access_token: token?.access_token || "",
-          refresh_token: token?.refresh_token || null,
-          token_type: token?.token_type || "Bearer",
-          scope: token?.scope || null,
-          expires_at: Number(token?.expires_at || 0) || 0
-        }
+        label: typeof account?.label === "string" ? account.label : "",
+        slot,
+        enabled: account?.enabled !== false,
+        entry_id: entryId,
+        account_id: account?.account_id || null,
+        plan_type: planType || null,
+        usage_snapshot: usageSnapshot,
+        usage_updated_at: Number(account?.usage_updated_at || 0) || 0,
+        access_token: token?.access_token || "",
+        id_token: token?.id_token || null,
+        refresh_token: token?.refresh_token || null,
+        token_type: token?.token_type || "Bearer",
+        scope: token?.scope || null,
+        expires_at: Number(token?.expires_at || 0) || 0
       };
     });
+    const generatedAt = new Date().toISOString();
+    const timestamp = generatedAt.replace(/:/g, "-").replace(/\.\d+Z$/, "Z");
+    const fileName =
+      sanitizeExportSegment(`codex-oauth-account-pool-${timestamp}`, "codex-oauth-account-pool") + ".json";
+    const payload = {
+      type: "codex-pro-max-auth-pool-export",
+      generated_at: generatedAt,
+      exported: exportedAccounts.length,
+      accounts: exportedAccounts
+    };
 
     res.json({
       ok: true,
-      exported: files.length,
-      generatedAt: new Date().toISOString(),
-      files
+      exported: exportedAccounts.length,
+      generatedAt,
+      fileName,
+      payload
     });
   });
 
@@ -273,40 +289,65 @@ export function registerAdminPoolRoutes(app, context) {
       return;
     }
 
+    const activePointer = captureActiveCodexAccountPointer(store, {
+      findAccountByRef: findCodexPoolAccountByRef
+    });
     const results = [];
+    const modelCandidates = typeof getOfficialCodexModelCandidateIds === "function"
+      ? await getOfficialCodexModelCandidateIds().catch(() => [])
+      : [];
+    const probes = await Promise.all(
+      targets.map(async (target) => {
+        try {
+          const probe = await refreshCodexUsageSnapshotInStore(
+            store,
+            getCodexPoolEntryId(target),
+            config.codexOAuth,
+            { includeDisabled, modelCandidates }
+          );
+          return { target, probe };
+        } catch (err) {
+          return {
+            target,
+            probe: {
+              ok: false,
+              entryId: getCodexPoolEntryId(target),
+              accountId: target.account_id || null,
+              error: String(err?.message || err || "usage_probe_failed"),
+              modelAttempts: Array.isArray(modelCandidates) ? modelCandidates : []
+            }
+          };
+        }
+      })
+    );
+
     let refreshed = 0;
-    for (let i = 0; i < targets.length; i += 1) {
-      const target = targets[i];
-      const probe = await refreshCodexUsageSnapshotInStore(
-        store,
-        getCodexPoolEntryId(target),
-        config.codexOAuth,
-        { includeDisabled }
-      );
+    for (const { target, probe } of probes) {
       if (probe.ok) {
         refreshed += 1;
         results.push({
           entryId: probe.entryId,
           accountId: probe.accountId,
           ok: true,
-          usage: probe.snapshot
+          usage: probe.snapshot,
+          model: probe.model
         });
-      } else {
-        results.push({
-          entryId: probe.entryId || getCodexPoolEntryId(target),
-          accountId: probe.accountId || target.account_id || null,
-          ok: false,
-          error: String(probe.error || probe.skipped || "usage_probe_failed")
-        });
+        continue;
       }
-      if (i < targets.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 120));
-      }
+
+      results.push({
+        entryId: probe.entryId || getCodexPoolEntryId(target),
+        accountId: probe.accountId || target.account_id || null,
+        ok: false,
+        error: String(probe.error || probe.skipped || "usage_probe_failed"),
+        modelAttempts: Array.isArray(probe.modelAttempts) ? probe.modelAttempts : []
+      });
     }
 
-    if (targets[0]?.token?.access_token) {
-      store.token = targets[0].token;
-    }
+    restoreActiveCodexAccountPointer(store, activePointer, {
+      findAccountByRef: findCodexPoolAccountByRef,
+      getEntryId: getCodexPoolEntryId
+    });
     const normalizedAfterRefresh = ensureCodexOAuthStoreShape(store);
     setCodexOAuthStore(normalizedAfterRefresh.store);
     await saveTokenStore(config.codexOAuth.tokenStorePath, normalizedAfterRefresh.store);
@@ -317,6 +358,114 @@ export function registerAdminPoolRoutes(app, context) {
       total: targets.length,
       results
     });
+  });
+
+  app.post("/admin/auth-pool/refresh-tokens", async (req, res) => {
+    if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
+
+    const body = await readJsonBody(req);
+    const accountRef = String(body.entryId || body.accountId || "").trim();
+    const includeDisabled = body.includeDisabled !== false;
+
+    const { store } = await syncCodexOAuthStore();
+    const result = await refreshCodexTokensInStore(store, config.codexOAuth, {
+      accountRef,
+      includeDisabled
+    });
+
+    if (result.total === 0) {
+      res.status(404).json({
+        error: "not_found",
+        message: String(result.error || "No eligible accounts to refresh tokens.")
+      });
+      return;
+    }
+
+    const normalizedAfterRefresh = ensureCodexOAuthStoreShape(store);
+    setCodexOAuthStore(normalizedAfterRefresh.store);
+    await saveTokenStore(config.codexOAuth.tokenStorePath, normalizedAfterRefresh.store);
+    clearAuthContextCache();
+
+    res.json({
+      ok: result.ok,
+      refreshed: result.refreshed,
+      total: result.total,
+      changed: result.changed === true || normalizedAfterRefresh.changed === true,
+      results: Array.isArray(result.results) ? result.results : []
+    });
+  });
+
+  app.post("/admin/auth-pool/switch-local", async (req, res) => {
+    if (!assertCodexOAuthMode(config, res, "Local Codex account switch")) return;
+
+    const body = await readJsonBody(req);
+    const accountRef = String(body.entryId || body.accountId || "").trim();
+    if (!accountRef) {
+      res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
+      return;
+    }
+    if (typeof switchLocalCodexToChatgptAccount !== "function") {
+      res.status(501).json({
+        error: "local_codex_switch_unavailable",
+        message: "Local Codex auth switching is not available in this runtime."
+      });
+      return;
+    }
+
+    const { store } = await syncCodexOAuthStore();
+    const target = findCodexPoolAccountByRef(store.accounts || [], accountRef);
+    if (!target) {
+      res.status(404).json({ error: "not_found", message: `Account not found: ${accountRef}` });
+      return;
+    }
+
+    const targetRef = getCodexPoolEntryId(target) || String(target.account_id || "").trim();
+    const probe = await refreshCodexUsageSnapshotInStore(store, targetRef, config.codexOAuth, {
+      includeDisabled: true
+    });
+    if (!probe?.ok) {
+      res.status(409).json({
+        error: "local_codex_switch_probe_failed",
+        message: String(probe?.error || probe?.skipped || "usage_probe_failed"),
+        entryId: probe?.entryId || targetRef,
+        accountId: probe?.accountId || target.account_id || null
+      });
+      return;
+    }
+
+    try {
+      const result = await switchLocalCodexToChatgptAccount({
+        token: target.token,
+        accountId: probe.accountId || target.account_id || null
+      });
+
+      const normalizedAfterSwitch = ensureCodexOAuthStoreShape(store);
+      setCodexOAuthStore(normalizedAfterSwitch.store);
+      await saveTokenStore(config.codexOAuth.tokenStorePath, normalizedAfterSwitch.store);
+      clearAuthContextCache();
+
+      res.json({
+        ok: true,
+        entryId: probe.entryId || targetRef,
+        accountId: probe.accountId || target.account_id || null,
+        localCodex: result
+      });
+    } catch (err) {
+      const code = String(err?.code || "").trim().toLowerCase();
+      const statusCode =
+        code === "missing_id_token" ||
+        code === "missing_reusable_chatgpt_bundle" ||
+        code === "missing_refresh_token" ||
+        code === "missing_account_id"
+          ? 409
+          : 400;
+      res.status(statusCode).json({
+        error: code || "local_codex_switch_failed",
+        message: String(err?.message || err || "Local Codex auth switch failed."),
+        entryId: probe.entryId || targetRef,
+        accountId: probe.accountId || target.account_id || null
+      });
+    }
   });
 
   app.get("/admin/preheat/state", (_req, res) => {

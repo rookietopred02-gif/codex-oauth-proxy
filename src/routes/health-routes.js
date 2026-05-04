@@ -11,6 +11,7 @@ export function registerHealthRoutes(app, context) {
       sharedApiKeyEnabled: Boolean(config.codexOAuth.sharedApiKey),
       multiAccountEnabled: isCodexMultiAccountEnabled(),
       multiAccountStrategy: config.codexOAuth.multiAccountStrategy,
+      multiAccountPoolFilter: config.codexOAuth.multiAccountPoolFilter || "all",
       authenticated: status.authenticated,
       status: "/auth/status",
       login:

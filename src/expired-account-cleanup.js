@@ -14,7 +14,7 @@ export function normalizeExpiredAccountCleanupConfig(input = {}) {
 }
 
 function resolveAccountRef(account) {
-  const entryId = String(account?.entry_id || account?.entryId || "").trim();
+  const entryId = String(account?.identity_id || account?.identityId || account?.entry_id || account?.entryId || "").trim();
   if (entryId) return entryId;
   const accountId = String(account?.account_id || account?.accountId || "").trim();
   return accountId || "";
@@ -34,7 +34,9 @@ export function findInvalidatedAccountCleanupCandidates(accounts) {
     .filter((account) => shouldAutoRemoveInvalidatedAccount(account))
     .map((account) => ({
       ref: resolveAccountRef(account),
-      entryId: String(account?.entry_id || account?.entryId || "").trim() || null,
+      entryId:
+        String(account?.identity_id || account?.identityId || account?.entry_id || account?.entryId || "").trim() ||
+        null,
       accountId: String(account?.account_id || account?.accountId || "").trim() || null,
       invalidatedAt: Number(account?.token_invalidated_at || account?.tokenInvalidatedAt || 0) || 0
     }))

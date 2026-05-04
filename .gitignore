@@ -5,3 +5,7 @@ bin/
 build-resources/
 dist-electron/
 .codex-review-subagents/
+.omx/
+.codex/
+.ocx/
+.opencode/

@@ -72,7 +72,9 @@ export function inferProtocolType(pathName, localProtocolType = "", fallbackProt
   const path = String(pathName || "");
   if (path.startsWith("/v1beta/")) return "gemini-v1beta";
   if (path.startsWith("/v1/messages")) return "anthropic-v1";
-  if (/^\/v1\/models\/.+:(generateContent|streamGenerateContent)/.test(path)) return "gemini-v1beta";
+  if (/^\/v1\/models\/.+:(generateContent|streamGenerateContent|countTokens)$/.test(path)) {
+    return "gemini-v1beta";
+  }
   if (path.startsWith("/v1/")) return "openai-v1";
   return fallbackProtocolType;
 }

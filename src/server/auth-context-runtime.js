@@ -1,3 +1,6 @@
+import { refreshAccessToken as defaultRefreshAccessToken } from "./oauth-token-client.js";
+import { resetCodexAccountHealth } from "../services/codex-account-state.js";
+
 function isExpiredOrNearExpirySec(expiresAtSec) {
   if (!Number.isFinite(expiresAtSec)) return false;
   const nowSec = Math.floor(Date.now() / 1000);
@@ -20,32 +23,15 @@ export function createAuthContextRuntime({
   clearAuthContextCache,
   expiredAccountCleanupController,
   isCodexTokenInvalidatedError,
-  applyCodexInvalidatedAccountState
+  applyCodexInvalidatedAccountState,
+  refreshAccessToken = defaultRefreshAccessToken
 }) {
   function isCodexMultiAccountEnabled() {
     return config.authMode === "codex-oauth" && config.codexOAuth.multiAccountEnabled === true;
   }
 
-  async function refreshAccessToken(refreshToken, oauthConfig) {
-    const form = new URLSearchParams();
-    form.set("grant_type", "refresh_token");
-    form.set("refresh_token", refreshToken);
-    form.set("client_id", oauthConfig.clientId);
-    if (oauthConfig.clientSecret) {
-      form.set("client_secret", oauthConfig.clientSecret);
-    }
-
-    const resp = await fetch(oauthConfig.tokenUrl, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: form
-    });
-
-    const text = await resp.text();
-    if (!resp.ok) {
-      throw new Error(`Refresh failed: HTTP ${resp.status} ${resp.statusText}: ${text}`);
-    }
-    return JSON.parse(text);
+  function shouldUseSingleCandidateForStrategy(strategy) {
+    return String(strategy || "").trim().toLowerCase() === "smart";
   }
 
   async function getValidAuthContextFromOAuthStore(store, oauthConfig) {
@@ -99,12 +85,13 @@ export function createAuthContextRuntime({
 
     const preferredPoolEntryId =
       typeof options.preferredPoolEntryId === "string" ? options.preferredPoolEntryId.trim() : "";
+    const strategy = String(config.codexOAuth.multiAccountStrategy || "").trim().toLowerCase();
     const candidates = pickCodexAccountCandidates(store, {
       preferredPoolEntryId,
-      strategy: config.codexOAuth.multiAccountStrategy
+      strategy
     });
     if (candidates.length === 0) {
-      if (config.codexOAuth.multiAccountStrategy === "manual") {
+      if (strategy === "manual") {
         const activeRef = String(store?.active_account_id || "").trim();
         if (!activeRef) {
           throw new Error("Manual account strategy requires selecting a current account. No fallback account will be used.");
@@ -117,9 +104,10 @@ export function createAuthContextRuntime({
     }
 
     const nowSec = Math.floor(Date.now() / 1000);
+    const selectedCandidates = shouldUseSingleCandidateForStrategy(strategy) ? candidates.slice(0, 1) : candidates;
     const errors = [];
     let sawInvalidatedFailure = false;
-    for (const account of candidates) {
+    for (const account of selectedCandidates) {
       try {
         if (!account.token?.access_token) {
           throw new Error("Missing access token.");
@@ -134,21 +122,30 @@ export function createAuthContextRuntime({
         }
 
         const accountIdFromToken =
-          extractOpenAICodexAccountId(account.token.access_token) || account.account_id;
-        const entryIdFromToken = deriveCodexPoolEntryIdFromToken(account.token);
+          account.account_id || extractOpenAICodexAccountId(account.token.access_token) || null;
+        const currentPlanType =
+          account?.usage_snapshot?.plan_type ||
+          account?.plan_type ||
+          (() => {
+            const rawEntryId = String(account?.identity_id || "").trim();
+            const marker = "::plan:";
+            const markerIndex = rawEntryId.lastIndexOf(marker);
+            return markerIndex >= 0 ? rawEntryId.slice(markerIndex + marker.length) : null;
+          })();
+        const entryIdFromToken = deriveCodexPoolEntryIdFromToken(account.token, {
+          accountId: accountIdFromToken,
+          planType: currentPlanType
+        });
         const principalIdFromToken =
           extractOpenAICodexPrincipalId(account.token.access_token) || entryIdFromToken;
         account.identity_id = entryIdFromToken;
         account.account_id = accountIdFromToken;
-        account.enabled = true;
+        resetCodexAccountHealth(account);
         account.last_used_at = nowSec;
-        account.failure_count = 0;
-        account.cooldown_until = 0;
-        account.last_error = "";
         store.token = account.token;
         store.active_account_id = entryIdFromToken;
         store.rotation = store.rotation || { next_index: 0 };
-        if (candidates.length > 1 && config.codexOAuth.multiAccountStrategy === "round-robin") {
+        if (selectedCandidates.length > 1 && strategy === "round-robin") {
           const enabled = getCodexEnabledAccounts(store);
           const idx = enabled.findIndex((x) => getCodexPoolEntryId(x) === entryIdFromToken);
           store.rotation.next_index = idx >= 0 ? (idx + 1) % enabled.length : 0;
@@ -184,6 +181,9 @@ export function createAuthContextRuntime({
       await expiredAccountCleanupController.run("token_invalidated").catch((err) => {
         logger.warn?.(`[auth-pool] account auto-rm failed after refresh failure: ${err?.message || err}`);
       });
+    }
+    if (shouldUseSingleCandidateForStrategy(strategy)) {
+      throw new Error(`Selected pooled OAuth account failed. ${errors.join(" | ")}`);
     }
     throw new Error(`All pooled OAuth accounts failed. ${errors.join(" | ")}`);
   }

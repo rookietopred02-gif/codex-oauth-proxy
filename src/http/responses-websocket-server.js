@@ -60,15 +60,6 @@ function extractUpstreamError(rawText, parseJsonLoose) {
   };
 }
 
-function extractCompletedResponse(rawText, parseJsonLoose) {
-  const parsed = typeof parseJsonLoose === "function" ? parseJsonLoose(rawText) : null;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  if (parsed.response && typeof parsed.response === "object" && !Array.isArray(parsed.response)) {
-    return parsed.response;
-  }
-  return parsed;
-}
-
 function looksLikeSsePayload(rawText) {
   return typeof rawText === "string" && /(^|\n)\s*(event:|data:)/.test(rawText);
 }
@@ -90,8 +81,6 @@ function replayBufferedSseEvents(ws, rawSse) {
 function normalizeResponseCreatePayload(event) {
   const payload = { ...event };
   delete payload.type;
-  delete payload.stream;
-  delete payload.background;
   return payload;
 }
 
@@ -279,7 +268,7 @@ export function attachResponsesWebSocketServer(server, context) {
         if (typeof recordRecentProxyRequest !== "function") return;
         recordRecentProxyRequest({
           startedAt,
-          method: "POST",
+          method: "WS",
           rawPath,
           statusCode: latestStatusCode,
           requestBody,
@@ -295,7 +284,8 @@ export function attachResponsesWebSocketServer(server, context) {
           upstreamRetryCount: session?.retryCount || 0,
           upstreamErrorCode: latestUpstreamErrorCode,
           upstreamErrorDetail: latestUpstreamErrorDetail,
-          compatibilityHint: session?.compatibilityHint || ""
+          compatibilityHint: session?.compatibilityHint || "",
+          transportType: "websocket"
         });
       };
 
@@ -388,46 +378,19 @@ export function attachResponsesWebSocketServer(server, context) {
             return;
           }
 
-          const completed = extractCompletedResponse(raw, parseJsonLoose);
-          if (!completed) {
-            latestStatusCode = 502;
-            latestResponseBody = JSON.stringify(
-              buildResponseFailedEvent({
-                code: "invalid_upstream_sse",
-                message: "Stream request returned a non-SSE body without a completed response payload.",
-                statusCode: 502
-              })
-            );
-            latestResponseContentType = "application/json";
-            latestUpstreamErrorCode = "invalid_upstream_sse";
-            latestUpstreamErrorDetail = "Stream request returned a non-SSE body without a completed response payload.";
-            await session.markFailure("Invalid upstream SSE on WebSocket bridge.", 502);
-            safeSendJson(
-              ws,
-              buildResponseFailedEvent({
-                code: "invalid_upstream_sse",
-                message: "Stream request returned a non-SSE body without a completed response payload.",
-                statusCode: 502
-              })
-            );
-            terminalSent = true;
-            finalizeRecentRequest();
-            return;
-          }
-
-          latestStatusCode = 200;
-          latestResponseBody = JSON.stringify({
-            type: "response.completed",
-            response: completed
+          const failure = buildResponseFailedEvent({
+            code: "invalid_upstream_sse",
+            message: "WebSocket mode requires an upstream SSE stream; non-SSE responses are not replayed as HTTP fallbacks.",
+            statusCode: 502
           });
+          latestStatusCode = 502;
+          latestResponseBody = raw || JSON.stringify(failure);
           latestResponseContentType = "application/json";
-          latestTokenUsage = completed?.usage || null;
-          session.rememberCompletion(completed);
-          await session.markSuccess();
-          safeSendJson(ws, {
-            type: "response.completed",
-            response: completed
-          });
+          latestUpstreamErrorCode = "invalid_upstream_sse";
+          latestUpstreamErrorDetail =
+            "WebSocket mode requires an upstream SSE stream; non-SSE responses are not replayed as HTTP fallbacks.";
+          await session.markFailure("Invalid upstream SSE on WebSocket bridge.", 502);
+          safeSendJson(ws, failure);
           terminalSent = true;
           finalizeRecentRequest();
           return;

@@ -154,43 +154,91 @@ export function createPoolRenderer(deps) {
     return tt("limit_short_minute", { minutes });
   }
 
+  function resolveUsageWindowRefreshAt(windowObj, baseTimestampSec = 0) {
+    const resetAt = Number(windowObj?.reset_at);
+    if (Number.isFinite(resetAt) && resetAt > 0) return Math.floor(resetAt);
+    const resetAfter = Number(windowObj?.reset_after_seconds);
+    if (!Number.isFinite(resetAfter) || resetAfter < 0) return null;
+    const base =
+      Number.isFinite(Number(baseTimestampSec)) && Number(baseTimestampSec) > 0
+        ? Math.floor(Number(baseTimestampSec))
+        : Math.floor(Date.now() / 1000);
+    return base + Math.floor(resetAfter);
+  }
+
   function resolveUsageWindows(account) {
     const usage = account?.usageSnapshot || null;
+    const snapshotTimestampSec = Number(account?.usageUpdatedAt || usage?.fetched_at || 0);
+    const planType = String(usage?.plan_type || "").trim().toLowerCase();
+
     const primaryHasWindow = hasUsageWindow(usage?.primary) || Number.isFinite(safePercent(account?.primaryRemaining));
     const secondaryHasWindow =
       hasUsageWindow(usage?.secondary) || Number.isFinite(safePercent(account?.secondaryRemaining));
-    const primaryUsed = primaryHasWindow ? safePercent(usage?.primary?.used_percent) : null;
-    const secondaryUsed = secondaryHasWindow ? safePercent(usage?.secondary?.used_percent) : null;
-    const primaryRemainingRaw = primaryHasWindow ? safePercent(account?.primaryRemaining ?? usage?.primary?.remaining_percent) : null;
-    const secondaryRemainingRaw = secondaryHasWindow
-      ? safePercent(account?.secondaryRemaining ?? usage?.secondary?.remaining_percent)
-      : null;
-    const primaryRemaining =
-      primaryRemainingRaw !== null
-        ? primaryRemainingRaw
-        : primaryUsed !== null
-          ? Math.max(0, Math.min(100, 100 - primaryUsed))
-          : null;
-    const secondaryRemaining =
-      secondaryRemainingRaw !== null
-        ? secondaryRemainingRaw
-        : secondaryUsed !== null
-          ? Math.max(0, Math.min(100, 100 - secondaryUsed))
-          : null;
-    const primaryWindowMinutes = windowMinutesOrNull(usage?.primary);
-    const secondaryWindowMinutes = windowMinutesOrNull(usage?.secondary);
-    const singleWindowMode = primaryHasWindow && !secondaryHasWindow;
+
+    const primaryWindow = {
+      hasWindow: primaryHasWindow,
+      used: primaryHasWindow ? safePercent(usage?.primary?.used_percent) : null,
+      remainingRaw: primaryHasWindow ? safePercent(account?.primaryRemaining ?? usage?.primary?.remaining_percent) : null,
+      minutes: windowMinutesOrNull(usage?.primary),
+      refreshAt: primaryHasWindow ? resolveUsageWindowRefreshAt(usage?.primary, snapshotTimestampSec) : null
+    };
+    const secondaryWindow = {
+      hasWindow: secondaryHasWindow,
+      used: secondaryHasWindow ? safePercent(usage?.secondary?.used_percent) : null,
+      remainingRaw: secondaryHasWindow ? safePercent(account?.secondaryRemaining ?? usage?.secondary?.remaining_percent) : null,
+      minutes: windowMinutesOrNull(usage?.secondary),
+      refreshAt: secondaryHasWindow ? resolveUsageWindowRefreshAt(usage?.secondary, snapshotTimestampSec) : null
+    };
+
+    const normalizeWindow = (windowView) => ({
+      ...windowView,
+      remaining:
+        windowView.remainingRaw !== null
+          ? windowView.remainingRaw
+          : windowView.used !== null
+            ? Math.max(0, Math.min(100, 100 - windowView.used))
+            : null
+    });
+
+    let primary = normalizeWindow(primaryWindow);
+    let secondary = normalizeWindow(secondaryWindow);
+
+    if (planType === "free") {
+      const candidates = [primary, secondary]
+        .filter((windowView) => windowView.hasWindow)
+        .sort((left, right) => {
+          const leftMinutes = Number.isFinite(left.minutes) ? left.minutes : -1;
+          const rightMinutes = Number.isFinite(right.minutes) ? right.minutes : -1;
+          if (rightMinutes !== leftMinutes) return rightMinutes - leftMinutes;
+          const leftRefreshAt = Number.isFinite(left.refreshAt) ? left.refreshAt : -1;
+          const rightRefreshAt = Number.isFinite(right.refreshAt) ? right.refreshAt : -1;
+          return rightRefreshAt - leftRefreshAt;
+        });
+      primary = candidates[0] || primary;
+      secondary = {
+        hasWindow: false,
+        used: null,
+        remainingRaw: null,
+        remaining: null,
+        minutes: null,
+        refreshAt: null
+      };
+    }
+
+    const singleWindowMode = primary.hasWindow && !secondary.hasWindow;
     return {
       usage,
       singleWindowMode,
-      primaryLabel: longWindowLabel(primaryWindowMinutes, singleWindowMode ? t("limit_primary") : t("limit_5h")),
-      secondaryLabel: longWindowLabel(secondaryWindowMinutes, t("limit_weekly")),
-      primaryShortLabel: shortWindowLabel(primaryWindowMinutes, singleWindowMode ? t("limit_short_primary") : t("limit_short_5h")),
-      secondaryShortLabel: shortWindowLabel(secondaryWindowMinutes, t("limit_short_weekly")),
-      primaryUsed,
-      secondaryUsed,
-      primaryRemaining,
-      secondaryRemaining
+      primaryLabel: longWindowLabel(primary.minutes, singleWindowMode ? t("limit_primary") : t("limit_5h")),
+      secondaryLabel: longWindowLabel(secondary.minutes, t("limit_weekly")),
+      primaryShortLabel: shortWindowLabel(primary.minutes, singleWindowMode ? t("limit_short_primary") : t("limit_short_5h")),
+      secondaryShortLabel: shortWindowLabel(secondary.minutes, t("limit_short_weekly")),
+      primaryUsed: primary.used,
+      secondaryUsed: secondary.used,
+      primaryRemaining: primary.remaining,
+      secondaryRemaining: secondary.remaining,
+      primaryRefreshAt: primary.refreshAt,
+      secondaryRefreshAt: secondary.refreshAt
     };
   }
 
@@ -224,7 +272,8 @@ export function createPoolRenderer(deps) {
     const score = computeAccountScore(account, activeAccountId);
     const slotNumber = getAccountSlotNumber(account);
     const accountRef = getAccountIdentity(account);
-    const canSwitchToThis = compact && !health.isActive && account.enabled !== false && Boolean(accountRef);
+    const canSwitchToThis = compact && !health.isActive && Boolean(accountRef);
+    const canSwitchLocal = compact && Boolean(accountRef);
     const canLogoutThis = compact && Boolean(accountRef);
     const pills = [`<span class="pill ${health.tone}">${escapeHtml(healthDisplayLabel(health.label))}</span>`];
     if (health.isActive) pills.push(`<span class="pill neutral">${escapeHtml(t("account_status_active"))}</span>`);
@@ -251,6 +300,13 @@ export function createPoolRenderer(deps) {
                         : escapeHtml(tt("remaining_only", { remaining: primaryRemaining ?? "-" }))
                     }</span></div>
                     <div class="usage-track"><div class="usage-fill ${primaryTone}" style="width:${primaryRemaining ?? 0}%"></div></div>
+                    ${
+                      Number.isFinite(usageView.primaryRefreshAt)
+                        ? `<div class="usage-sub">${escapeHtml(
+                            tt("quota_refresh_at", { time: fmtUnixSec(Number(usageView.primaryRefreshAt || 0)) })
+                          )}</div>`
+                        : ""
+                    }
                   </div>`
             }
             ${
@@ -263,6 +319,13 @@ export function createPoolRenderer(deps) {
                         : escapeHtml(tt("remaining_only", { remaining: secondaryRemaining ?? "-" }))
                     }</span></div>
                     <div class="usage-track"><div class="usage-fill ${secondaryTone}" style="width:${secondaryRemaining ?? 0}%"></div></div>
+                    ${
+                      Number.isFinite(usageView.secondaryRefreshAt)
+                        ? `<div class="usage-sub">${escapeHtml(
+                            tt("quota_refresh_at", { time: fmtUnixSec(Number(usageView.secondaryRefreshAt || 0)) })
+                          )}</div>`
+                        : ""
+                    }
                   </div>`
             }
           </div>`;
@@ -282,11 +345,19 @@ export function createPoolRenderer(deps) {
                 ? escapeHtml(t("account_title_switch_tooltip_enabled"))
                 : health.isActive
                   ? escapeHtml(t("account_title_switch_tooltip_active"))
-                  : account.enabled === false
-                    ? escapeHtml(t("account_title_switch_tooltip_disabled"))
-                    : escapeHtml(t("account_title_switch_tooltip_unresolved"))
+                : escapeHtml(t("account_title_switch_tooltip_unresolved"))
             }"
           >${t("switch_to_this_account")}</button>
+          <button
+            class="secondary account-switch-local-btn"
+            data-switch-local-entry="${escapeHtml(accountRef || "")}"
+            ${canSwitchLocal ? "" : "disabled"}
+            title="${
+              canSwitchLocal
+                ? escapeHtml(t("account_title_switch_local_tooltip_enabled"))
+                : escapeHtml(t("account_title_switch_local_tooltip_unresolved"))
+            }"
+          >${t("switch_to_this_account_local")}</button>
           <button
             class="secondary account-logout-btn"
             data-logout-entry="${escapeHtml(accountRef || "")}"

@@ -1,10 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import {
+  mergeNormalizedTokenUsage,
+  normalizeTokenUsage
+} from "./http/token-usage.js";
+
 const DEFAULT_MAX_ENTRIES = 120;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 50;
 const RECENT_REQUESTS_STORAGE_VERSION = 3;
 const REQUEST_PACKET_FIELDS = ["requestPacket", "upstreamRequestPacket", "responsePacket"];
+const REQUEST_PACKET_FIELD_SET = new Set(REQUEST_PACKET_FIELDS);
 
 function clampMaxEntries(value) {
   const parsed = Number(value);
@@ -14,21 +20,100 @@ function clampMaxEntries(value) {
 
 function normalizeRow(row) {
   if (!row || typeof row !== "object" || Array.isArray(row)) return null;
-  return { ...row };
+  return backfillRowTokenUsage({ ...row });
+}
+
+function parseJsonLoose(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function readUsageObject(event) {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+  return (
+    event?.usage ||
+    event?.usageMetadata ||
+    event?.message?.usage ||
+    event?.response?.usage ||
+    event?.error?.usage ||
+    null
+  );
+}
+
+function extractTokenUsageFromResponsePacket(packet) {
+  const text = typeof packet === "string" ? packet : "";
+  if (!text) return null;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    const parsed = parseJsonLoose(trimmed);
+    const normalized = normalizeTokenUsage(readUsageObject(parsed) || parsed);
+    if (normalized) return normalized;
+  }
+
+  if (!/(^|\n)\s*(event:|data:)/.test(text)) return null;
+  let usage = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    const parsed = parseJsonLoose(payload);
+    usage = mergeNormalizedTokenUsage(usage, readUsageObject(parsed));
+  }
+  return usage;
+}
+
+function hasTokenMetric(value) {
+  if (value === null || value === undefined || value === "") return false;
+  return Number.isFinite(Number(value));
+}
+
+function backfillRowTokenUsage(row) {
+  const current = normalizeTokenUsage(row);
+  const packetUsage =
+    current && current.cachedInputTokens !== null
+      ? null
+      : extractTokenUsageFromResponsePacket(row.responsePacket);
+  const merged = mergeNormalizedTokenUsage(current, packetUsage);
+  if (!merged) return row;
+
+  if (!hasTokenMetric(row.inputTokens) && hasTokenMetric(merged.inputTokens)) {
+    row.inputTokens = merged.inputTokens;
+  }
+  if (!hasTokenMetric(row.cachedInputTokens) && hasTokenMetric(merged.cachedInputTokens)) {
+    row.cachedInputTokens = merged.cachedInputTokens;
+  }
+  if (!hasTokenMetric(row.outputTokens) && hasTokenMetric(merged.outputTokens)) {
+    row.outputTokens = merged.outputTokens;
+  }
+  if (!hasTokenMetric(row.totalTokens) && hasTokenMetric(merged.totalTokens)) {
+    row.totalTokens = merged.totalTokens;
+  }
+  return row;
 }
 
 function summarizeRow(row) {
   const normalized = normalizeRow(row);
   if (!normalized) return null;
   for (const field of REQUEST_PACKET_FIELDS) {
+    const text = typeof normalized[field] === "string" ? normalized[field] : "";
+    normalized[`${field}Chars`] = text.length;
+    normalized[`${field}Bytes`] = Buffer.byteLength(text, "utf8");
     delete normalized[field];
   }
   return normalized;
 }
 
 function normalizeSummary(summary) {
-  const normalized = summarizeRow(summary);
+  const normalized = normalizeRow(summary);
   if (!normalized) return null;
+  for (const field of REQUEST_PACKET_FIELDS) {
+    delete normalized[field];
+  }
   normalized.id = typeof normalized.id === "string" ? normalized.id.trim() : "";
   return normalized.id ? normalized : null;
 }
@@ -211,6 +296,7 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
 
   async function load() {
     let shouldRewrite = false;
+    let shouldBackfillSplitSummaries = false;
     try {
       const raw = await fs.readFile(filePath, "utf8");
       const parsed = JSON.parse(raw);
@@ -234,6 +320,7 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
           .filter(Boolean)
           .slice(0, limit);
         updatedAt = Number(parsed?.updatedAt || Date.now());
+        shouldBackfillSplitSummaries = true;
       } else if (
         Array.isArray(parsed?.recentRequests) &&
         parsed.recentRequests.every((entry) => typeof entry?.file === "string" && entry.file.trim().length > 0)
@@ -270,16 +357,44 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
       updatedAt = Date.now();
     }
 
+    if (shouldBackfillSplitSummaries) {
+      shouldRewrite = (await backfillSplitEntrySummaries()) || shouldRewrite;
+    }
+
     if (shouldRewrite) {
       await persistNow();
     }
     return snapshot();
   }
 
-  async function getById(requestId) {
-    const targetId = String(requestId || "").trim();
-    if (!targetId) return null;
-    const entry = entries.find((item) => item.id === targetId);
+  function shouldBackfillSummary(summary) {
+    if (!summary || typeof summary !== "object") return false;
+    if (hasTokenMetric(summary.cachedInputTokens)) return false;
+    return Number(summary.responsePacketChars || 0) > 0 || Number(summary.responsePacketBytes || 0) > 0;
+  }
+
+  async function backfillSplitEntrySummaries() {
+    let changed = false;
+    for (const entry of entries) {
+      if (!shouldBackfillSummary(entry?.summary)) continue;
+      try {
+        const rowRaw = await fs.readFile(path.join(rowsDirectory, entry.file), "utf8");
+        const row = normalizeRow(JSON.parse(rowRaw));
+        if (!row) continue;
+        const nextSummary = summarizeRow(row);
+        if (!nextSummary?.id) continue;
+        if (!hasTokenMetric(nextSummary.cachedInputTokens)) continue;
+        entry.summary = nextSummary;
+        entry.row = row;
+        changed = true;
+      } catch {
+        // Keep the lightweight index usable even if an old detail row is missing or corrupt.
+      }
+    }
+    return changed;
+  }
+
+  async function readRowForEntry(entry) {
     if (!entry) return null;
     if (entry.row) return { ...entry.row };
     try {
@@ -289,6 +404,89 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
     } catch {
       return null;
     }
+  }
+
+  function findEntryById(requestId) {
+    const targetId = String(requestId || "").trim();
+    if (!targetId) return null;
+    return entries.find((item) => item.id === targetId) || null;
+  }
+
+  async function getById(requestId) {
+    const entry = findEntryById(requestId);
+    if (!entry) return null;
+    return await readRowForEntry(entry);
+  }
+
+  async function getDetailSummaryById(requestId) {
+    const entry = findEntryById(requestId);
+    if (!entry) return null;
+    const summary = normalizeSummary(entry.summary);
+    const hasPacketMeta = REQUEST_PACKET_FIELDS.every(
+      (field) =>
+        Number.isFinite(Number(summary?.[`${field}Chars`])) &&
+        Number.isFinite(Number(summary?.[`${field}Bytes`]))
+    );
+    if (summary && hasPacketMeta) {
+      return {
+        ...summary,
+        packetInfo: Object.fromEntries(
+          REQUEST_PACKET_FIELDS.map((field) => [
+            field,
+            {
+              chars: Number(summary[`${field}Chars`] || 0),
+              bytes: Number(summary[`${field}Bytes`] || 0)
+            }
+          ])
+        )
+      };
+    }
+
+    const row = await readRowForEntry(entry);
+    if (!row) return summary || null;
+    const nextSummary = summarizeRow(row);
+    if (!nextSummary?.id) return summary || null;
+    entry.summary = nextSummary;
+    return {
+      ...nextSummary,
+      packetInfo: Object.fromEntries(
+        REQUEST_PACKET_FIELDS.map((field) => [
+          field,
+          {
+            chars: Number(nextSummary[`${field}Chars`] || 0),
+            bytes: Number(nextSummary[`${field}Bytes`] || 0)
+          }
+        ])
+      )
+    };
+  }
+
+  async function getPacketSliceById(requestId, field, options = {}) {
+    const packetField = String(field || "").trim();
+    if (!REQUEST_PACKET_FIELD_SET.has(packetField)) return null;
+    const entry = findEntryById(requestId);
+    if (!entry) return null;
+
+    const row = await readRowForEntry(entry);
+    if (!row) return null;
+
+    const text = typeof row[packetField] === "string" ? row[packetField] : "";
+    const offset = Math.max(0, Math.floor(Number(options.offset || 0)));
+    const limit = Math.max(0, Math.floor(Number(options.limit || text.length)));
+    const sliced = text.slice(offset, offset + limit);
+    const totalChars = text.length;
+    const totalBytes = Buffer.byteLength(text, "utf8");
+
+    return {
+      field: packetField,
+      offset,
+      limit,
+      text: sliced,
+      totalChars,
+      totalBytes,
+      returnedChars: sliced.length,
+      truncated: offset + sliced.length < totalChars
+    };
   }
 
   function replace(rows) {
@@ -326,7 +524,9 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
     clear,
     filePath,
     flush,
+    getDetailSummaryById,
     getById,
+    getPacketSliceById,
     load,
     replace,
     snapshot

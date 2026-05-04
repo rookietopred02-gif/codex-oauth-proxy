@@ -1,6 +1,8 @@
 const DEFAULT_COLLABORATION_MODE = "default";
 const PLAN_COLLABORATION_MODE = "plan";
-const PLAN_ONLY_TOOL_NAMES = new Set(["update_plan", "request_user_input"]);
+const PLAN_MODE_USER_INPUT_TOOL_NAMES = new Set(["request_user_input"]);
+const PLAN_MODE_BLOCKED_TOOL_NAMES = new Set(["update_plan"]);
+const RESOLVED_DEVELOPER_INSTRUCTIONS_KEY = "_codex_resolved_developer_instructions";
 const BUILT_IN_PLAN_MODE_INSTRUCTIONS = [
   "You are operating in Plan Mode.",
   "Focus on understanding the task, exploring context, and producing a concrete implementation plan before execution.",
@@ -83,6 +85,14 @@ export function getBuiltInDeveloperInstructionsForMode(mode, config) {
   return String(config?.codex?.defaultInstructions || "");
 }
 
+function combineBaseAndModeInstructions(baseInstructions, modeDeveloperInstructions) {
+  const base = typeof baseInstructions === "string" ? baseInstructions.trim() : "";
+  const mode = typeof modeDeveloperInstructions === "string" ? modeDeveloperInstructions.trim() : "";
+  if (!base) return mode;
+  if (!mode || base === mode) return base;
+  return `${base}\n\n${mode}`;
+}
+
 export function extractDeveloperInstructionTextFromMessages(messages) {
   if (!Array.isArray(messages)) return "";
 
@@ -103,6 +113,10 @@ export function resolveResponsesDeveloperInstructions(requestBody, config, optio
   const hasDeveloperInstructionsSetting = Boolean(
     settings && Object.prototype.hasOwnProperty.call(settings, "developer_instructions")
   );
+  const resolvedModeDeveloperInstructions =
+    typeof settings?.[RESOLVED_DEVELOPER_INSTRUCTIONS_KEY] === "string"
+      ? settings[RESOLVED_DEVELOPER_INSTRUCTIONS_KEY]
+      : "";
   const messageInstructions =
     typeof options.messageInstructions === "string"
       ? options.messageInstructions
@@ -110,14 +124,23 @@ export function resolveResponsesDeveloperInstructions(requestBody, config, optio
 
   if (hasDeveloperInstructionsSetting) {
     if (settings.developer_instructions === null) {
-      return getBuiltInDeveloperInstructionsForMode(mode, config);
+      return combineBaseAndModeInstructions(
+        requestBody?.instructions,
+        resolvedModeDeveloperInstructions || getBuiltInDeveloperInstructionsForMode(mode, config)
+      );
     }
     if (typeof settings.developer_instructions === "string") {
       return settings.developer_instructions;
     }
   }
 
-  if (typeof requestBody?.instructions === "string" && requestBody.instructions.length > 0) {
+  if (
+    requestBody &&
+    typeof requestBody === "object" &&
+    !Array.isArray(requestBody) &&
+    Object.prototype.hasOwnProperty.call(requestBody, "instructions") &&
+    typeof requestBody.instructions === "string"
+  ) {
     return requestBody.instructions;
   }
 
@@ -152,21 +175,29 @@ function normalizeToolFunctionName(tool) {
 
 function isPlanOnlyTool(tool) {
   const toolName = normalizeToolFunctionName(tool).toLowerCase();
-  if (toolName && PLAN_ONLY_TOOL_NAMES.has(toolName)) return true;
+  if (toolName && PLAN_MODE_USER_INPUT_TOOL_NAMES.has(toolName)) return true;
   const toolType = typeof tool?.type === "string" ? tool.type.trim().toLowerCase() : "";
-  return PLAN_ONLY_TOOL_NAMES.has(toolType);
+  return PLAN_MODE_USER_INPUT_TOOL_NAMES.has(toolType);
+}
+
+function isPlanModeBlockedTool(tool) {
+  const toolName = normalizeToolFunctionName(tool).toLowerCase();
+  if (toolName && PLAN_MODE_BLOCKED_TOOL_NAMES.has(toolName)) return true;
+  const toolType = typeof tool?.type === "string" ? tool.type.trim().toLowerCase() : "";
+  return PLAN_MODE_BLOCKED_TOOL_NAMES.has(toolType);
 }
 
 export function stripPlanOnlyToolsForMode(tools, mode) {
   if (!Array.isArray(tools)) return tools;
   if (normalizeCollaborationMode(mode) === PLAN_COLLABORATION_MODE) {
-    return tools.map((tool) => structuredClone(tool));
+    return tools.filter((tool) => !isPlanModeBlockedTool(tool)).map((tool) => structuredClone(tool));
   }
   return tools.filter((tool) => !isPlanOnlyTool(tool)).map((tool) => structuredClone(tool));
 }
 
 export function normalizeToolChoiceForMode(toolChoice, mode, tools) {
   if (normalizeCollaborationMode(mode) === PLAN_COLLABORATION_MODE) {
+    if (isPlanModeBlockedTool(toolChoice)) return undefined;
     return toolChoice === undefined ? undefined : structuredClone(toolChoice);
   }
   const normalizedToolChoice =

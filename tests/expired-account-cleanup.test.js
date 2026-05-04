@@ -125,3 +125,49 @@ test("expired account cleanup removes deactivated accounts even while leased", a
   assert.equal(removeCalls.length, 1);
   assert.deepEqual(store.accounts, []);
 });
+
+test("expired account cleanup uses identity_id before shared account_id", async () => {
+  let store = {
+    accounts: [
+      {
+        identity_id: "identity_team",
+        account_id: "acct_shared",
+        enabled: true
+      },
+      {
+        identity_id: "identity_free",
+        account_id: "acct_shared",
+        enabled: false,
+        token_invalidated_at: 12345
+      }
+    ]
+  };
+  const removeCalls = [];
+  const controller = createExpiredAccountCleanupController({
+    initialConfig: { enabled: true, intervalSeconds: 30 },
+    getStore: () => store,
+    getAccounts: (currentStore) => currentStore.accounts || [],
+    removeAccount: async (currentStore, ref) => {
+      removeCalls.push(ref);
+      return {
+        removed: true,
+        store: {
+          ...currentStore,
+          accounts: (currentStore.accounts || []).filter((account) => account.identity_id !== ref)
+        }
+      };
+    },
+    saveStore: async (nextStore) => {
+      store = nextStore;
+    }
+  });
+
+  const result = await controller.run("token_invalidated");
+
+  assert.equal(result.removedCount, 1);
+  assert.deepEqual(removeCalls, ["identity_free"]);
+  assert.deepEqual(
+    store.accounts.map((account) => account.identity_id),
+    ["identity_team"]
+  );
+});
