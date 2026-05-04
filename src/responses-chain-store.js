@@ -23,43 +23,6 @@ function stableStringify(value) {
   return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
 }
 
-function normalizeSettingObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
-}
-
-function normalizeCollaborationMode(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "plan") return "plan";
-  if (normalized === "default") return "default";
-  return "";
-}
-
-function extractExplicitCollaborationMode(requestBody) {
-  if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) return "";
-  const directMode = normalizeCollaborationMode(requestBody.collaborationMode || requestBody.collaboration_mode);
-  if (directMode) return directMode;
-  const settings = normalizeSettingObject(requestBody.settings);
-  return normalizeCollaborationMode(settings?.collaborationMode || settings?.collaboration_mode);
-}
-
-function usesModeDefaultDeveloperInstructions(requestBody) {
-  const settings = normalizeSettingObject(requestBody?.settings);
-  return Boolean(settings && Object.prototype.hasOwnProperty.call(settings, "developer_instructions") && settings.developer_instructions === null);
-}
-
-function hasExplicitInstructions(requestBody) {
-  return typeof requestBody?.instructions === "string" && requestBody.instructions.length > 0;
-}
-
-function hasExplicitDeveloperInstructionsSetting(requestBody) {
-  const settings = normalizeSettingObject(requestBody?.settings);
-  return Boolean(
-    settings &&
-      Object.prototype.hasOwnProperty.call(settings, "developer_instructions") &&
-      settings.developer_instructions !== null
-  );
-}
-
 function shouldFilterReplayItemByStructure(item) {
   if (!item || typeof item !== "object" || Array.isArray(item)) return false;
   const itemType = normalizeId(item.type);
@@ -224,11 +187,6 @@ function normalizeChainEntry(entry) {
   return {
     responseId,
     inputHistory: normalizeReplayableItems(entry.inputHistory),
-    collaborationMode: extractExplicitCollaborationMode(entry) || normalizeCollaborationMode(entry.collaborationMode),
-    modeDefaultDeveloperInstructions:
-      typeof entry.modeDefaultDeveloperInstructions === "boolean"
-        ? entry.modeDefaultDeveloperInstructions
-        : usesModeDefaultDeveloperInstructions(entry),
     updatedAt: Number(entry.updatedAt || Date.now())
   };
 }
@@ -239,12 +197,9 @@ export function buildResponsesChainEntry(requestBody, response, now = Date.now()
 
   const requestInput = normalizeReplayableItems(requestBody?.input);
   const outputItems = normalizeReplayableItems(response?.output);
-
   return normalizeChainEntry({
     responseId,
     inputHistory: [...requestInput, ...outputItems],
-    collaborationMode: extractExplicitCollaborationMode(requestBody),
-    modeDefaultDeveloperInstructions: usesModeDefaultDeveloperInstructions(requestBody),
     updatedAt: now
   });
 }
@@ -254,23 +209,14 @@ export function expandResponsesRequestBodyFromChain(requestBody, previousEntry) 
   if (!entry) return cloneJson(requestBody);
 
   const expanded = cloneJson(requestBody) || {};
-  const currentTurnInput = expanded.input !== undefined ? expanded.input : Array.isArray(expanded.messages) ? expanded.messages : expanded.input;
-  expanded.input = mergeReplayHistory(entry.inputHistory, currentTurnInput, { preserveInstructionRoles: true });
+  const hasMessagesAlias = Array.isArray(expanded.messages);
+  const hasExplicitInput = expanded.input !== undefined;
+  const currentTurnInput = hasExplicitInput ? expanded.input : hasMessagesAlias ? expanded.messages : expanded.input;
+  expanded.input = mergeReplayHistory(entry.inputHistory, currentTurnInput, {
+    preserveInstructionRoles: hasExplicitInput
+  });
   if (expanded.input !== undefined && Array.isArray(expanded.messages)) {
     delete expanded.messages;
-  }
-  if (!extractExplicitCollaborationMode(expanded) && entry.collaborationMode) {
-    expanded.collaborationMode = entry.collaborationMode;
-  }
-  if (
-    !usesModeDefaultDeveloperInstructions(expanded) &&
-    !hasExplicitDeveloperInstructionsSetting(expanded) &&
-    !hasExplicitInstructions(expanded) &&
-    entry.modeDefaultDeveloperInstructions
-  ) {
-    const settings = normalizeSettingObject(expanded.settings) ? { ...expanded.settings } : {};
-    settings.developer_instructions = null;
-    expanded.settings = settings;
   }
   delete expanded.previous_response_id;
   return expanded;

@@ -23,7 +23,7 @@ function createHelpers() {
       codex: {
         defaultModel: "gpt-5.4",
         defaultInstructions: "Default instructions",
-        defaultServiceTier: "default",
+        defaultServiceTier: "priority",
         planModeReasoningEffort: "high"
       }
     },
@@ -116,20 +116,52 @@ test("normalizeCodexResponsesRequestBody forces store false when client omits it
   assert.deepEqual(normalized.json.include, ["reasoning.encrypted_content"]);
 });
 
-test("normalizeCodexResponsesRequestBody drops explicit sampling parameters for codex upstream", () => {
+test("normalizeCodexResponsesRequestBody preserves explicit client create fields", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
     Buffer.from(JSON.stringify({
       model: "gpt-5.4",
       stream: false,
+      store: true,
+      include: ["message.output_text.logprobs"],
       input: "hello",
       temperature: 0.2,
       top_p: 0.9
     }), "utf8")
   );
 
-  assert.equal(Object.hasOwn(normalized.json, "temperature"), false);
-  assert.equal(Object.hasOwn(normalized.json, "top_p"), false);
+  assert.equal(normalized.json.stream, false);
+  assert.equal(normalized.json.store, true);
+  assert.deepEqual(normalized.json.include, ["message.output_text.logprobs"]);
+  assert.equal(normalized.json.temperature, 0.2);
+  assert.equal(normalized.json.top_p, 0.9);
+});
+
+test("normalizeCodexResponsesRequestBody injects configured service tier when omitted", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "hello"
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.service_tier, "priority");
+});
+
+test("normalizeCodexResponsesRequestBody preserves explicit client service tier", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      service_tier: "default",
+      input: "hello"
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.service_tier, "default");
 });
 
 test("normalizeCodexResponsesRequestBody rejects unsupported top-level create fields before upstream", () => {
@@ -186,37 +218,13 @@ test("normalizeCodexResponsesRequestBody preserves covered official create field
     const normalized = helpers.normalizeCodexResponsesRequestBody(Buffer.from(JSON.stringify(request), "utf8"));
 
     for (const [fieldName, fieldValue] of Object.entries(passthroughCase.sample)) {
-      if (fieldName === "store") {
-        assert.equal(
-          normalized.json[fieldName],
-          false,
-          `expected ${fieldName} to be coerced to false for codex upstream in case ${passthroughCase.id}`
-        );
-        continue;
-      }
-      if (fieldName === "include" && Array.isArray(fieldValue)) {
-        assert.deepEqual(
-          normalized.json[fieldName],
-          [...fieldValue, "reasoning.encrypted_content"],
-          `expected ${fieldName} to include codex-required encrypted reasoning for case ${passthroughCase.id}`
-        );
-        continue;
-      }
-      if (fieldName === "temperature" || fieldName === "top_p") {
-        assert.equal(
-          Object.hasOwn(normalized.json, fieldName),
-          false,
-          `expected ${fieldName} to be dropped for case ${passthroughCase.id}`
-        );
-        continue;
-      }
       assert.deepEqual(
         normalized.json[fieldName],
         fieldValue,
         `expected ${fieldName} to be preserved for case ${passthroughCase.id}`
       );
     }
-    assert.equal(normalized.json.stream, true);
+    assert.equal(normalized.json.stream, request.stream);
     assert.equal(normalized.model, "gpt-5.4");
   }
 });
@@ -229,7 +237,7 @@ test("normalizeCodexResponsesRequestBody applies only the documented create-path
 
   assert.equal(normalized.collectCompletedResponseAsJson, true);
   assert.equal(normalized.json.model, "gpt-5.4");
-  assert.equal(normalized.json.stream, true);
+  assert.equal(normalized.json.stream, false);
   assert.deepEqual(normalized.json.input, [
     {
       role: "user",
@@ -246,7 +254,7 @@ test("normalizeCodexResponsesRequestBody applies only the documented create-path
   }
 });
 
-test("normalizeCodexResponsesRequestBody uses the configured plan-mode reasoning effort for plan-mode requests", () => {
+test("normalizeCodexResponsesRequestBody does not inject configured plan-mode reasoning effort", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
     Buffer.from(JSON.stringify({
@@ -257,7 +265,7 @@ test("normalizeCodexResponsesRequestBody uses the configured plan-mode reasoning
     }), "utf8")
   );
 
-  assert.equal(normalized.json.reasoning?.effort, "high");
+  assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
   assert.match(String(normalized.json.instructions || ""), /Plan Mode/i);
   assert.equal(Object.hasOwn(normalized.json, "collaborationMode"), false);
   assert.equal(Object.hasOwn(normalized.json, "settings"), false);
@@ -277,8 +285,31 @@ test("normalizeCodexResponsesRequestBody uses built-in plan instructions when se
     }), "utf8")
   );
 
-  assert.equal(normalized.json.reasoning?.effort, "high");
+  assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
   assert.match(String(normalized.json.instructions || ""), /Plan Mode/i);
+  assert.equal(Object.hasOwn(normalized.json, "collaborationMode"), false);
+  assert.equal(Object.hasOwn(normalized.json, "settings"), false);
+});
+
+test("normalizeCodexResponsesRequestBody uses resolved official mode instructions when provided locally", () => {
+  const helpers = createHelpers();
+  const officialPlanInstructions = "# Plan Mode (Conversational)\nUse the plan-only flow before implementation.";
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      collaborationMode: "plan",
+      instructions: "Base Codex instructions",
+      settings: {
+        developer_instructions: null,
+        _codex_resolved_developer_instructions: officialPlanInstructions
+      },
+      input: "hello"
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.instructions, `Base Codex instructions\n\n${officialPlanInstructions}`);
+  assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
   assert.equal(Object.hasOwn(normalized.json, "collaborationMode"), false);
   assert.equal(Object.hasOwn(normalized.json, "settings"), false);
 });
@@ -306,7 +337,7 @@ test("normalizeCodexResponsesRequestBody preserves developer and system semantic
   ]);
 });
 
-test("normalizeCodexResponsesRequestBody keeps normal responses requests on the default reasoning path", () => {
+test("normalizeCodexResponsesRequestBody does not inject default reasoning effort", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
     Buffer.from(JSON.stringify({
@@ -316,7 +347,7 @@ test("normalizeCodexResponsesRequestBody keeps normal responses requests on the 
     }), "utf8")
   );
 
-  assert.equal(normalized.json.reasoning?.effort, "medium");
+  assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
   assert.equal(Object.hasOwn(normalized.json, "collaborationMode"), false);
 });
 
@@ -330,7 +361,7 @@ test("normalizeCodexResponsesRequestBody does not treat plain user mentions of r
     }), "utf8")
   );
 
-  assert.equal(normalized.json.reasoning?.effort, "medium");
+  assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
   assert.equal(Object.hasOwn(normalized.json, "collaborationMode"), false);
 });
 
@@ -345,7 +376,7 @@ test("normalizeCodexResponsesRequestBody does not enable plan mode from plain pr
     }), "utf8")
   );
 
-  assert.equal(normalized.json.reasoning?.effort, "medium");
+  assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
 });
 
 test("normalizeCodexResponsesRequestBody does not enable plan mode from request_user_input tool names alone", () => {
@@ -370,7 +401,7 @@ test("normalizeCodexResponsesRequestBody does not enable plan mode from request_
     }), "utf8")
   );
 
-  assert.equal(normalized.json.reasoning?.effort, "medium");
+  assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
 });
 
 test("normalizeCodexResponsesRequestBody preserves explicit reasoning effort over the plan-mode config", () => {
@@ -386,6 +417,142 @@ test("normalizeCodexResponsesRequestBody preserves explicit reasoning effort ove
   );
 
   assert.equal(normalized.json.reasoning?.effort, "low");
+});
+
+test("normalizeCodexResponsesRequestBody omits implicit default instructions on previous_response_id continuation", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      previous_response_id: "resp_prev_123",
+      input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.previous_response_id, "resp_prev_123");
+  assert.equal(Object.hasOwn(normalized.json, "instructions"), false);
+});
+
+test("normalizeCodexResponsesRequestBody does not lift messages alias instructions on previous_response_id continuation", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      previous_response_id: "resp_prev_123",
+      messages: [
+        { role: "developer", content: "Older prompt stack instruction." },
+        { role: "system", content: "Older system instruction." },
+        { role: "user", content: "next turn" }
+      ]
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.previous_response_id, "resp_prev_123");
+  assert.equal(Object.hasOwn(normalized.json, "instructions"), false);
+  assert.deepEqual(normalized.json.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "next turn" }]
+    }
+  ]);
+});
+
+test("normalizeCodexResponsesRequestBody preserves current input instruction roles on previous_response_id continuation", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      previous_response_id: "resp_prev_123",
+      input: [
+        {
+          role: "developer",
+          content: [{ type: "input_text", text: "Use this turn's developer instruction." }]
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "next turn" }]
+        }
+      ]
+    }), "utf8")
+  );
+
+  assert.equal(Object.hasOwn(normalized.json, "instructions"), false);
+  assert.deepEqual(normalized.json.input, [
+    {
+      role: "developer",
+      content: [{ type: "input_text", text: "Use this turn's developer instruction." }]
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "next turn" }]
+    }
+  ]);
+});
+
+test("normalizeCodexResponsesRequestBody omits implicit default instructions on locally emulated continuation", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
+    }), "utf8"),
+    {
+      previousResponseContinuation: true
+    }
+  );
+
+  assert.equal(Object.hasOwn(normalized.json, "previous_response_id"), false);
+  assert.equal(Object.hasOwn(normalized.json, "instructions"), false);
+});
+
+test("normalizeCodexResponsesRequestBody keeps explicit instructions on previous_response_id continuation", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      previous_response_id: "resp_prev_123",
+      instructions: "Use concise answers for this turn.",
+      input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.previous_response_id, "resp_prev_123");
+  assert.equal(normalized.json.instructions, "Use concise answers for this turn.");
+});
+
+test("normalizeCodexResponsesRequestBody respects an explicit empty instructions string", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      instructions: "",
+      input: "hello"
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.instructions, "");
+});
+
+test("normalizeCodexResponsesRequestBody keeps explicit default-mode override instructions on previous_response_id continuation", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      previous_response_id: "resp_prev_123",
+      collaborationMode: "default",
+      input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.previous_response_id, "resp_prev_123");
+  assert.equal(normalized.json.instructions, "Default instructions");
 });
 
 test("normalizeCodexResponsesRequestBody preserves explicit nested reasoning effort over the plan-mode config", () => {
@@ -405,7 +572,7 @@ test("normalizeCodexResponsesRequestBody preserves explicit nested reasoning eff
   assert.equal(normalized.json.reasoning?.effort, "low");
 });
 
-test("normalizeCodexResponsesRequestBody keeps non-plan explicit collaboration mode on the default reasoning path", () => {
+test("normalizeCodexResponsesRequestBody does not inject reasoning for explicit default mode", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
     Buffer.from(JSON.stringify({
@@ -416,11 +583,11 @@ test("normalizeCodexResponsesRequestBody keeps non-plan explicit collaboration m
     }), "utf8")
   );
 
-  assert.equal(normalized.json.reasoning?.effort, "medium");
+  assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
   assert.equal(normalized.json.instructions, "Default instructions");
 });
 
-test("normalizeCodexResponsesRequestBody strips plan-only tools when collaborationMode is not plan", () => {
+test("normalizeCodexResponsesRequestBody strips plan-mode user input tool when collaborationMode is not plan", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
     Buffer.from(JSON.stringify({
@@ -437,12 +604,13 @@ test("normalizeCodexResponsesRequestBody strips plan-only tools when collaborati
   );
 
   assert.deepEqual(normalized.json.tools, [
+    { type: "function", name: "update_plan", parameters: { type: "object" } },
     { type: "function", name: "keep_me", parameters: { type: "object" } }
   ]);
   assert.equal(Object.hasOwn(normalized.json, "tool_choice"), false);
 });
 
-test("normalizeCodexResponsesRequestBody drops required tool_choice when default mode strips every plan-only tool", () => {
+test("normalizeCodexResponsesRequestBody drops required tool_choice when default mode strips every plan-only user input tool", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
     Buffer.from(JSON.stringify({
@@ -451,7 +619,6 @@ test("normalizeCodexResponsesRequestBody drops required tool_choice when default
       input: "hello",
       tool_choice: "required",
       tools: [
-        { type: "function", name: "update_plan", parameters: { type: "object" } },
         { type: "function", name: "request_user_input", parameters: { type: "object" } }
       ]
     }), "utf8")
@@ -461,7 +628,7 @@ test("normalizeCodexResponsesRequestBody drops required tool_choice when default
   assert.equal(Object.hasOwn(normalized.json, "tool_choice"), false);
 });
 
-test("normalizeCodexResponsesRequestBody keeps plan-only tools when collaborationMode is plan", () => {
+test("normalizeCodexResponsesRequestBody keeps request_user_input and blocks update_plan when collaborationMode is plan", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
     Buffer.from(JSON.stringify({
@@ -477,8 +644,105 @@ test("normalizeCodexResponsesRequestBody keeps plan-only tools when collaboratio
     }), "utf8")
   );
 
-  assert.equal(normalized.json.tools.length, 2);
+  assert.deepEqual(normalized.json.tools, [
+    { type: "function", name: "request_user_input", parameters: { type: "object" } }
+  ]);
   assert.deepEqual(normalized.json.tool_choice, { type: "function", name: "request_user_input" });
+});
+
+test("normalizeCodexResponsesRequestBody drops update_plan tool_choice when collaborationMode is plan", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      collaborationMode: "plan",
+      input: "hello",
+      tool_choice: { type: "function", name: "update_plan" },
+      tools: [
+        { type: "function", name: "update_plan", parameters: { type: "object" } },
+        { type: "function", name: "request_user_input", parameters: { type: "object" } }
+      ]
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.tools, [
+    { type: "function", name: "request_user_input", parameters: { type: "object" } }
+  ]);
+  assert.equal(Object.hasOwn(normalized.json, "tool_choice"), false);
+});
+
+test("normalizeCodexResponsesRequestBody ignores developer text collaboration envelope when filtering tools", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<collaboration_mode># Plan Mode (Conversational)\nUse request_user_input before finalizing a plan.</collaboration_mode>"
+            }
+          ]
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Plan a README change." }]
+        }
+      ],
+      tool_choice: { type: "function", name: "request_user_input" },
+      tools: [
+        { type: "function", name: "update_plan", parameters: { type: "object" } },
+        { type: "function", name: "request_user_input", parameters: { type: "object" } },
+        { type: "function", name: "keep_me", parameters: { type: "object" } }
+      ]
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.tools, [
+    { type: "function", name: "update_plan", parameters: { type: "object" } },
+    { type: "function", name: "keep_me", parameters: { type: "object" } }
+  ]);
+  assert.equal(Object.hasOwn(normalized.json, "tool_choice"), false);
+});
+
+test("normalizeCodexResponsesRequestBody ignores user text collaboration envelope when filtering tools", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: [
+        {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "Explain this literal text: <collaboration_mode># Plan Mode</collaboration_mode>"
+            }
+          ]
+        }
+      ],
+      tool_choice: { type: "function", name: "request_user_input" },
+      tools: [
+        { type: "function", name: "update_plan", parameters: { type: "object" } },
+        { type: "function", name: "request_user_input", parameters: { type: "object" } },
+        { type: "function", name: "keep_me", parameters: { type: "object" } }
+      ]
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.tools, [
+    { type: "function", name: "update_plan", parameters: { type: "object" } },
+    { type: "function", name: "keep_me", parameters: { type: "object" } }
+  ]);
+  assert.equal(Object.hasOwn(normalized.json, "tool_choice"), false);
 });
 
 test("normalizeCodexResponsesRequestBody fills required summary on reasoning replay items", () => {
@@ -707,7 +971,7 @@ test("normalizeChatCompletionsRequestBody uses explicit plan collaboration mode 
     }), "utf8")
   );
 
-  assert.equal(normalized.json.reasoning?.effort, "high");
+  assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
   assert.match(String(normalized.json.instructions || ""), /Plan Mode/i);
 });
 
@@ -758,11 +1022,11 @@ test("normalizeChatCompletionsRequestBody does not enable plan mode from plain p
     }), "utf8")
   );
 
-  assert.equal(normalized.json.reasoning?.effort, "medium");
+  assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
   assert.equal(normalized.json.instructions, "Default instructions");
 });
 
-test("normalizeChatCompletionsRequestBody strips plan-only tools when collaborationMode is not plan", () => {
+test("normalizeChatCompletionsRequestBody strips plan-mode user input tool when collaborationMode is not plan", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeChatCompletionsRequestBody(
     Buffer.from(JSON.stringify({
@@ -778,12 +1042,13 @@ test("normalizeChatCompletionsRequestBody strips plan-only tools when collaborat
   );
 
   assert.deepEqual(normalized.json.tools, [
+    { type: "function", name: "update_plan", parameters: { type: "object" } },
     { type: "function", name: "keep_me", parameters: { type: "object" } }
   ]);
   assert.equal(Object.hasOwn(normalized.json, "tool_choice"), false);
 });
 
-test("normalizeChatCompletionsRequestBody drops required tool_choice when default mode strips every plan-only tool", () => {
+test("normalizeChatCompletionsRequestBody drops required tool_choice when default mode strips every plan-only user input tool", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeChatCompletionsRequestBody(
     Buffer.from(JSON.stringify({
@@ -791,7 +1056,6 @@ test("normalizeChatCompletionsRequestBody drops required tool_choice when defaul
       messages: [{ role: "user", content: "hello" }],
       tool_choice: "required",
       tools: [
-        { type: "function", function: { name: "update_plan", parameters: { type: "object" } } },
         { type: "function", function: { name: "request_user_input", parameters: { type: "object" } } }
       ]
     }), "utf8")

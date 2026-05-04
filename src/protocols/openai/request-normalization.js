@@ -2,7 +2,6 @@ import { createResponsesInputConversionHelpers } from "./responses-input-convers
 import { assertResponsesCreateFieldSupported } from "./responses-create-compat.js";
 import {
   extractDeveloperInstructionTextFromMessages,
-  isPlanModeResponsesRequest,
   normalizeToolChoiceForMode,
   resolveResponsesCollaborationMode,
   resolveResponsesDeveloperInstructions,
@@ -13,9 +12,7 @@ import {
 export function createOpenAIRequestNormalizationHelpers(context) {
   const {
     config,
-    resolveCodexCompatibleRoute,
-    resolveReasoningEffort,
-    applyReasoningEffortDefaults
+    resolveCodexCompatibleRoute
   } = context;
 
   const {
@@ -43,6 +40,68 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     }
   }
 
+  function getExplicitReasoningEffort(requestBody) {
+    if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) {
+      return { has: false, value: undefined };
+    }
+    const reasoning =
+      requestBody.reasoning && typeof requestBody.reasoning === "object" && !Array.isArray(requestBody.reasoning)
+        ? requestBody.reasoning
+        : null;
+    if (reasoning && Object.prototype.hasOwnProperty.call(reasoning, "effort")) {
+      return { has: true, value: reasoning.effort };
+    }
+    if (Object.prototype.hasOwnProperty.call(requestBody, "reasoning_effort")) {
+      return { has: true, value: requestBody.reasoning_effort };
+    }
+    return { has: false, value: undefined };
+  }
+
+  function preserveExplicitReasoningEffort(target, source) {
+    const explicit = getExplicitReasoningEffort(source);
+    if (!explicit.has) return;
+    const reasoning =
+      target.reasoning && typeof target.reasoning === "object" && !Array.isArray(target.reasoning)
+        ? { ...target.reasoning }
+        : {};
+    reasoning.effort = explicit.value;
+    target.reasoning = reasoning;
+  }
+
+  function applyConfiguredServiceTierDefault(target, source) {
+    if (!target || typeof target !== "object" || Array.isArray(target)) return;
+    if (source && typeof source === "object" && Object.prototype.hasOwnProperty.call(source, "service_tier")) {
+      target.service_tier = source.service_tier;
+      return;
+    }
+    const configuredTier = String(config?.codex?.defaultServiceTier || "").trim().toLowerCase();
+    if (configuredTier) {
+      target.service_tier = configuredTier;
+    }
+  }
+
+  function hasExplicitResponsesInstructionOverride(requestBody, options = {}) {
+    const settings =
+      requestBody && typeof requestBody === "object" && !Array.isArray(requestBody) && requestBody.settings &&
+      typeof requestBody.settings === "object" && !Array.isArray(requestBody.settings)
+        ? requestBody.settings
+        : null;
+    if (settings && Object.prototype.hasOwnProperty.call(settings, "developer_instructions")) {
+      return true;
+    }
+    if (
+      requestBody &&
+      typeof requestBody === "object" &&
+      !Array.isArray(requestBody) &&
+      Object.prototype.hasOwnProperty.call(requestBody, "instructions") &&
+      typeof requestBody.instructions === "string"
+    ) {
+      return true;
+    }
+    if (options.allowMessageInstructions !== true) return false;
+    return typeof options.messageInstructions === "string" && options.messageInstructions.length > 0;
+  }
+
   function normalizeCodexResponsesRequestBody(rawBody, options = {}) {
     if (!rawBody || rawBody.length === 0) {
       const modelRoute = resolveCodexCompatibleRoute(config.codex.defaultModel);
@@ -51,23 +110,11 @@ export function createOpenAIRequestNormalizationHelpers(context) {
         model: modelRoute.mappedModel,
         stream: true,
         store: false,
+        service_tier: config.codex.defaultServiceTier,
         instructions: fallbackInstructions,
-        reasoning: {
-          effort: resolveReasoningEffort(
-            undefined,
-            {
-              input: [{ role: "user", content: [{ type: "input_text", text: "" }] }],
-              instructions: fallbackInstructions
-            },
-            modelRoute.mappedModel
-          )
-        },
         input: [{ role: "user", content: [{ type: "input_text", text: "" }] }]
       };
       ensureResponsesInclude(json, "reasoning.encrypted_content");
-      if (config.codex.defaultServiceTier === "priority") {
-        json.service_tier = "priority";
-      }
       return {
         body: Buffer.from(JSON.stringify(json), "utf8"),
         collectCompletedResponseAsJson: true,
@@ -103,14 +150,30 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     const wantsStream = parsed.stream === true;
     assertCodexResponsesCreateFieldsSupported(parsed);
     const normalized = { ...parsed };
+    const hasExplicitStream = Object.prototype.hasOwnProperty.call(parsed, "stream");
+    const hasExplicitStore = Object.prototype.hasOwnProperty.call(parsed, "store");
+    const hasExplicitInclude = Object.prototype.hasOwnProperty.call(parsed, "include");
     const modelRoute = resolveCodexCompatibleRoute(normalized.model || config.codex.defaultModel);
     normalized.model = modelRoute.mappedModel;
-    normalized.stream = true;
-    normalized.store = false;
+    if (!hasExplicitStream) normalized.stream = true;
+    if (!hasExplicitStore) normalized.store = false;
+    applyConfiguredServiceTierDefault(normalized, parsed);
     const collaborationMode = resolveResponsesCollaborationMode(normalized);
+    const messageInstructions = extractDeveloperInstructionTextFromMessages(normalized.messages);
     normalized.instructions = resolveResponsesDeveloperInstructions(normalized, config, {
-      messageInstructions: extractDeveloperInstructionTextFromMessages(normalized.messages)
+      messageInstructions
     });
+    const previousResponseId =
+      typeof normalized.previous_response_id === "string" ? normalized.previous_response_id.trim() : "";
+    const isPreviousResponseContinuation =
+      previousResponseId.length > 0 || options.previousResponseContinuation === true;
+    const explicitInstructionOverride = hasExplicitResponsesInstructionOverride(parsed, {
+      messageInstructions,
+      allowMessageInstructions: !isPreviousResponseContinuation
+    });
+    if (isPreviousResponseContinuation && !explicitInstructionOverride && !collaborationMode.explicit) {
+      delete normalized.instructions;
+    }
     if (normalized.input === undefined && Array.isArray(normalized.messages)) {
       normalized.input = toResponsesInputFromChatMessages(normalized.messages);
     } else {
@@ -124,42 +187,10 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     );
     if (normalizedToolChoice === undefined) delete normalized.tool_choice;
     else normalized.tool_choice = normalizedToolChoice;
-    delete normalized.temperature;
-    delete normalized.top_p;
-    ensureResponsesInclude(normalized, "reasoning.encrypted_content");
-    const planModeReasoningEffort = isPlanModeResponsesRequest(normalized)
-      ? String(config?.codex?.planModeReasoningEffort || "").trim().toLowerCase()
-      : "";
-    const hasExplicitReasoningEffort =
-      Object.prototype.hasOwnProperty.call(normalized, "reasoning_effort") ||
-      Boolean(
-        normalized.reasoning &&
-          typeof normalized.reasoning === "object" &&
-          !Array.isArray(normalized.reasoning) &&
-          Object.prototype.hasOwnProperty.call(normalized.reasoning, "effort")
-      );
-    const defaultReasoningEffort =
-      !hasExplicitReasoningEffort && planModeReasoningEffort.length > 0
-        ? planModeReasoningEffort
-        : normalized.reasoning_effort;
-    applyReasoningEffortDefaults(
-      normalized,
-      defaultReasoningEffort,
-      {
-        input: normalized.input,
-        tools: normalized.tools,
-        instructions: normalized.instructions,
-        collaborationMode: collaborationMode.mode,
-        planModeReasoningEffort
-      },
-      modelRoute.mappedModel
-    );
-    if (
-      !Object.prototype.hasOwnProperty.call(parsed, "service_tier") &&
-      config.codex.defaultServiceTier === "priority"
-    ) {
-      normalized.service_tier = "priority";
+    if (!hasExplicitInclude && normalized.store === false) {
+      ensureResponsesInclude(normalized, "reasoning.encrypted_content");
     }
+    preserveExplicitReasoningEffort(normalized, parsed);
     delete normalized.messages;
     delete normalized.reasoning_effort;
     prepareResponsesCollaborationModeForCodexUpstream(normalized, {
@@ -201,33 +232,15 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     const baseInstructions = resolveResponsesDeveloperInstructions(parsed, config, {
       messageInstructions: extractDeveloperInstructionTextFromMessages(messages)
     });
-    const planModeReasoningEffort =
-      collaborationMode.mode === "plan"
-        ? String(config?.codex?.planModeReasoningEffort || "").trim().toLowerCase()
-        : "";
-
     const modelRoute = resolveCodexCompatibleRoute(parsed.model || config.codex.defaultModel);
     const upstreamBody = {
       model: modelRoute.mappedModel,
       stream: true,
       store: false,
       instructions: baseInstructions,
-      reasoning: {
-        effort: resolveReasoningEffort(
-          parsed.reasoning_effort,
-          {
-            messages,
-            tools: parsed.tools,
-            tool_choice: parsed.tool_choice,
-            instructions: baseInstructions,
-            collaborationMode: collaborationMode.mode,
-            planModeReasoningEffort
-          },
-          modelRoute.mappedModel
-        )
-      },
       input: toResponsesInputFromChatMessages(messages)
     };
+    preserveExplicitReasoningEffort(upstreamBody, parsed);
 
     if (parsed.max_completion_tokens !== undefined) upstreamBody.max_output_tokens = parsed.max_completion_tokens;
     else if (parsed.max_tokens !== undefined) upstreamBody.max_output_tokens = parsed.max_tokens;
@@ -239,11 +252,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     );
     if (normalizedChatToolChoice !== undefined) upstreamBody.tool_choice = normalizedChatToolChoice;
     if (parsed.tools !== undefined) upstreamBody.tools = normalizedChatTools;
-    if (Object.prototype.hasOwnProperty.call(parsed, "service_tier")) {
-      upstreamBody.service_tier = parsed.service_tier;
-    } else if (config.codex.defaultServiceTier === "priority") {
-      upstreamBody.service_tier = "priority";
-    }
+    applyConfiguredServiceTierDefault(upstreamBody, parsed);
 
     return {
       body: Buffer.from(JSON.stringify(upstreamBody), "utf8"),

@@ -400,7 +400,7 @@ test("responses chain replay does not carry over prior developer or system messa
   assert.equal(expanded.instructions, "New turn instructions");
 });
 
-test("responses chain replay preserves current developer and system messages during continuation", () => {
+test("responses chain replay does not lift messages alias instructions during continuation", () => {
   const entry = buildResponsesChainEntry(
     {
       input: [
@@ -452,6 +452,67 @@ test("responses chain replay preserves current developer and system messages dur
   );
 
   assert.equal(Object.hasOwn(expanded, "messages"), false);
+  assert.equal(Object.hasOwn(expanded, "instructions"), false);
+  assert.deepEqual(expanded.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Continue." }]
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Working on it." }]
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Next turn." }]
+    }
+  ]);
+});
+
+test("responses chain replay preserves current official input instruction roles during continuation", () => {
+  const entry = buildResponsesChainEntry(
+    {
+      input: [
+        {
+          role: "developer",
+          content: [{ type: "input_text", text: "Old developer instructions." }]
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Continue." }]
+        }
+      ]
+    },
+    {
+      id: "resp_current_input_instructions",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Working on it." }]
+        }
+      ]
+    }
+  );
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_current_input_instructions",
+      input: [
+        {
+          role: "developer",
+          content: [{ type: "input_text", text: "Use the developer instructions for this turn." }]
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Next turn." }]
+        }
+      ]
+    },
+    entry
+  );
+
   assert.deepEqual(expanded.input, [
     {
       role: "user",
@@ -464,11 +525,7 @@ test("responses chain replay preserves current developer and system messages dur
     },
     {
       role: "developer",
-      content: "Use the explicit developer instructions for this turn."
-    },
-    {
-      role: "system",
-      content: "Keep the current system guidance."
+      content: [{ type: "input_text", text: "Use the developer instructions for this turn." }]
     },
     {
       role: "user",
@@ -477,7 +534,72 @@ test("responses chain replay preserves current developer and system messages dur
   ]);
 });
 
-test("responses chain replay preserves explicit collaboration mode across previous_response_id continuation", () => {
+test("responses chain replay does not carry an older prompt stack as instructions or input items", () => {
+  const entry = buildResponsesChainEntry(
+    {
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Earlier request." }]
+        }
+      ]
+    },
+    {
+      id: "resp_prompt_stack",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Earlier answer." }]
+        }
+      ]
+    }
+  );
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_prompt_stack",
+      messages: [
+        {
+          role: "developer",
+          content: "Older prompt stack instruction A."
+        },
+        {
+          role: "developer",
+          content: "Older prompt stack instruction B."
+        },
+        {
+          role: "system",
+          content: "Older prompt stack instruction C."
+        },
+        {
+          role: "user",
+          content: "Current user request."
+        }
+      ]
+    },
+    entry
+  );
+
+  assert.equal(Object.hasOwn(expanded, "instructions"), false);
+  assert.deepEqual(expanded.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Earlier request." }]
+    },
+    {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Earlier answer." }]
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Current user request." }]
+    }
+  ]);
+});
+
+test("responses chain replay does not inherit prior collaboration mode across previous_response_id continuation", () => {
   const entry = buildResponsesChainEntry(
     {
       collaborationMode: "plan",
@@ -517,8 +639,61 @@ test("responses chain replay preserves explicit collaboration mode across previo
     entry
   );
 
-  assert.equal(expanded.collaborationMode, "plan");
-  assert.equal(expanded.settings?.developer_instructions, null);
+  assert.equal(expanded.collaborationMode, undefined);
+  assert.equal(expanded.settings?.developer_instructions, undefined);
+});
+
+test("responses chain replay ignores developer text collaboration envelope across continuation", () => {
+  const entry = buildResponsesChainEntry(
+    {
+      instructions: "Base Codex instructions.",
+      input: [
+        {
+          type: "message",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<collaboration_mode># Plan Mode (Conversational)\nUse request_user_input before finalizing a plan.</collaboration_mode>"
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Plan the change." }]
+        }
+      ]
+    },
+    {
+      id: "resp_plan_envelope_chain",
+      output: [
+        {
+          type: "function_call",
+          name: "request_user_input",
+          call_id: "call_1",
+          arguments: "{}"
+        }
+      ]
+    }
+  );
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_plan_envelope_chain",
+      instructions: "Base Codex instructions.",
+      input: [
+        {
+          type: "function_call_output",
+          call_id: "call_1",
+          output: "{\"answers\":{}}"
+        }
+      ]
+    },
+    entry
+  );
+
+  assert.equal(expanded.collaborationMode, undefined);
+  assert.equal(expanded.settings?.developer_instructions, undefined);
 });
 
 test("responses chain replay does not let prior mode-default instructions override current explicit instructions", () => {
