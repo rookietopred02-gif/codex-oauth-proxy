@@ -126,18 +126,20 @@ export function createCodexOAuthResponsesHelpers(context) {
       Array.isArray(input) && input.length > 0
         ? input
         : [{ role: "user", content: [{ type: "input_text", text: "" }] }];
-    const reasoning = {
-      effort: resolveReasoningEffort(
-        reasoningEffort,
-        reasoningContext || {
-          input: resolvedInput,
-          tools,
-          tool_choice: toolChoice,
-          instructions: resolvedInstructions
-        },
-        resolvedUpstreamModel
-      )
-    };
+    const resolvedReasoningEffort = resolveReasoningEffort(
+      reasoningEffort,
+      reasoningContext || {
+        input: resolvedInput,
+        tools,
+        tool_choice: toolChoice,
+        instructions: resolvedInstructions
+      },
+      resolvedUpstreamModel
+    );
+    const reasoning = {};
+    if (resolvedReasoningEffort) {
+      reasoning.effort = resolvedReasoningEffort;
+    }
     if (typeof reasoningSummary === "string" && reasoningSummary.trim().length > 0) {
       reasoning.summary = reasoningSummary.trim();
     }
@@ -147,9 +149,11 @@ export function createCodexOAuthResponsesHelpers(context) {
       stream: false,
       store: false,
       instructions: resolvedInstructions,
-      reasoning,
       input: resolvedInput
     };
+    if (Object.keys(reasoning).length > 0) {
+      body.reasoning = reasoning;
+    }
 
     if (Array.isArray(stop) && stop.length > 0) body.stop = stop;
     else if (typeof stop === "string" && stop.length > 0) body.stop = [stop];

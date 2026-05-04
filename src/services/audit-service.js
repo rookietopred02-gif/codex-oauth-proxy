@@ -12,6 +12,8 @@ export async function createAuditService({
     totalRequests: 0,
     okRequests: 0,
     errorRequests: 0,
+    auditErrors: 0,
+    lastAuditError: null,
     recentRequests: []
   };
 

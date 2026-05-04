@@ -28,6 +28,7 @@ export function registerCommonMiddleware(app, context) {
     });
     if (authorization.ok) {
       res.locals.proxyApiKeyId = authorization.proxyApiKeyId;
+      res.locals.proxyApiKeyLabel = authorization.proxyApiKeyLabel;
       next();
       return;
     }

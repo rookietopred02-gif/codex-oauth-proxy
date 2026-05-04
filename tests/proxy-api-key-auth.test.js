@@ -40,4 +40,39 @@ test("proxy API authorization still accepts the legacy shared key when configure
   );
 
   assert.equal(result.ok, true);
+  assert.equal(result.proxyApiKeyId, "legacy-local-api-key");
+  assert.equal(result.proxyApiKeyLabel, "legacy env LOCAL_API_KEY");
+});
+
+test("proxy API authorization returns managed key identity for request grouping", () => {
+  const result = authorizeProxyApiRequest(
+    {},
+    createContext({
+      hasActiveManagedProxyApiKeys: () => true,
+      extractProxyApiKeyFromRequest: () => "sk-managed",
+      findManagedProxyApiKeyByValue: () => ({
+        id: "key_alpha",
+        label: "alpha-client",
+        prefix: "sk-alpha"
+      })
+    })
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.proxyApiKeyId, "key_alpha");
+  assert.equal(result.proxyApiKeyLabel, "alpha-client");
+});
+
+test("proxy API authorization does not advertise URL query credentials", () => {
+  const result = authorizeProxyApiRequest(
+    {},
+    createContext({
+      hasActiveManagedProxyApiKeys: () => true,
+      extractProxyApiKeyFromRequest: () => "sk-wrong"
+    })
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.statusCode, 401);
+  assert.doesNotMatch(result.payload.message, /\?key=|query/i);
 });

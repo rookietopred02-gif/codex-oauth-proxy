@@ -1415,6 +1415,38 @@
         margin: 10px 0 12px;
       }
 
+      .recent-req-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 10px 0 12px;
+      }
+
+      .recent-req-tab {
+        border: 1px solid rgba(148, 177, 229, 0.24);
+        border-radius: 999px;
+        background: rgba(17, 30, 62, 0.72);
+        color: #c8d7f5;
+        padding: 7px 11px;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 11px;
+        line-height: 1;
+        cursor: pointer;
+      }
+
+      .recent-req-tab:hover,
+      .recent-req-tab:focus-visible {
+        border-color: rgba(111, 176, 255, 0.54);
+        color: #f3f7ff;
+      }
+
+      .recent-req-tab.is-active {
+        border-color: rgba(111, 176, 255, 0.68);
+        background: linear-gradient(180deg, rgba(40, 82, 147, 0.94), rgba(21, 47, 96, 0.92));
+        color: #ffffff;
+        box-shadow: inset 0 0 0 1px rgba(196, 218, 255, 0.1);
+      }
+
       .metric-card {
         border: 1px solid rgba(160, 188, 240, 0.24);
         background: linear-gradient(180deg, rgba(18, 32, 66, 0.92), rgba(12, 24, 51, 0.88));
@@ -2971,11 +3003,17 @@
               </button>
               <button id="clearReqBtn" class="secondary" data-i18n="recent_requests_clear">Clear Records</button>
             </div>
+            <div id="recentReqApiKeyTabs" class="recent-req-tabs" role="tablist" aria-label="API key request filter"></div>
             <div class="recent-req-kpis">
               <div class="metric-card">
                 <div class="metric-label" data-i18n="recent_requests_total_requests">Total Requests</div>
                 <div id="recentReqCount" class="metric-value">0</div>
                 <div class="metric-sub" data-i18n="recent_requests_total_requests_sub">shown rows</div>
+              </div>
+              <div class="metric-card">
+                <div class="metric-label" data-i18n="recent_requests_rpm">RPM</div>
+                <div id="recentReqRpm" class="metric-value">0</div>
+                <div class="metric-sub" data-i18n="recent_requests_rpm_sub">requests per minute</div>
               </div>
               <div class="metric-card">
                 <div class="metric-label" data-i18n="recent_requests_total_input">Total Input</div>
@@ -3144,6 +3182,7 @@
       let codexModelCandidates = [];
       let wildcardPresets = [];
       let secondaryHydrationPromise = null;
+      let lastAdminState = null;
       let stateRefreshInFlight = false;
       let stateRefreshQueued = false;
       let lastStateRefreshAtMs = 0;
@@ -3171,6 +3210,9 @@
       const DASHBOARD_SECONDARY_REFRESH_MS = 30 * 1000;
       const AUTO_SAVE_DEBOUNCE_MS = 500;
       const REQUESTS_RECORDING_ENABLED_STORAGE_KEY = "codex_proxy_dashboard_requests_recording_enabled";
+      const REQUESTS_API_KEY_FILTER_STORAGE_KEY = "codex_proxy_dashboard_requests_api_key_filter";
+      const RECENT_REQUESTS_API_KEY_ALL = "__all_api_keys__";
+      const RECENT_REQUESTS_API_KEY_UNKNOWN = "__unknown_api_key__";
       const TOKEN_AUTO_REFRESH_ENABLED_STORAGE_KEY = "codex_proxy_dashboard_token_auto_refresh_enabled";
       const TOKEN_AUTO_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
       const PREHEAT_MODEL_STORAGE_KEY = "codex_proxy_dashboard_preheat_model";
@@ -3217,6 +3259,7 @@
       let fxActiveCard = null;
       let fxActiveButton = null;
       let fxTrailRow = null;
+      let recentRequestApiKeyFilter = RECENT_REQUESTS_API_KEY_ALL;
       let fxTargetX = window.innerWidth / 2;
       let fxTargetY = window.innerHeight / 2;
       let fxCursorX = fxTargetX;
@@ -3413,6 +3456,7 @@
         dashboardAuthFeature.render();
         publicAccessFeature.render(publicAccessFeature.getStatusSnapshot());
         recentRequestsUi.renderRecordingToggle();
+        renderRecentRequestsPanel((lastAdminState?.stats?.recentRequests || []).slice(0, 80), { force: true });
         void recentRequestsUi.reopenActiveDetail();
       }
 
@@ -3769,7 +3813,29 @@
 
       function fmtUnixSec(sec) {
         if (!Number.isFinite(sec) || sec <= 0) return "-";
-        return new Date(sec * 1000).toLocaleString();
+        return formatDateTime(sec * 1000, { dateStyle: "medium", timeStyle: "medium" });
+      }
+
+      function getUiDateLocale() {
+        if (uiLang === "zh-hans") return "zh-CN";
+        if (uiLang === "zh-hant") return "zh-TW";
+        return "en-US";
+      }
+
+      function formatDateTime(value, options = {}) {
+        const date = value instanceof Date ? value : new Date(Number(value));
+        if (!Number.isFinite(date.getTime())) return "-";
+        return new Intl.DateTimeFormat(getUiDateLocale(), {
+          hour12: uiLang === "en",
+          ...options
+        }).format(date);
+      }
+
+      function fmtRate(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n <= 0) return "0";
+        if (n >= 100) return String(Math.round(n));
+        return n.toFixed(1).replace(/\.0$/, "");
       }
 
       function fmtCooldown(cooldownUntilSec) {
@@ -3784,7 +3850,8 @@
       }
 
       function sumRecentRequestTotals(rows) {
-        return (Array.isArray(rows) ? rows : []).reduce(
+        const sourceRows = Array.isArray(rows) ? rows : [];
+        const totals = sourceRows.reduce(
           (acc, row) => {
             const input = parseTokenMetric(row?.inputTokens);
             const cachedInput = parseTokenMetric(row?.cachedInputTokens);
@@ -3822,12 +3889,23 @@
             cachedInput: 0,
             output: 0,
             total: 0,
+            rpm: 0,
             knownInput: 0,
             knownCachedInput: 0,
             knownOutput: 0,
             knownTotal: 0
           }
         );
+        const timestamps = sourceRows
+          .map((row) => Number(row?.ts || 0))
+          .filter((ts) => Number.isFinite(ts) && ts > 0);
+        if (timestamps.length > 0) {
+          const minTs = Math.min(...timestamps);
+          const maxTs = Math.max(...timestamps);
+          const windowMinutes = Math.max(1, (maxTs - minTs) / 60000);
+          totals.rpm = totals.count / windowMinutes;
+        }
+        return totals;
       }
 
       function getCustomSelectKey(select) {
@@ -4230,6 +4308,7 @@
         tt,
         escapeHtml,
         fmtToken,
+        formatDateTime,
         copyTextToClipboard,
         showCopyError: (err) => {
           alert(tt("alert_request_detail_copy_failed", { message: err.message }));
@@ -4243,12 +4322,115 @@
         resolveCompatibilityHint: localizeCompatibilityHint
       });
 
+      function getRecentRequestApiKeyKey(row) {
+        const id = String(row?.proxyApiKeyId || "").trim();
+        return id || RECENT_REQUESTS_API_KEY_UNKNOWN;
+      }
+
+      function isGeneratedApiKeyLabel(label) {
+        const normalized = String(label || "").trim();
+        return normalized.length === 0 || normalized === "generated-key" || normalized === "unnamed";
+      }
+
+      function getApiKeyDisplayName(key) {
+        const id = String(key?.id || "").trim();
+        const fullKey = String(key?.value || transientApiKeyValues.get(id) || "").trim();
+        if (fullKey) return fullKey;
+        const label = String(key?.label || "").trim();
+        if (!isGeneratedApiKeyLabel(label)) return label;
+        const prefix = String(key?.prefix || "").trim();
+        return prefix || id;
+      }
+
+      function getApiKeyDisplayNameById(id) {
+        const keyId = String(id || "").trim();
+        if (!keyId) return "";
+        const keys = Array.isArray(lastApiKeySummary?.keys) ? lastApiKeySummary.keys : [];
+        const match = keys.find((key) => String(key?.id || "").trim() === keyId);
+        return match ? getApiKeyDisplayName(match) : "";
+      }
+
+      function getRecentRequestApiKeyLabel(row) {
+        const id = String(row?.proxyApiKeyId || "").trim();
+        const currentDisplayName = getApiKeyDisplayNameById(id);
+        if (currentDisplayName) return currentDisplayName;
+        const label = String(row?.proxyApiKeyLabel || "").trim();
+        if (label) return label;
+        return id || t("recent_requests_api_key_unknown");
+      }
+
+      function buildRecentRequestApiKeyGroups(rows) {
+        const groups = new Map();
+        for (const row of Array.isArray(rows) ? rows : []) {
+          const key = getRecentRequestApiKeyKey(row);
+          const existing = groups.get(key) || {
+            key,
+            label: getRecentRequestApiKeyLabel(row),
+            count: 0
+          };
+          existing.count += 1;
+          if (!existing.label || existing.label === t("recent_requests_api_key_unknown")) {
+            existing.label = getRecentRequestApiKeyLabel(row);
+          }
+          groups.set(key, existing);
+        }
+        return Array.from(groups.values()).sort((a, b) => {
+          if (a.key === RECENT_REQUESTS_API_KEY_UNKNOWN) return 1;
+          if (b.key === RECENT_REQUESTS_API_KEY_UNKNOWN) return -1;
+          return a.label.localeCompare(b.label);
+        });
+      }
+
+      function renderRecentRequestApiKeyTabs(rows) {
+        const container = $("recentReqApiKeyTabs");
+        if (!(container instanceof HTMLElement)) return;
+        const safeRows = Array.isArray(rows) ? rows : [];
+        const groups = buildRecentRequestApiKeyGroups(safeRows);
+        const validKeys = new Set([RECENT_REQUESTS_API_KEY_ALL, ...groups.map((group) => group.key)]);
+        if (!validKeys.has(recentRequestApiKeyFilter)) {
+          recentRequestApiKeyFilter = RECENT_REQUESTS_API_KEY_ALL;
+          writeStoredString(REQUESTS_API_KEY_FILTER_STORAGE_KEY, recentRequestApiKeyFilter);
+        }
+        const tabs = [
+          {
+            key: RECENT_REQUESTS_API_KEY_ALL,
+            label: t("recent_requests_api_key_all"),
+            count: safeRows.length
+          },
+          ...groups
+        ];
+        container.innerHTML = tabs
+          .map((tab) => {
+            const active = tab.key === recentRequestApiKeyFilter;
+            return `<button class="recent-req-tab ${active ? "is-active" : ""}" type="button" role="tab" aria-selected="${
+              active ? "true" : "false"
+            }" data-recent-api-key-filter="${escapeHtml(tab.key)}">${escapeHtml(tab.label)} <span class="mono">${Number(
+              tab.count || 0
+            )}</span></button>`;
+          })
+          .join("");
+      }
+
+      function filterRecentRequestsByApiKey(rows) {
+        const safeRows = Array.isArray(rows) ? rows : [];
+        if (recentRequestApiKeyFilter === RECENT_REQUESTS_API_KEY_ALL) return safeRows;
+        return safeRows.filter((row) => getRecentRequestApiKeyKey(row) === recentRequestApiKeyFilter);
+      }
+
+      function initRecentRequestApiKeyFilter() {
+        const stored = String(readStoredString(REQUESTS_API_KEY_FILTER_STORAGE_KEY) || "").trim();
+        if (stored) recentRequestApiKeyFilter = stored;
+      }
+
       function renderRecentRequestsPanel(rows, options = {}) {
         const force = options.force === true;
         if (!force && !recentRequestsUi.isRecordingEnabled()) return;
-        const safeRows = Array.isArray(rows) ? rows : [];
+        const allRows = Array.isArray(rows) ? rows : [];
+        renderRecentRequestApiKeyTabs(allRows);
+        const safeRows = filterRecentRequestsByApiKey(allRows);
         const requestTotals = sumRecentRequestTotals(safeRows);
         setTextAndPulse("recentReqCount", String(requestTotals.count), false);
+        setTextAndPulse("recentReqRpm", fmtRate(requestTotals.rpm), false);
         setTextAndPulse("recentReqInputTotal", requestTotals.knownInput > 0 ? fmtToken(requestTotals.input) : "-", false);
         setTextAndPulse(
           "recentReqCachedInputTotal",
@@ -4429,11 +4611,7 @@
             const expiresText = expiresAt > 0 ? fmtUnixSec(expiresAt) : t("api_keys_never_expires");
             const createdText = fmtUnixSec(Number(k?.createdAt || 0));
             const lastUsedText = fmtUnixSec(Number(k?.lastUsedAt || 0));
-            const label = String(k?.label || "").trim();
-            const prefix = String(k?.prefix || "sk-");
-            const fullKey = String(k?.value || transientApiKeyValues.get(String(k?.id || "")) || "").trim();
-            const showLabel = label.length > 0 && label !== "generated-key" && label !== "unnamed";
-            const titleText = fullKey || (showLabel ? label : prefix);
+            const titleText = getApiKeyDisplayName(k);
             const canRevoke = active;
             return `<article class="api-key-item">
               <div class="api-key-item-head">
@@ -4770,6 +4948,7 @@
       }
 
       function renderState(state, options = {}) {
+        lastAdminState = state || null;
         const syncConfigFromServer = options.syncConfigFromServer !== false;
         if (syncConfigFromServer) {
           applyServerConfigToForm(state);
@@ -5553,6 +5732,15 @@
           alert(tt("alert_clear_requests_failed", { message: err.message }));
         }
       });
+      $("recentReqApiKeyTabs").addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const button = target.closest("button[data-recent-api-key-filter]");
+        if (!(button instanceof HTMLButtonElement)) return;
+        recentRequestApiKeyFilter = button.getAttribute("data-recent-api-key-filter") || RECENT_REQUESTS_API_KEY_ALL;
+        writeStoredString(REQUESTS_API_KEY_FILTER_STORAGE_KEY, recentRequestApiKeyFilter);
+        renderRecentRequestsPanel((lastAdminState?.stats?.recentRequests || []).slice(0, 80), { force: true });
+      });
       $("refreshAllAccountsBtn").addEventListener("click", async () => {
         try {
           await refreshAllAccountStatuses();
@@ -5616,6 +5804,7 @@
       $("runPreheatBtn").addEventListener("click", () => runPreheatNow());
 
       initCustomSelects();
+      initRecentRequestApiKeyFilter();
       initLanguageControl();
       initInteractiveFx();
       initRuntimeHeartbeatControl();

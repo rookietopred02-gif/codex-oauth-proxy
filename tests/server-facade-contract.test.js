@@ -17,4 +17,14 @@ test("server.js keeps the public facade contract available for dynamic import co
   assert.equal(typeof serverModule.__testing.getCloudflaredRuntime, "function");
   assert.equal(typeof serverModule.__testing.stopCloudflaredTunnel, "function");
   assert.equal(typeof serverModule.__testing.buildCodexResponsesRequestBody, "function");
+  assert.equal(typeof serverModule.__testing.estimateOpenAIChatCompletionTokens, "function");
+  assert.ok(
+    serverModule.__testing.estimateOpenAIChatCompletionTokens(
+      Buffer.from(
+        JSON.stringify({
+          messages: [{ role: "user", content: "soak-test audit estimator should not crash" }]
+        })
+      )
+    ) > 0
+  );
 });

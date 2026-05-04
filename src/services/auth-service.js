@@ -74,13 +74,13 @@ export function createAuthService({
       }
       const id = String(item.id || "").trim() || `key_${crypto.randomUUID().replace(/-/g, "")}`;
       const hash = String(item.hash || "").trim().toLowerCase();
+      if (item.value || item.apiKey) changed = true;
       if (!/^[a-f0-9]{64}$/.test(hash)) {
         changed = true;
         continue;
       }
       const label = String(item.label || "").trim() || "unnamed";
       const prefix = String(item.prefix || "").trim() || "sk-";
-      const value = String(item.value || item.apiKey || "").trim();
       const createdAt = Number(item.created_at || item.createdAt || nowSec);
       const lastUsedAt = Number(item.last_used_at || item.lastUsedAt || 0);
       const useCount = Number(item.use_count || item.useCount || 0);
@@ -90,7 +90,6 @@ export function createAuthService({
         id,
         label,
         prefix,
-        value,
         hash,
         created_at: Number.isFinite(createdAt) ? createdAt : nowSec,
         last_used_at: Number.isFinite(lastUsedAt) ? Math.max(0, Math.floor(lastUsedAt)) : 0,
@@ -186,7 +185,6 @@ export function createAuthService({
       id: "legacy-local-api-key",
       label: "legacy env LOCAL_API_KEY",
       prefix: key.slice(0, 10),
-      value: key,
       hash,
       created_at: nowSec,
       last_used_at: 0,
@@ -204,14 +202,6 @@ export function createAuthService({
     if (xApiKey) return xApiKey.trim();
     const xGoogApiKey = readHeaderValue(req, "x-goog-api-key");
     if (xGoogApiKey) return xGoogApiKey.trim();
-    const incoming = new URL(req.originalUrl || req.url || "", "http://localhost");
-    const queryKey = String(
-      incoming.searchParams.get("key") ||
-        incoming.searchParams.get("api_key") ||
-        incoming.searchParams.get("x-api-key") ||
-        ""
-    ).trim();
-    if (queryKey) return queryKey;
     return "";
   }
 
@@ -220,12 +210,7 @@ export function createAuthService({
     if (!key) return null;
     const hash = hashProxyApiKey(key);
     const activeKeys = listActiveProxyApiKeys(proxyApiKeyStore);
-    const exact = activeKeys.find((entry) => String(entry.hash || "") === hash) || null;
-    if (exact) return exact;
-
-    const folded = key.toLowerCase();
-    const nearMatches = activeKeys.filter((entry) => String(entry.value || "").trim().toLowerCase() === folded);
-    return nearMatches.length === 1 ? nearMatches[0] : null;
+    return activeKeys.find((entry) => String(entry.hash || "") === hash) || null;
   }
 
   function recordManagedProxyApiKeyUsage(entry) {

@@ -277,6 +277,7 @@ export function createServerLifecycleRuntime({
         findManagedProxyApiKeyByValue,
         recordManagedProxyApiKeyUsage,
         recordRecentProxyRequest: proxyRouteHandlers.recordRecentProxyRequest,
+        recordAuditError: proxyRouteHandlers.recordAuditError,
         openResponsesCreateProxySession: proxyRouteHandlers.openResponsesCreateProxySession,
         parseResponsesResultFromSse,
         readUpstreamTextOrThrow,

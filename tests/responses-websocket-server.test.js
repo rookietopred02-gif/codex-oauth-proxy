@@ -288,7 +288,83 @@ test("Responses WebSocket forwards upstream response events and remembers comple
     assert.equal(recordedRequest?.transportType, "websocket");
     assert.equal(recordedRequest?.statusCode, 200);
     assert.equal(recordedRequest?.authAccountId, "acct_ws_1");
+    assert.equal(recordedRequest?.proxyApiKeyId, "legacy-local-api-key");
+    assert.equal(recordedRequest?.proxyApiKeyLabel, "legacy env LOCAL_API_KEY");
     assert.match(String(recordedRequest?.responseBody || ""), /response\.completed/);
+  } finally {
+    ws?.close();
+    await runtime.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Responses WebSocket records audit_error without breaking streamed completions", async () => {
+  const server = createServer();
+  const helpers = createResponsesHelpers();
+  let capturedAuditError = null;
+
+  const runtime = attachResponsesWebSocketServer(server, {
+    ...createAuthContext(),
+    recordRecentProxyRequest() {
+      throw new Error("recent request store unavailable");
+    },
+    recordAuditError(err, details) {
+      capturedAuditError = { err, details };
+    },
+    async openResponsesCreateProxySession() {
+      return {
+        upstream: new Response(
+          createReadableStreamFromTextChunks([
+            'data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"ok"}\n\n',
+            'data: {"type":"response.completed","response":{"id":"resp_ws_audit","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}}\n\n'
+          ]),
+          {
+            status: 200,
+            headers: {
+              "content-type": "text/event-stream"
+            }
+          }
+        ),
+        release() {},
+        async markFailure() {},
+        async markSuccess() {},
+        rememberCompletion() {},
+        forgetPinnedAffinity() {}
+      };
+    },
+    parseResponsesResultFromSse: helpers.parseResponsesResultFromSse,
+    readUpstreamTextOrThrow: async (upstream) => await upstream.text(),
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+  });
+
+  let ws;
+  try {
+    const baseUrl = await listen(server);
+    ws = await connectSocket(`${baseUrl}/v1/responses`, {
+      Authorization: "Bearer test-proxy-key"
+    });
+    const queue = createJsonMessageQueue(ws);
+
+    ws.send(
+      JSON.stringify({
+        type: "response.create",
+        stream: true,
+        model: "gpt-5.4",
+        input: "hello"
+      })
+    );
+
+    assert.equal((await queue.next()).type, "response.output_text.delta");
+    assert.equal((await queue.next()).type, "response.completed");
+    assert.match(capturedAuditError?.err?.message || "", /recent request store unavailable/);
+    assert.equal(capturedAuditError?.details?.phase, "record_recent_request");
+    assert.equal(capturedAuditError?.details?.transportType, "websocket");
   } finally {
     ws?.close();
     await runtime.close();

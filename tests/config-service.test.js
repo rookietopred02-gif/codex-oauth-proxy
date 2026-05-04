@@ -113,6 +113,32 @@ test("createServerConfig defaults Codex to GPT-5.5", () => {
   assert.equal(OFFICIAL_CODEX_MODELS[0], "gpt-5.5");
 });
 
+test("createServerConfig defaults recent request packets to metadata-only capture", () => {
+  const { config } = createServerConfig({
+    env: {
+      AUTH_MODE: "codex-oauth"
+    },
+    runtimePaths: createRuntimePaths("audit-defaults")
+  });
+
+  assert.equal(config.requestAudit.capturePackets, false);
+  assert.equal(config.requestAudit.maxPacketChars, 65536);
+});
+
+test("createServerConfig can explicitly enable bounded recent request packet capture", () => {
+  const { config } = createServerConfig({
+    env: {
+      AUTH_MODE: "codex-oauth",
+      RECENT_REQUESTS_CAPTURE_PACKETS: "true",
+      RECENT_REQUESTS_MAX_PACKET_CHARS: "999999999"
+    },
+    runtimePaths: createRuntimePaths("audit-env")
+  });
+
+  assert.equal(config.requestAudit.capturePackets, true);
+  assert.equal(config.requestAudit.maxPacketChars, 1024 * 1024);
+});
+
 test("buildProxyConfigEnvEntries persists runtime port for proxy and cloudflared", () => {
   const entries = buildProxyConfigEnvEntries({
     port: 8787,
@@ -125,7 +151,6 @@ test("buildProxyConfigEnvEntries persists runtime port for proxy and cloudflared
       defaultModel: "gpt-5.4",
       defaultInstructions: "",
       defaultServiceTier: "default",
-      defaultReasoningEffort: "medium",
       planModeReasoningEffort: "high"
     },
     codexOAuth: {
@@ -154,6 +179,18 @@ test("buildProxyConfigEnvEntries persists runtime port for proxy and cloudflared
   assert.equal(Object.hasOwn(entries, "CODEX_DEFAULT_REASONING_EFFORT"), false);
   assert.equal(Object.hasOwn(entries, "CODEX_PLAN_MODE_REASONING_EFFORT"), false);
   assert.equal(entries.CODEX_MULTI_ACCOUNT_POOL_FILTER, "team-only");
+});
+
+test("createServerConfig does not expose a default reasoning effort", () => {
+  const { config } = createServerConfig({
+    env: {
+      AUTH_MODE: "codex-oauth",
+      CODEX_DEFAULT_REASONING_EFFORT: "xhigh"
+    },
+    runtimePaths: createRuntimePaths("default-reasoning-removed")
+  });
+
+  assert.equal(Object.hasOwn(config.codex, "defaultReasoningEffort"), false);
 });
 
 test("createServerConfig rejects incomplete custom oauth config", () => {

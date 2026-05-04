@@ -75,6 +75,8 @@ export function registerAdminCoreRoutes(app, context) {
           totalRequests: runtimeStats.totalRequests,
           okRequests: runtimeStats.okRequests,
           errorRequests: runtimeStats.errorRequests,
+          auditErrors: runtimeStats.auditErrors,
+          lastAuditError: runtimeStats.lastAuditError,
           recentRequestsPath: config.requestAudit.historyPath,
           recentRequests: runtimeStats.recentRequests
         }
@@ -174,7 +176,6 @@ export function registerAdminCoreRoutes(app, context) {
         id,
         label,
         prefix: apiKey.slice(0, 10),
-        value: apiKey,
         hash: hashProxyApiKey(apiKey),
         created_at: nowSec,
         last_used_at: 0,
@@ -195,7 +196,6 @@ export function registerAdminCoreRoutes(app, context) {
           id: entry.id,
           label: entry.label,
           prefix: entry.prefix,
-          value: entry.value,
           createdAt: entry.created_at,
           expiresAt: entry.expires_at > 0 ? entry.expires_at : null,
           active: true

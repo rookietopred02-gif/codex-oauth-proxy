@@ -16,6 +16,12 @@ import path from "node:path";
  *   resolveBundledCloudflaredTargetNames: (platform?: string, arch?: string) => string[];
  *   validCloudflaredModes: Set<string>;
  *   parseNumberEnv: (value: unknown, fallback: number, options?: object) => number;
+ *   spawnImpl?: typeof spawn;
+ *   restartBaseDelayMs?: number;
+ *   restartMaxDelayMs?: number;
+ *   startupStableMs?: number;
+ *   startupTimeoutMs?: number;
+ *   stopTimeoutMs?: number;
  * }} options
  */
 export function createCloudflaredService({
@@ -27,9 +33,23 @@ export function createCloudflaredService({
   resolveBundledCloudflaredBinaryName,
   resolveBundledCloudflaredTargetNames,
   validCloudflaredModes,
-  parseNumberEnv
+  parseNumberEnv,
+  spawnImpl = spawn,
+  restartBaseDelayMs = 1000,
+  restartMaxDelayMs = 30000,
+  startupStableMs = 1200,
+  startupTimeoutMs = 8000,
+  stopTimeoutMs = 2500
 }) {
   let installPromise = null;
+  let startPromise = null;
+  let stopPromise = null;
+  let restartTimer = null;
+  let restartAttempt = 0;
+  let supervisorVersion = 0;
+  let childGeneration = 0;
+  let stopInProgress = false;
+  let desiredTunnelOptions = null;
 
   const runtime = {
     process: null,
@@ -48,8 +68,31 @@ export function createCloudflaredService({
     installUpdatedAt: 0,
     pid: null,
     startedAt: 0,
+    supervised: false,
+    restartCount: 0,
+    restartAttempt: 0,
+    restartScheduledAt: 0,
+    lastExitAt: 0,
+    lastExitCode: null,
+    lastExitSignal: null,
     outputTail: []
   };
+
+  function clampDurationMs(value, fallback, min = 0, max = 120000) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(min, Math.min(max, Math.floor(parsed)));
+  }
+
+  const resolvedRestartBaseDelayMs = clampDurationMs(restartBaseDelayMs, 1000, 0, 120000);
+  const resolvedRestartMaxDelayMs = clampDurationMs(restartMaxDelayMs, 30000, resolvedRestartBaseDelayMs, 300000);
+  const resolvedStartupStableMs = clampDurationMs(startupStableMs, 1200, 0, 60000);
+  const resolvedStartupTimeoutMs = clampDurationMs(startupTimeoutMs, 8000, resolvedStartupStableMs, 120000);
+  const resolvedStopTimeoutMs = clampDurationMs(stopTimeoutMs, 2500, 100, 60000);
+
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms || 0))));
+  }
 
   function resolveBin() {
     const configured = String(config.publicAccess.cloudflaredBinPath || "").trim();
@@ -202,7 +245,7 @@ export function createCloudflaredService({
     return "";
   }
 
-  function createLineReader(stream) {
+  function createLineReader(stream, label = "stream") {
     let buffer = "";
     stream.on("data", (chunk) => {
       buffer += Buffer.from(chunk).toString("utf8");
@@ -223,6 +266,9 @@ export function createCloudflaredService({
       const url = extractUrlFromLine(tail);
       if (url) runtime.url = url;
     });
+    stream.on("error", (err) => {
+      updateOutput(`${label} error: ${err?.message || err || "stream_error"}`);
+    });
   }
 
   async function checkInstalled(force = false) {
@@ -236,7 +282,7 @@ export function createCloudflaredService({
 
     const bin = resolveBin();
     const output = await new Promise((resolve) => {
-      const child = spawn(bin, ["--version"], {
+      const child = spawnImpl(bin, ["--version"], {
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"]
       });
@@ -298,6 +344,13 @@ export function createCloudflaredService({
       localPort: Number(runtime.localPort || config.port),
       pid: runtime.pid || null,
       startedAt: Number(runtime.startedAt || 0) || null,
+      supervised: Boolean(runtime.supervised),
+      restartCount: Number(runtime.restartCount || 0),
+      restartAttempt: Number(runtime.restartAttempt || 0),
+      restartScheduledAt: Number(runtime.restartScheduledAt || 0) || null,
+      lastExitAt: Number(runtime.lastExitAt || 0) || null,
+      lastExitCode: runtime.lastExitCode,
+      lastExitSignal: runtime.lastExitSignal,
       binaryPath: resolveBin(),
       outputTail: [...runtime.outputTail]
     };
@@ -396,19 +449,10 @@ export function createCloudflaredService({
   }
 
   /**
-   * @param {{
-   *   mode?: string;
-   *   token?: string;
-   *   useHttp2?: boolean;
-   *   localPort?: number;
-   *   autoInstall?: boolean;
-   * }} [options]
+   * @param {{ mode?: string; token?: string; useHttp2?: boolean; localPort?: number; autoInstall?: boolean }} [options]
    */
-  async function startTunnel({ mode, token, useHttp2, localPort, autoInstall } = {}) {
-    if (runtime.running && runtime.process) {
-      return getStatus();
-    }
-
+  function normalizeTunnelOptions(options = {}) {
+    const { mode, token, useHttp2, localPort, autoInstall } = options;
     const normalizedMode = validCloudflaredModes.has(String(mode || "").trim().toLowerCase())
       ? String(mode).trim().toLowerCase()
       : config.publicAccess.defaultMode;
@@ -426,8 +470,116 @@ export function createCloudflaredService({
       throw new Error("Cloudflared token is required when mode=auth.");
     }
 
+    return {
+      mode: normalizedMode,
+      token: normalizedToken,
+      useHttp2: normalizedUseHttp2,
+      localPort: parsedPort,
+      autoInstall: normalizedAutoInstall
+    };
+  }
+
+  function clearRestartTimer() {
+    if (!restartTimer) return;
+    clearTimeout(restartTimer);
+    restartTimer = null;
+    runtime.restartScheduledAt = 0;
+  }
+
+  function isCurrentChild(child, generation) {
+    return Boolean(child) && runtime.process === child && childGeneration === generation;
+  }
+
+  function markChildStopped(child, generation, { code = null, signal = null, error = "" } = {}) {
+    if (!isCurrentChild(child, generation)) return false;
+    runtime.running = false;
+    runtime.pid = null;
+    runtime.process = null;
+    runtime.lastExitAt = Math.floor(Date.now() / 1000);
+    runtime.lastExitCode = code;
+    runtime.lastExitSignal = signal || null;
+    if (error) runtime.error = String(error);
+    return true;
+  }
+
+  function waitForChildExit(child, timeoutMs) {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer = null;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (typeof child.off === "function") child.off("exit", onExit);
+        resolve(value);
+      };
+      const onExit = () => finish(true);
+      child.once("exit", onExit);
+      timer = setTimeout(() => finish(false), Math.max(100, Number(timeoutMs || 0)));
+      timer.unref?.();
+    });
+  }
+
+  async function waitForTunnelStartup(child, generation) {
+    const startedAt = Date.now();
+    const stableAt = startedAt + resolvedStartupStableMs;
+    const deadline = startedAt + resolvedStartupTimeoutMs;
+
+    while (Date.now() <= deadline) {
+      if (!isCurrentChild(child, generation)) {
+        if (!runtime.running && runtime.error) {
+          throw new Error(runtime.error);
+        }
+        throw new Error("cloudflared start was superseded before it became ready.");
+      }
+      if (!runtime.running) {
+        throw new Error(runtime.error || "cloudflared exited before the tunnel became ready.");
+      }
+      if (runtime.url || Date.now() >= stableAt) return;
+      await delay(Math.min(100, Math.max(10, stableAt - Date.now())));
+    }
+  }
+
+  function scheduleRestart(reason, version = supervisorVersion) {
+    if (!desiredTunnelOptions || version !== supervisorVersion) return;
+    if (restartTimer) return;
+
+    restartAttempt += 1;
+    const delayMs = Math.min(
+      resolvedRestartMaxDelayMs,
+      resolvedRestartBaseDelayMs * Math.max(1, 2 ** Math.max(0, restartAttempt - 1))
+    );
+    runtime.supervised = true;
+    runtime.restartAttempt = restartAttempt;
+    runtime.restartScheduledAt = Date.now() + delayMs;
+    updateOutput(`cloudflared restart scheduled in ${delayMs}ms: ${reason?.message || reason || "unexpected exit"}`);
+
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      if (!desiredTunnelOptions || version !== supervisorVersion) {
+        runtime.restartScheduledAt = 0;
+        return;
+      }
+      launchTunnel(desiredTunnelOptions, { supervisorRestart: true, version }).catch((err) => {
+        runtime.error = String(err?.message || err || "cloudflared_restart_failed");
+        updateOutput(`cloudflared restart failed: ${runtime.error}`);
+        scheduleRestart(err, version);
+      });
+    }, delayMs);
+    restartTimer.unref?.();
+  }
+
+  async function launchTunnel(resolvedOptions, { supervisorRestart = false, version = supervisorVersion } = {}) {
+    if (runtime.running && runtime.process) {
+      return getStatus();
+    }
+    if (!desiredTunnelOptions || version !== supervisorVersion) {
+      return getStatus();
+    }
+
     let installed = await checkInstalled(true);
-    if (!installed.installed && normalizedAutoInstall) {
+    if (!installed.installed && resolvedOptions.autoInstall) {
       await installBinary();
       installed = await checkInstalled(true);
     }
@@ -437,76 +589,160 @@ export function createCloudflaredService({
       );
     }
 
+    if (!desiredTunnelOptions || version !== supervisorVersion) {
+      return getStatus();
+    }
+
     const bin = resolveBin();
     const args =
-      normalizedMode === "auth"
-        ? ["tunnel", "run", "--token", normalizedToken]
-        : ["tunnel", "--url", `http://127.0.0.1:${parsedPort}`];
-    if (normalizedUseHttp2) {
+      resolvedOptions.mode === "auth"
+        ? ["tunnel", "run", "--token", resolvedOptions.token]
+        : ["tunnel", "--url", `http://127.0.0.1:${resolvedOptions.localPort}`];
+    if (resolvedOptions.useHttp2) {
       args.push("--protocol", "http2");
     }
 
-    const child = spawn(bin, args, {
+    const child = spawnImpl(bin, args, {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
+    const generation = childGeneration + 1;
+    let restartOnUnexpectedExit = false;
 
     child.once("error", (err) => {
-      runtime.running = false;
-      runtime.error = String(err?.message || err || "cloudflared_start_failed");
-      runtime.pid = null;
-      runtime.process = null;
+      const expectedStop = stopInProgress || !desiredTunnelOptions || version !== supervisorVersion;
+      const message = String(err?.message || err || "cloudflared_start_failed");
+      if (!markChildStopped(child, generation, { error: message })) return;
+      if (!expectedStop && restartOnUnexpectedExit) scheduleRestart(message, version);
     });
     child.once("exit", (code, signal) => {
-      runtime.running = false;
-      runtime.pid = null;
-      runtime.process = null;
-      if (!runtime.error && code !== 0) {
-        runtime.error = `cloudflared exited with code=${code ?? "?"} signal=${signal ?? "-"}`;
+      const expectedStop = stopInProgress || !desiredTunnelOptions || version !== supervisorVersion;
+      const message = `cloudflared exited with code=${code ?? "?"} signal=${signal ?? "-"}`;
+      if (!markChildStopped(child, generation, { code, signal, error: expectedStop ? "" : message })) return;
+      if (!expectedStop && restartOnUnexpectedExit) {
+        scheduleRestart(message, version);
       }
     });
-    if (child.stdout) createLineReader(child.stdout);
-    if (child.stderr) createLineReader(child.stderr);
+    if (child.stdout) createLineReader(child.stdout, "stdout");
+    if (child.stderr) createLineReader(child.stderr, "stderr");
 
+    childGeneration = generation;
     runtime.process = child;
     runtime.running = true;
     runtime.error = "";
-    runtime.mode = normalizedMode;
-    runtime.useHttp2 = normalizedUseHttp2;
-    runtime.tunnelToken = normalizedToken;
-    runtime.localPort = parsedPort;
+    runtime.url = "";
+    runtime.mode = resolvedOptions.mode;
+    runtime.useHttp2 = resolvedOptions.useHttp2;
+    runtime.tunnelToken = resolvedOptions.token;
+    runtime.localPort = resolvedOptions.localPort;
     runtime.startedAt = Math.floor(Date.now() / 1000);
     runtime.pid = child.pid || null;
+    runtime.supervised = true;
+    if (supervisorRestart) {
+      runtime.restartCount += 1;
+    }
+
+    await waitForTunnelStartup(child, generation);
+    restartOnUnexpectedExit = true;
+    restartAttempt = 0;
+    runtime.restartAttempt = 0;
+    runtime.restartScheduledAt = 0;
     return getStatus();
   }
 
+  /**
+   * @param {{
+   *   mode?: string;
+   *   token?: string;
+   *   useHttp2?: boolean;
+   *   localPort?: number;
+   *   autoInstall?: boolean;
+   * }} [options]
+   */
+  async function startTunnel(options = {}) {
+    if (startPromise) return await startPromise;
+    if (stopPromise) await stopPromise.catch(() => {});
+    if (runtime.running && runtime.process) {
+      return getStatus();
+    }
+
+    startPromise = (async () => {
+      const resolvedOptions = normalizeTunnelOptions(options);
+      supervisorVersion += 1;
+      desiredTunnelOptions = resolvedOptions;
+      restartAttempt = 0;
+      runtime.restartAttempt = 0;
+      clearRestartTimer();
+
+      try {
+        return await launchTunnel(resolvedOptions, { supervisorRestart: false, version: supervisorVersion });
+      } catch (err) {
+        desiredTunnelOptions = null;
+        clearRestartTimer();
+        runtime.supervised = false;
+        throw err;
+      }
+    })();
+
+    try {
+      return await startPromise;
+    } finally {
+      startPromise = null;
+    }
+  }
+
   async function stopTunnel() {
+    if (stopPromise) return await stopPromise;
+
+    stopPromise = (async () => {
+      if (startPromise) await startPromise.catch(() => {});
+      supervisorVersion += 1;
+      desiredTunnelOptions = null;
+      restartAttempt = 0;
+      runtime.restartAttempt = 0;
+      runtime.restartScheduledAt = 0;
+      runtime.supervised = false;
+      clearRestartTimer();
+      stopInProgress = true;
+
+      try {
+        await terminateActiveTunnelProcess();
+      } finally {
+        stopInProgress = false;
+        runtime.process = null;
+        runtime.running = false;
+        runtime.pid = null;
+        runtime.url = "";
+        runtime.error = "";
+      }
+
+      return getStatus();
+    })();
+
+    try {
+      return await stopPromise;
+    } finally {
+      stopPromise = null;
+    }
+  }
+
+  async function terminateActiveTunnelProcess() {
     const child = runtime.process;
     if (child) {
       try {
-        const exitPromise =
-          child.exitCode !== null || child.signalCode !== null
-            ? Promise.resolve()
-            : new Promise((resolve) => {
-                child.once("exit", () => resolve());
-              });
         child.kill("SIGTERM");
-        await new Promise((resolve) => setTimeout(resolve, 450));
+        await waitForChildExit(child, Math.min(450, resolvedStopTimeoutMs));
         if (child.exitCode === null && child.signalCode === null) {
           child.kill("SIGKILL");
         }
-        await exitPromise;
+        const exited = await waitForChildExit(child, Math.max(100, resolvedStopTimeoutMs));
+        if (!exited) {
+          updateOutput("cloudflared stop timed out while waiting for process exit.");
+        }
       } catch {
         // Ignore process kill errors.
       }
     }
-
-    runtime.process = null;
-    runtime.running = false;
-    runtime.pid = null;
-    runtime.url = "";
-    runtime.error = "";
-    return getStatus();
   }
 
   return {

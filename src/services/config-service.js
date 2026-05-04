@@ -439,9 +439,6 @@ export function createServerConfig(options = {}) {
       defaultModel: env.CODEX_DEFAULT_MODEL || "gpt-5.5",
       defaultInstructions: env.CODEX_DEFAULT_INSTRUCTIONS || "You are a helpful assistant.",
       defaultServiceTier: normalizeCodexServiceTier(env.CODEX_DEFAULT_SERVICE_TIER, "priority"),
-      defaultReasoningEffort: parseReasoningEffortOrFallback(env.CODEX_DEFAULT_REASONING_EFFORT, "medium", {
-        allowAdaptive: true
-      }),
       planModeReasoningEffort: parseReasoningEffortOrFallback(env.CODEX_PLAN_MODE_REASONING_EFFORT, "")
     },
     modelRouter: {
@@ -457,6 +454,12 @@ export function createServerConfig(options = {}) {
       maxEntries: parseNumberEnv(env.RECENT_REQUESTS_MAX_ENTRIES, 120, {
         min: 10,
         max: 1000,
+        integer: true
+      }),
+      capturePackets: parseBooleanEnv(env.RECENT_REQUESTS_CAPTURE_PACKETS, false),
+      maxPacketChars: parseNumberEnv(env.RECENT_REQUESTS_MAX_PACKET_CHARS, 65536, {
+        min: 0,
+        max: 1024 * 1024,
         integer: true
       })
     },

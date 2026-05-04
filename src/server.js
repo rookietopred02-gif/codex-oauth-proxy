@@ -42,6 +42,7 @@ import {
 } from "./http/provider-stream-adapters.js";
 import { sendOpenAICompletionAsSse } from "./http/openai-chat-stream.js";
 import { getCachedJsonBody, readJsonBody, readRawBody } from "./http/request-body.js";
+import { estimateTokenCountFromText } from "./http/token-estimation.js";
 import { createUpstreamRuntimeHelpers } from "./http/upstream-runtime.js";
 import { createAnthropicLocalCompatHelpers } from "./protocols/anthropic/local-compat.js";
 import { createAnthropicOpenAICompatHelpers } from "./protocols/anthropic/openai-compat.js";
@@ -3266,7 +3267,7 @@ function estimateOpenAIChatCompletionTokens(rawBody, parsedBody = undefined) {
 
 async function runDirectChatCompletionTest(prompt) {
   const modelRoute = resolveCodexCompatibleRoute(config.codex.defaultModel);
-  const reasoningEffort = resolveReasoningEffort(undefined, {
+  const reasoningEffort = resolveReasoningEffort("low", {
     input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
     instructions: config.codex.defaultInstructions
   }, modelRoute.mappedModel);
@@ -3464,16 +3465,8 @@ function resolveReasoningEffort(value, context = null, modelId = null) {
     resolved = planModeReasoningEffort;
   }
 
-  if (!resolved) {
-    const configured = parseReasoningEffortOrFallback(config.codex.defaultReasoningEffort, "medium", {
-      allowAdaptive: true
-    });
-
-    if (requested === "adaptive" || configured === "adaptive") {
-      resolved = inferAdaptiveReasoningEffort(context);
-    } else {
-      resolved = configured;
-    }
+  if (!resolved && requested === "adaptive") {
+    resolved = inferAdaptiveReasoningEffort(context);
   }
 
   return clampReasoningEffortForModel(resolved, modelId);
@@ -3483,6 +3476,7 @@ function applyReasoningEffortDefaults(target, reasoningEffortFromRequest, contex
   const hasReasoningObject = target.reasoning && typeof target.reasoning === "object" && !Array.isArray(target.reasoning);
   const existingEffort = hasReasoningObject ? target.reasoning.effort : null;
   const resolvedEffort = resolveReasoningEffort(existingEffort ?? reasoningEffortFromRequest, context, modelId);
+  if (!resolvedEffort) return;
 
   target.reasoning = hasReasoningObject ? { ...target.reasoning } : {};
   target.reasoning.effort = resolvedEffort;
@@ -3671,6 +3665,7 @@ export const __testing = createServerTestingExports({
   normalizeCodexResponsesRequestBody,
   normalizeChatCompletionsRequestBody,
   parseResponsesResultFromSse,
+  estimateOpenAIChatCompletionTokens,
   runDirectChatCompletionTest,
   anthropicLocalCompatHelpers,
   buildCodexResponsesRequestBody,

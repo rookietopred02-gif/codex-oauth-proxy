@@ -117,6 +117,7 @@ export function attachResponsesWebSocketServer(server, context) {
     findManagedProxyApiKeyByValue,
     recordManagedProxyApiKeyUsage,
     recordRecentProxyRequest,
+    recordAuditError,
     openResponsesCreateProxySession,
     parseResponsesResultFromSse,
     readUpstreamTextOrThrow,
@@ -127,6 +128,18 @@ export function attachResponsesWebSocketServer(server, context) {
     noServer: true
   });
   const sockets = new Set();
+
+  function recordWebSocketAuditError(err, details = {}) {
+    if (typeof recordAuditError === "function") {
+      try {
+        recordAuditError(err, details);
+        return;
+      } catch {}
+    }
+    try {
+      console.warn(`[audit_error] websocket ${details.rawPath || details.path || ""}: ${err?.message || err}`);
+    } catch {}
+  }
 
   const handleUpgrade = (req, socket, head) => {
     const incoming = new URL(req.url || "/", "http://localhost");
@@ -152,7 +165,9 @@ export function attachResponsesWebSocketServer(server, context) {
 
     wss.handleUpgrade(req, socket, head, (ws) => {
       wss.emit("connection", ws, req, {
-        pathname: incoming.pathname
+        pathname: incoming.pathname,
+        proxyApiKeyId: authorization.proxyApiKeyId || null,
+        proxyApiKeyLabel: authorization.proxyApiKeyLabel || null
       });
     });
   };
@@ -266,27 +281,39 @@ export function attachResponsesWebSocketServer(server, context) {
 
       const finalizeRecentRequest = () => {
         if (typeof recordRecentProxyRequest !== "function") return;
-        recordRecentProxyRequest({
-          startedAt,
-          method: "WS",
-          rawPath,
-          statusCode: latestStatusCode,
-          requestBody,
-          requestContentType: "application/json",
-          upstreamRequestBody: session?.upstreamRequestBody,
-          upstreamRequestContentType: session?.upstreamRequestContentType,
-          responseBody: latestResponseBody,
-          responseContentType: latestResponseContentType,
-          protocolType: "openai-v1",
-          tokenUsage: latestTokenUsage,
-          modelRoute: session?.modelRoute || null,
-          authAccountId: session?.authAccountId || null,
-          upstreamRetryCount: session?.retryCount || 0,
-          upstreamErrorCode: latestUpstreamErrorCode,
-          upstreamErrorDetail: latestUpstreamErrorDetail,
-          compatibilityHint: session?.compatibilityHint || "",
-          transportType: "websocket"
-        });
+        try {
+          recordRecentProxyRequest({
+            startedAt,
+            method: "WS",
+            rawPath,
+            statusCode: latestStatusCode,
+            requestBody,
+            requestContentType: "application/json",
+            upstreamRequestBody: session?.upstreamRequestBody,
+            upstreamRequestContentType: session?.upstreamRequestContentType,
+            responseBody: latestResponseBody,
+            responseContentType: latestResponseContentType,
+            protocolType: "openai-v1",
+            tokenUsage: latestTokenUsage,
+            modelRoute: session?.modelRoute || null,
+            authAccountId: session?.authAccountId || null,
+            proxyApiKeyId: meta.proxyApiKeyId || null,
+            proxyApiKeyLabel: meta.proxyApiKeyLabel || "",
+            upstreamRetryCount: session?.retryCount || 0,
+            upstreamErrorCode: latestUpstreamErrorCode,
+            upstreamErrorDetail: latestUpstreamErrorDetail,
+            compatibilityHint: session?.compatibilityHint || "",
+            transportType: "websocket"
+          });
+        } catch (err) {
+          recordWebSocketAuditError(err, {
+            method: "WS",
+            rawPath,
+            statusCode: latestStatusCode,
+            transportType: "websocket",
+            phase: "record_recent_request"
+          });
+        }
       };
 
       try {

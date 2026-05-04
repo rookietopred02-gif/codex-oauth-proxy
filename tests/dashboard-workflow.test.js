@@ -241,6 +241,9 @@ test("dashboard request detail modal uses load-full controls for packet-heavy pa
   const html = await fs.readFile(dashboardHtmlPath, "utf8");
 
   assert.match(html, /id="recentReqCachedInputTotal"/);
+  assert.match(html, /id="recentReqRpm"/);
+  assert.match(html, /id="recentReqApiKeyTabs"/);
+  assert.match(html, /data-i18n="recent_requests_rpm"/);
   assert.match(html, /data-i18n="recent_requests_cached_input"/);
   assert.match(html, /id="reqDetailReqLoadBtn"/);
   assert.match(html, /id="reqDetailResLoadBtn"/);
@@ -248,6 +251,18 @@ test("dashboard request detail modal uses load-full controls for packet-heavy pa
   assert.match(html, /recentRequestsUi\.loadRequestDetailFullPacket\("responsePacket"\)/);
   assert.match(html, /recentRequestsUi\.copyRequestDetailLog\("requestPacket", "reqDetailReqCopyBtn"\)/);
   assert.match(html, /recentRequestsUi\.copyRequestDetailLog\("responsePacket", "reqDetailResCopyBtn"\)/);
+});
+
+test("recent request API key tabs use current runtime key display names", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.match(html, /function getApiKeyDisplayName\(key\)/);
+  assert.match(html, /function getApiKeyDisplayNameById\(id\)/);
+  assert.match(html, /const titleText = getApiKeyDisplayName\(k\);/);
+  assert.match(
+    html,
+    /const currentDisplayName = getApiKeyDisplayNameById\(id\);[\s\S]*if \(currentDisplayName\) return currentDisplayName;[\s\S]*const label = String\(row\?\.proxyApiKeyLabel/
+  );
 });
 
 test("dashboard self-test preserves the result text and only refreshes dashboard state", async () => {
@@ -376,6 +391,11 @@ test("recent requests UI keeps the split module API and preview/full detail flow
     },
     escapeHtml: (value) => String(value),
     fmtToken: (value) => String(value ?? 0),
+    formatDateTime: (value, options = {}) =>
+      new Intl.DateTimeFormat("en-US", {
+        hour12: true,
+        ...options
+      }).format(new Date(Number(value))),
     copyTextToClipboard: async (text) => {
       clipboardWrites.push(String(text));
     },
@@ -422,6 +442,7 @@ test("recent requests UI keeps the split module API and preview/full detail flow
     assert.match(elements.get("reqTable").innerHTML, /WebSocket/);
     assert.match(elements.get("reqTable").innerHTML, /gpt-5 → gpt-5.4/);
     assert.match(elements.get("reqTable").innerHTML, />7</);
+    assert.match(elements.get("reqTable").innerHTML, /AM|PM/);
 
     await ui.openRequestDetailModal("row-1");
     await new Promise((resolve) => setTimeout(resolve, 0));

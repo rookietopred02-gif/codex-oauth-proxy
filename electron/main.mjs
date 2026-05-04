@@ -5,6 +5,7 @@ import os from "node:os";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
+import { isSafeExternalUrl, isTrustedBackendNavigationUrl } from "./external-url.mjs";
 import { DESKTOP_APP_NAME, resolveDesktopUserDataDir } from "./runtime-paths.mjs";
 import { startAppServer, stopAppServer } from "../src/app-server.js";
 
@@ -159,6 +160,15 @@ function showStartupError(err) {
   );
 }
 
+function openSafeExternalUrl(url) {
+  if (!isSafeExternalUrl(url)) {
+    logDesktopLifecycle(`blocked external URL: ${url || "-"}`);
+    return false;
+  }
+  shell.openExternal(url).catch(() => {});
+  return true;
+}
+
 async function waitForHealth(url, timeoutMs = 15000) {
   const startedAt = Date.now();
   let lastError = null;
@@ -208,7 +218,7 @@ async function createMainWindow() {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url).catch(() => {});
+    openSafeExternalUrl(url);
     return { action: "deny" };
   });
   mainWindow.webContents.on("did-fail-load", (_event, code, description, validatedUrl) => {
@@ -220,9 +230,9 @@ async function createMainWindow() {
     );
   });
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (!url.startsWith(backend.url)) {
+    if (!isTrustedBackendNavigationUrl(url, backend.url)) {
       event.preventDefault();
-      shell.openExternal(url).catch(() => {});
+      openSafeExternalUrl(url);
     }
   });
 

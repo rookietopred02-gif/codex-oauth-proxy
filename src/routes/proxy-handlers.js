@@ -85,6 +85,46 @@ export function createProxyRouteHandlers(context) {
     return null;
   }
 
+  function isResponsesCompactPath(pathname) {
+    return /^\/v1(?:\/codex)?\/responses\/compact\/?$/.test(String(pathname || ""));
+  }
+
+  function extractStringField(value, fieldName) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+    const raw = value[fieldName];
+    return typeof raw === "string" ? raw.trim() : "";
+  }
+
+  function extractJsonBodyResponseId(rawBody, fieldNames = []) {
+    if (!rawBody || rawBody.length === 0) return "";
+    const parsed = parseJsonLoose(Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : String(rawBody));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+    for (const fieldName of fieldNames) {
+      const responseId = extractStringField(parsed, fieldName);
+      if (responseId) return responseId;
+    }
+    return "";
+  }
+
+  function extractResponsesPathResponseId(pathname) {
+    const match = String(pathname || "").match(/^\/v1(?:\/codex)?\/responses\/([^/?#]+)(?:\/|$)/);
+    if (!match) return "";
+    const responseId = decodeURIComponent(match[1] || "").trim();
+    if (!responseId || responseId === "compact" || responseId === "input_tokens") return "";
+    return responseId;
+  }
+
+  function extractResponsesAffinityLookupId(req, target, rawBody, pathname = "") {
+    if (!target || target.endpointKind !== "responses") return "";
+    if (req?.method === "POST" && isResponsesCreatePath(pathname)) {
+      return extractPreviousResponseId(rawBody);
+    }
+    if (req?.method === "POST" && isResponsesCompactPath(pathname)) {
+      return extractJsonBodyResponseId(rawBody, ["response_id", "previous_response_id"]);
+    }
+    return extractResponsesPathResponseId(pathname);
+  }
+
   function buildUpstreamTarget(originalUrl) {
     const incoming = new URL(originalUrl, "http://localhost");
     const endpointKind = getCodexEndpointKind(incoming.pathname);
@@ -115,12 +155,52 @@ export function createProxyRouteHandlers(context) {
   function resolvePinnedCodexPoolEntryId(req, target, rawBody, pathname = "") {
     if (config.authMode !== "codex-oauth" || !isCodexMultiAccountEnabled() || !isCodexPoolRetryEnabled()) return "";
     if (!target || target.endpointKind !== "responses") return "";
-    if (!isResponsesCreatePath(pathname) || req.method !== "POST") return "";
-    if (req.method === "GET" || req.method === "HEAD") return "";
-    const previousResponseId = extractPreviousResponseId(rawBody);
-    if (!previousResponseId) return "";
-    const affinity = codexResponseAffinity.lookup(previousResponseId);
+    const responseId = extractResponsesAffinityLookupId(req, target, rawBody, pathname);
+    if (!responseId) return "";
+    const affinity = codexResponseAffinity.lookup(responseId);
     return typeof affinity?.poolEntryId === "string" ? affinity.poolEntryId : "";
+  }
+
+  function shouldCaptureAuditPackets() {
+    return config?.requestAudit?.capturePackets === true;
+  }
+
+  function getAuditPacketCharLimit() {
+    const limit = Number(config?.requestAudit?.maxPacketChars || 0);
+    if (!Number.isFinite(limit) || limit <= 0) return 0;
+    return Math.max(1, Math.floor(limit));
+  }
+
+  function recordAuditError(err, details = {}) {
+    const message = String(err?.message || err || "Proxy audit hook failed.");
+    const code = String(err?.code || err?.name || "audit_error");
+    let safePath = String(details.rawPath || details.path || "");
+    try {
+      safePath = sanitizeAuditPath(safePath);
+    } catch {}
+    const auditError = {
+      type: "audit_error",
+      at: Date.now(),
+      code: code || "audit_error",
+      message: message.slice(0, 1000),
+      method: String(details.method || ""),
+      path: safePath,
+      statusCode: Number(details.statusCode || 0) || 0,
+      transportType: String(details.transportType || ""),
+      phase: String(details.phase || "")
+    };
+    try {
+      runtimeStats.auditErrors = (Number(runtimeStats.auditErrors || 0) || 0) + 1;
+      runtimeStats.lastAuditError = auditError;
+    } catch {}
+    try {
+      console.warn(
+        `[audit_error] ${auditError.transportType || "unknown"} ${auditError.method || ""} ${
+          auditError.path || ""
+        } ${auditError.statusCode || ""}: ${auditError.message}`
+      );
+    } catch {}
+    return auditError;
   }
 
   function recordRecentProxyRequest({
@@ -138,6 +218,8 @@ export function createProxyRouteHandlers(context) {
     tokenUsage = null,
     modelRoute = null,
     authAccountId = null,
+    proxyApiKeyId = null,
+    proxyApiKeyLabel = "",
     upstreamRetryCount = 0,
     upstreamErrorCode = "",
     upstreamErrorDetail = "",
@@ -151,7 +233,12 @@ export function createProxyRouteHandlers(context) {
       String(transportType || "").trim().toLowerCase() ||
       (normalizedMethod.toUpperCase() === "WS" ? "websocket" : "http");
     const normalizedResponseContentType = parseContentType(responseContentType);
-    const responsePacket = formatPayloadForAudit(responseBody, normalizedResponseContentType, 0);
+    const capturePackets = shouldCaptureAuditPackets();
+    const packetCharLimit = getAuditPacketCharLimit();
+    const responsePacketForUsage = formatPayloadForAudit(responseBody, normalizedResponseContentType, 0);
+    const responsePacket = capturePackets
+      ? formatPayloadForAudit(responseBody, normalizedResponseContentType, packetCharLimit)
+      : "";
     const providedTokenUsage = normalizeTokenUsage(tokenUsage);
     const packetTokenUsage =
       providedTokenUsage && providedTokenUsage.cachedInputTokens !== null
@@ -159,7 +246,7 @@ export function createProxyRouteHandlers(context) {
         : extractTokenUsageFromAuditResponse({
             protocolType: resolvedProtocolType,
             responseContentType: normalizedResponseContentType,
-            responsePacket
+            responsePacket: responsePacketForUsage
           });
     const normalizedTokenUsage = mergeNormalizedTokenUsage(
       providedTokenUsage,
@@ -191,6 +278,8 @@ export function createProxyRouteHandlers(context) {
       upstreamMode: config.upstreamMode,
       authAccountId: authAccountId || null,
       authAccountLabel: authAccountLabel || null,
+      proxyApiKeyId: proxyApiKeyId || null,
+      proxyApiKeyLabel: String(proxyApiKeyLabel || "").trim() || null,
       upstreamRetryCount: Number.isFinite(Number(upstreamRetryCount)) ? Number(upstreamRetryCount) : 0,
       upstreamErrorCode: String(upstreamErrorCode || "").trim() || null,
       upstreamErrorDetail: String(upstreamErrorDetail || "").trim() || null,
@@ -198,8 +287,10 @@ export function createProxyRouteHandlers(context) {
       requestContentType: parseContentType(requestContentType) || null,
       upstreamRequestContentType: parseContentType(upstreamRequestContentType) || null,
       responseContentType: normalizedResponseContentType || null,
-      requestPacket: formatPayloadForAudit(requestBody, requestContentType, 0) || "",
-      upstreamRequestPacket: formatPayloadForAudit(upstreamRequestBody, upstreamRequestContentType, 0) || "",
+      requestPacket: capturePackets ? formatPayloadForAudit(requestBody, requestContentType, packetCharLimit) || "" : "",
+      upstreamRequestPacket: capturePackets
+        ? formatPayloadForAudit(upstreamRequestBody, upstreamRequestContentType, packetCharLimit) || ""
+        : "",
       responsePacket: responsePacket || ""
     };
 
@@ -208,6 +299,22 @@ export function createProxyRouteHandlers(context) {
       runtimeStats.recentRequests = snapshot.recentRequests;
     }
     return requestRow;
+  }
+
+  function recordRecentProxyRequestSafely(args = {}, details = {}) {
+    try {
+      return recordRecentProxyRequest(args);
+    } catch (err) {
+      recordAuditError(err, {
+        method: args.method,
+        rawPath: args.rawPath,
+        statusCode: args.statusCode,
+        transportType: args.transportType,
+        phase: "record_recent_request",
+        ...details
+      });
+      return null;
+    }
   }
 
   function rememberCodexResponseAffinity(response, authContext) {
@@ -314,6 +421,42 @@ export function createProxyRouteHandlers(context) {
     const entry = buildResponsesChainEntry(requestBody, completedResponse);
     if (!entry) return;
     codexResponsesChain.remember(entry);
+  }
+
+  function extractCompactSourceResponseId(requestBody, completedResponse) {
+    const directResponseId = extractStringField(requestBody, "response_id");
+    if (directResponseId) return directResponseId;
+    const previousResponseId = extractStringField(requestBody, "previous_response_id");
+    if (previousResponseId) return previousResponseId;
+    return extractStringField(completedResponse, "previous_response_id");
+  }
+
+  function buildCompactChainRequestBody(requestBody, completedResponse) {
+    const sourceResponseId = extractCompactSourceResponseId(requestBody, completedResponse);
+    const sourceEntry =
+      sourceResponseId && codexResponsesChain && typeof codexResponsesChain.lookup === "function"
+        ? codexResponsesChain.lookup(sourceResponseId)
+        : null;
+
+    if (sourceEntry && typeof expandResponsesRequestBodyFromChain === "function") {
+      const compactBody =
+        requestBody && typeof requestBody === "object" && !Array.isArray(requestBody)
+          ? { ...requestBody, previous_response_id: sourceResponseId }
+          : { previous_response_id: sourceResponseId };
+      return expandResponsesRequestBodyFromChain(compactBody, sourceEntry);
+    }
+
+    if (requestBody && typeof requestBody === "object" && !Array.isArray(requestBody)) {
+      if (requestBody.input !== undefined || Array.isArray(requestBody.messages)) return requestBody;
+    }
+
+    return null;
+  }
+
+  function rememberCodexResponsesCompactChainEntry(requestBody, completedResponse) {
+    const compactChainRequestBody = buildCompactChainRequestBody(requestBody, completedResponse);
+    if (!compactChainRequestBody) return;
+    rememberCodexResponsesChainEntry(compactChainRequestBody, completedResponse);
   }
 
   async function applyResponsesCollaborationModeBridge(preparedRequest) {
@@ -677,63 +820,75 @@ export function createProxyRouteHandlers(context) {
     };
 
     res.on("finish", () => {
-      const requestBodyForAudit = getCachedJsonBody(req) ?? req.rawBody ?? Buffer.alloc(0);
-      const responseContentType = parseContentType(res.getHeader("content-type"));
-      const rawResponseBody = Buffer.concat(responseChunks);
       const rawPath = req.originalUrl || req.url || "";
-      const safePath = sanitizeAuditPath(rawPath);
-      const protocolType = inferProtocolType(safePath, res.locals?.protocolType, config.upstreamMode);
-      const responsePacket = formatPayloadForAudit(rawResponseBody, responseContentType, 0);
-      const providedTokenUsage = normalizeTokenUsage(res.locals?.tokenUsage);
-      const packetTokenUsage =
-        providedTokenUsage && providedTokenUsage.cachedInputTokens !== null
-          ? null
-          : extractTokenUsageFromAuditResponse({
-              protocolType,
-              responseContentType,
-              responsePacket
-            });
-      const observedTokenUsage = mergeNormalizedTokenUsage(
-        providedTokenUsage,
-        packetTokenUsage
-      );
-      const estimatedChatInputTokens =
-        req.method === "POST" &&
-        res.statusCode >= 400 &&
-        (safePath === "/v1/chat/completions" || safePath.startsWith("/v1/chat/completions/"))
-          ? estimateOpenAIChatCompletionTokens(req.rawBody, getCachedJsonBody(req))
-          : 0;
-      const estimatedRequestUsage =
-        estimatedChatInputTokens > 0
-          ? {
-              inputTokens: estimatedChatInputTokens,
-              cachedInputTokens: 0,
-              outputTokens: 0,
-              totalTokens: estimatedChatInputTokens
-            }
-          : null;
-      const tokenUsage = mergeNormalizedTokenUsage(estimatedRequestUsage, observedTokenUsage);
-      recordRecentProxyRequest({
-        startedAt,
-        method: req.method,
-        rawPath,
-        statusCode: res.statusCode,
-        requestBody: requestBodyForAudit,
-        requestContentType: reqContentType,
-        upstreamRequestBody: res.locals?.upstreamRequestBody,
-        upstreamRequestContentType: res.locals?.upstreamRequestContentType,
-        responseBody: rawResponseBody,
-        responseContentType,
-        protocolType,
-        tokenUsage,
-        modelRoute: res.locals?.modelRoute || null,
-        authAccountId: res.locals?.authAccountId || null,
-        upstreamRetryCount: res.locals?.upstreamRetryCount,
-        upstreamErrorCode: res.locals?.upstreamErrorCode,
-        upstreamErrorDetail: res.locals?.upstreamErrorDetail,
-        compatibilityHint: res.locals?.compatibilityHint,
-        transportType: "http"
-      });
+      try {
+        const requestBodyForAudit = getCachedJsonBody(req) ?? req.rawBody ?? Buffer.alloc(0);
+        const responseContentType = parseContentType(res.getHeader("content-type"));
+        const rawResponseBody = Buffer.concat(responseChunks);
+        const safePath = sanitizeAuditPath(rawPath);
+        const protocolType = inferProtocolType(safePath, res.locals?.protocolType, config.upstreamMode);
+        const responsePacket = formatPayloadForAudit(rawResponseBody, responseContentType, 0);
+        const providedTokenUsage = normalizeTokenUsage(res.locals?.tokenUsage);
+        const packetTokenUsage =
+          providedTokenUsage && providedTokenUsage.cachedInputTokens !== null
+            ? null
+            : extractTokenUsageFromAuditResponse({
+                protocolType,
+                responseContentType,
+                responsePacket
+              });
+        const observedTokenUsage = mergeNormalizedTokenUsage(
+          providedTokenUsage,
+          packetTokenUsage
+        );
+        const estimatedChatInputTokens =
+          req.method === "POST" &&
+          res.statusCode >= 400 &&
+          (safePath === "/v1/chat/completions" || safePath.startsWith("/v1/chat/completions/"))
+            ? estimateOpenAIChatCompletionTokens(req.rawBody, getCachedJsonBody(req))
+            : 0;
+        const estimatedRequestUsage =
+          estimatedChatInputTokens > 0
+            ? {
+                inputTokens: estimatedChatInputTokens,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                totalTokens: estimatedChatInputTokens
+              }
+            : null;
+        const tokenUsage = mergeNormalizedTokenUsage(estimatedRequestUsage, observedTokenUsage);
+        recordRecentProxyRequestSafely({
+          startedAt,
+          method: req.method,
+          rawPath,
+          statusCode: res.statusCode,
+          requestBody: requestBodyForAudit,
+          requestContentType: reqContentType,
+          upstreamRequestBody: res.locals?.upstreamRequestBody,
+          upstreamRequestContentType: res.locals?.upstreamRequestContentType,
+          responseBody: rawResponseBody,
+          responseContentType,
+          protocolType,
+          tokenUsage,
+          modelRoute: res.locals?.modelRoute || null,
+          authAccountId: res.locals?.authAccountId || null,
+          proxyApiKeyId: res.locals?.proxyApiKeyId || null,
+          proxyApiKeyLabel: res.locals?.proxyApiKeyLabel || "",
+          upstreamRetryCount: res.locals?.upstreamRetryCount,
+          upstreamErrorCode: res.locals?.upstreamErrorCode,
+          upstreamErrorDetail: res.locals?.upstreamErrorDetail,
+          compatibilityHint: res.locals?.compatibilityHint,
+          transportType: "http"
+        });
+      } catch (err) {
+        recordAuditError(err, {
+          method: req.method,
+          rawPath,
+          statusCode: res.statusCode,
+          transportType: "http",
+          phase: "response_finish"
+        });
+      }
     });
 
     next();
@@ -826,7 +981,12 @@ export function createProxyRouteHandlers(context) {
       target?.endpointKind === "responses" &&
       req.method === "POST" &&
       isResponsesCreatePath(incoming.pathname);
+    const isResponsesCompactRequest =
+      target?.endpointKind === "responses" &&
+      req.method === "POST" &&
+      isResponsesCompactPath(incoming.pathname);
     const previousResponseId = isResponsesCreateRequest ? extractPreviousResponseId(requestBody) : "";
+    const affinityLookupResponseId = extractResponsesAffinityLookupId(req, target, requestBody, incoming.pathname);
 
     let auth;
     let releaseAuthLease = () => {};
@@ -861,13 +1021,16 @@ export function createProxyRouteHandlers(context) {
           return;
         }
         rememberCodexResponseAffinity(completed, auth);
+        if (isResponsesCompactRequest) {
+          rememberCodexResponsesCompactChainEntry(parsedRequestBody, completed);
+        }
       };
       const forgetPinnedAffinity = (statusCode, reason) => {
         if (responsesCreateSession) {
           responsesCreateSession.forgetPinnedAffinity(statusCode, reason);
           return;
         }
-        maybeForgetPinnedCodexResponseAffinity(previousResponseId, statusCode, reason);
+        maybeForgetPinnedCodexResponseAffinity(previousResponseId || affinityLookupResponseId, statusCode, reason);
       };
 
       if (isResponsesCreateRequest) {
@@ -910,11 +1073,23 @@ export function createProxyRouteHandlers(context) {
         let body = requestBody;
         let upstreamAuditBody = parsedRequestBody ?? body;
         const headers = buildForwardHeaders(req.headers);
+        const preferredPoolEntryId = resolvePinnedCodexPoolEntryId(req, target, requestBody, incoming.pathname);
+        let pinnedCodexRequest = false;
 
         try {
-          auth = await getValidAuthContext({ retainLease: true });
+          auth = await getValidAuthContext({ preferredPoolEntryId, retainLease: true });
           releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
           res.locals.authAccountId = auth.poolAccountId || auth.accountId || null;
+          pinnedCodexRequest =
+            preferredPoolEntryId.length > 0 &&
+            (auth.poolEntryId === preferredPoolEntryId || auth.poolAccountId === preferredPoolEntryId);
+          if (preferredPoolEntryId.length > 0 && !pinnedCodexRequest) {
+            res.status(409).json({
+              error: "response_id_account_unavailable",
+              message: "The response_id is pinned to a pooled account that is not currently selectable."
+            });
+            return;
+          }
         } catch (err) {
           res.status(401).json({
             error: "unauthorized",
@@ -970,7 +1145,7 @@ export function createProxyRouteHandlers(context) {
           headers.get("content-type") || req.headers?.["content-type"] || ""
         );
 
-        const canRetryWithPool = isCodexPoolRetryEnabled();
+        const canRetryWithPool = isCodexPoolRetryEnabled() && !pinnedCodexRequest;
         const maxAttempts = canRetryWithPool ? 2 : 1;
         for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
           try {
@@ -1167,6 +1342,40 @@ export function createProxyRouteHandlers(context) {
 
       const upstreamContentType = parseContentType(upstream.headers.get("content-type") || "");
 
+      if (isResponsesCompactRequest && upstream.ok && !upstreamContentType.includes("event-stream")) {
+        let raw;
+        try {
+          raw = await readUpstreamTextOrThrow(upstream);
+        } catch (err) {
+          const details = extractUpstreamTransportError(err);
+          noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          await markPoolFailure(`Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`, 502);
+          res.status(502).json({
+            error: "upstream_body_read_failed",
+            message: err.message,
+            code: details.code || details.name || null,
+            detail: details.detail || null,
+            retry_count: Number(res.locals?.upstreamRetryCount || 0)
+          });
+          return;
+        }
+
+        const completed = extractCompletedResponseFromJson(raw);
+        if (completed?.id) {
+          res.locals.tokenUsage = completed.usage || null;
+          rememberCompletion(completed);
+        }
+        await markPoolSuccess();
+        res.status(upstream.status);
+        upstream.headers.forEach((value, key) => {
+          if (!hopByHop.has(key.toLowerCase())) {
+            res.setHeader(key, value);
+          }
+        });
+        res.send(raw);
+        return;
+      }
+
       if (
         isResponsesCreateRequest &&
         !collectCompletedResponseAsJson &&
@@ -1301,6 +1510,7 @@ export function createProxyRouteHandlers(context) {
     geminiNativeProxy: handleV1BetaProxyRoute,
     anthropicNativeProxy: handleV1MessagesProxyRoute,
     recordRecentProxyRequest,
+    recordAuditError,
     openResponsesCreateProxySession,
     openAIProxy: handleV1ProxyRoute
   };

@@ -1,5 +1,5 @@
 const INVALID_PROXY_API_KEY_MESSAGE =
-  "Invalid API key. Use one of: Authorization: Bearer <your_proxy_api_key>, x-api-key, x-goog-api-key, or ?key=<your_proxy_api_key>.";
+  "Invalid API key. Use one of: Authorization: Bearer <your_proxy_api_key>, x-api-key, or x-goog-api-key.";
 const MISSING_PROXY_API_KEY_CONFIGURATION_MESSAGE =
   "Proxy API access is locked until a proxy API key is generated or LOCAL_API_KEY/CODEX_OAUTH_SHARED_API_KEY is configured.";
 
@@ -31,14 +31,16 @@ export function authorizeProxyApiRequest(req, context) {
     recordManagedProxyApiKeyUsage(managedMatch);
     return {
       ok: true,
-      proxyApiKeyId: managedMatch.id || null
+      proxyApiKeyId: managedMatch.id || null,
+      proxyApiKeyLabel: managedMatch.label || managedMatch.prefix || managedMatch.id || null
     };
   }
 
   if (legacyKey && provided === legacyKey) {
     return {
       ok: true,
-      proxyApiKeyId: null
+      proxyApiKeyId: "legacy-local-api-key",
+      proxyApiKeyLabel: "legacy env LOCAL_API_KEY"
     };
   }
 

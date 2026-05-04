@@ -34,8 +34,7 @@ test("admin config accepts a live cloudflared process and persists autoInstall=f
     codex: {
       defaultModel: "gpt-5.4",
       defaultInstructions: "",
-      defaultServiceTier: "default",
-      defaultReasoningEffort: "medium"
+      defaultServiceTier: "default"
     },
     codexOAuth: {
       multiAccountEnabled: true,
@@ -149,8 +148,7 @@ test("admin config persists runtimePort without changing the active port", async
     codex: {
       defaultModel: "gpt-5.4",
       defaultInstructions: "",
-      defaultServiceTier: "default",
-      defaultReasoningEffort: "medium"
+      defaultServiceTier: "default"
     },
     codexOAuth: {
       multiAccountEnabled: true,
@@ -274,8 +272,7 @@ test("admin config persists multiAccountPoolFilter", async () => {
     codex: {
       defaultModel: "gpt-5.4",
       defaultInstructions: "",
-      defaultServiceTier: "default",
-      defaultReasoningEffort: "medium"
+      defaultServiceTier: "default"
     },
     codexOAuth: {
       multiAccountEnabled: true,

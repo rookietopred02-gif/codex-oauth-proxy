@@ -6,6 +6,7 @@ export function createRequestListUi(deps) {
     t,
     escapeHtml,
     fmtToken,
+    formatDateTime,
     readStoredBool,
     writeStoredString,
     recordingStorageKey
@@ -47,7 +48,10 @@ export function createRequestListUi(deps) {
         const requestId = String(row?.id || `${row?.ts || Date.now()}-${index}`);
         visibleIds.add(requestId);
         requestDetailMap.set(requestId, row);
-        const requestTime = new Date(row.ts).toLocaleTimeString();
+        const requestTime =
+          typeof formatDateTime === "function"
+            ? formatDateTime(row.ts, { dateStyle: undefined, timeStyle: "medium" })
+            : new Date(row.ts).toLocaleTimeString();
         const statusClass = row.status >= 400 ? "req-status-bad" : "req-status-ok";
         const routeText =
           row.requestedModel && row.mappedModel

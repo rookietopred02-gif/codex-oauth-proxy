@@ -31,8 +31,7 @@ function createConfig() {
     codex: {
       defaultModel: "gpt-5",
       defaultInstructions: "",
-      defaultServiceTier: "auto",
-      defaultReasoningEffort: "medium"
+      defaultServiceTier: "auto"
     },
     codexOAuth: {
       sharedApiKey: "",

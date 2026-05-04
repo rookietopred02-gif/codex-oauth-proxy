@@ -4,9 +4,11 @@ import test from "node:test";
 test("direct self-test captures codex usage headers back into the pooled account store", async () => {
   process.env.CODEX_PRO_MAX_DISABLE_AUTOSTART = "1";
   const originalFetch = globalThis.fetch;
+  let capturedRequestBody = null;
   try {
     globalThis.fetch = async (_url, init = {}) => {
       assert.equal(init?.headers?.["accept-encoding"], "identity");
+      capturedRequestBody = JSON.parse(String(init?.body || "{}"));
       return new Response(
         'event: response.completed\n' +
           'data: {"type":"response.completed","response":{"id":"resp_self_test","status":"completed","model":"gpt-5.4","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n',
@@ -73,6 +75,8 @@ test("direct self-test captures codex usage headers back into the pooled account
 
       assert.equal(result.status, "completed");
       assert.equal(result.preview, "done");
+      assert.equal(result.reasoningEffort, "low");
+      assert.equal(capturedRequestBody?.reasoning?.effort, "low");
       assert.equal(account?.usage_snapshot?.plan_type, "team");
       assert.equal(account?.usage_snapshot?.primary?.used_percent, 25);
       assert.equal(account?.usage_snapshot?.primary?.remaining_percent, 75);

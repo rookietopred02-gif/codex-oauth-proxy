@@ -27,6 +27,7 @@ export function createRequestDetailModal(deps) {
     tt,
     escapeHtml,
     fmtToken,
+    formatDateTime,
     copyTextToClipboard,
     showCopyError,
     resolveProtocolLabel,
@@ -170,7 +171,12 @@ export function createRequestDetailModal(deps) {
   }
 
   function buildReqDetailMetaItems(row) {
-    const timeText = row?.ts ? new Date(Number(row.ts)).toLocaleString() : "-";
+    const timeText =
+      row?.ts && typeof formatDateTime === "function"
+        ? formatDateTime(row.ts, { dateStyle: "medium", timeStyle: "medium" })
+        : row?.ts
+          ? new Date(Number(row.ts)).toLocaleString()
+          : "-";
     const latencyText = Number.isFinite(Number(row?.durationMs)) ? `${Number(row.durationMs)} ms` : "-";
     const tokenText = tt("token_usage_format", {
       input: fmtToken(row?.inputTokens),

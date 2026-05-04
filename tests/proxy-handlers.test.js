@@ -14,6 +14,10 @@ import {
   OFFICIAL_RESPONSES_METHOD_CONTRACT,
   RESPONSES_METHOD_CONTRACT
 } from "../src/protocols/openai/responses-contract.js";
+import {
+  buildResponsesChainEntry,
+  expandResponsesRequestBodyFromChain
+} from "../src/responses-chain-store.js";
 
 const responsesOpenApiContract = JSON.parse(
   readFileSync(new URL("./fixtures/openai-responses-openapi.json", import.meta.url), "utf8")
@@ -113,6 +117,10 @@ function createHandlers({ normalizeResponsesImpl, fetchImpl, configOverrides = {
       upstreamMode: "codex-chatgpt",
       upstreamBaseUrl: "https://example.test",
       authMode: "codex-oauth",
+      requestAudit: {
+        capturePackets: false,
+        maxPacketChars: 65536
+      },
       codex: {
         defaultModel: "gpt-5.4"
       },
@@ -468,11 +476,15 @@ test("recent proxy audit rows mark normal requests as HTTP transport", () => {
   const row = handlers.recordRecentProxyRequest({
     method: "POST",
     rawPath: "/v1/responses",
-    statusCode: 200
+    statusCode: 200,
+    proxyApiKeyId: "key_alpha",
+    proxyApiKeyLabel: "alpha-client"
   });
 
   assert.equal(row.transportType, "http");
   assert.equal(row.method, "POST");
+  assert.equal(row.proxyApiKeyId, "key_alpha");
+  assert.equal(row.proxyApiKeyLabel, "alpha-client");
   assert.equal(appendedRows[0]?.transportType, "http");
 });
 
@@ -1395,7 +1407,172 @@ test("Responses create proxy session fails previous_response_id without a local 
   assert.equal(fetchCalls, 0);
 });
 
-test("audit middleware preserves full packets without truncation even if limits are small", () => {
+test("POST /v1/responses/compact pins source account and preserves the local response chain", async () => {
+  let capturedUrl = "";
+  let capturedInit = null;
+  let capturedPreferredPoolEntryId = "";
+  let rememberedEntry = null;
+  let rememberedAffinity = null;
+  const sourceEntry = {
+    responseId: "resp_prev",
+    inputHistory: [
+      { role: "user", content: [{ type: "input_text", text: "上一輪使用者 prompt" }] },
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "上一輪回答" }]
+      }
+    ],
+    updatedAt: Date.now()
+  };
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("compact must not run create normalization");
+    },
+    async fetchImpl(url, init) {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response(
+        JSON.stringify({
+          id: "resp_compact",
+          status: "completed",
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "compact summary" }]
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    },
+    contextOverrides: {
+      isCodexMultiAccountEnabled() {
+        return true;
+      },
+      isCodexPoolRetryEnabled() {
+        return true;
+      },
+      async getValidAuthContext(options = {}) {
+        capturedPreferredPoolEntryId = options.preferredPoolEntryId || "";
+        return {
+          accessToken: "token",
+          accountId: "acct_team",
+          poolEntryId: capturedPreferredPoolEntryId,
+          poolAccountId: capturedPreferredPoolEntryId,
+          releaseLease() {}
+        };
+      },
+      extractCompletedResponseFromJson(raw) {
+        return JSON.parse(raw);
+      },
+      codexResponseAffinity: {
+        lookup(responseId) {
+          assert.equal(responseId, "resp_prev");
+          return { poolEntryId: "pool_team", accountId: "acct_team" };
+        },
+        remember(responseId, affinity) {
+          rememberedAffinity = { responseId, affinity };
+        },
+        forget() {}
+      },
+      codexResponsesChain: {
+        lookup(responseId) {
+          assert.equal(responseId, "resp_prev");
+          return sourceEntry;
+        },
+        remember(entry) {
+          rememberedEntry = entry;
+        }
+      },
+      buildResponsesChainEntry,
+      expandResponsesRequestBodyFromChain
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses/compact",
+    body: { response_id: "resp_prev", summary: "short" }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(capturedUrl, "https://example.test/codex/responses/compact");
+  assert.equal(Buffer.from(capturedInit.body).toString("utf8"), JSON.stringify({ response_id: "resp_prev", summary: "short" }));
+  assert.equal(capturedPreferredPoolEntryId, "pool_team");
+  assert.equal(rememberedAffinity.responseId, "resp_compact");
+  assert.equal(rememberedEntry.responseId, "resp_compact");
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_compact",
+      input: [{ role: "user", content: [{ type: "input_text", text: "compact 後的新問題" }] }]
+    },
+    rememberedEntry
+  );
+  const replayTexts = expanded.input
+    .flatMap((item) => (Array.isArray(item.content) ? item.content : []))
+    .map((part) => part.text)
+    .filter(Boolean);
+  assert.deepEqual(replayTexts, ["上一輪使用者 prompt", "上一輪回答", "compact summary", "compact 後的新問題"]);
+});
+
+test("POST /v1/responses/compact fails locally instead of falling back from the pinned account", async () => {
+  let fetchCalls = 0;
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("compact must not run create normalization");
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      throw new Error("compact should not be sent to an unpinned fallback account");
+    },
+    contextOverrides: {
+      isCodexMultiAccountEnabled() {
+        return true;
+      },
+      isCodexPoolRetryEnabled() {
+        return true;
+      },
+      async getValidAuthContext() {
+        return {
+          accessToken: "token",
+          accountId: "acct_free",
+          poolEntryId: "pool_free",
+          poolAccountId: "pool_free",
+          releaseLease() {}
+        };
+      },
+      codexResponseAffinity: {
+        lookup(responseId) {
+          assert.equal(responseId, "resp_prev");
+          return { poolEntryId: "pool_team", accountId: "acct_team" };
+        },
+        remember() {},
+        forget() {}
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses/compact",
+    body: { response_id: "resp_prev", summary: "short" }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.jsonPayload?.error, "response_id_account_unavailable");
+});
+
+test("audit middleware omits persisted packets by default", () => {
   let capturedRow = null;
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
@@ -1438,8 +1615,100 @@ test("audit middleware preserves full packets without truncation even if limits 
   res.write("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
   res.end();
 
-  assert.equal(capturedRow?.requestPacket, JSON.stringify({ prompt: "abcdefghijklmnopqrstuvwxyz" }));
-  assert.equal(capturedRow?.responsePacket, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+  assert.equal(capturedRow?.requestPacket, "");
+  assert.equal(capturedRow?.upstreamRequestPacket, "");
+  assert.equal(capturedRow?.responsePacket, "");
+});
+
+test("audit middleware captures packets only when explicitly enabled", () => {
+  let capturedRow = null;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      return {
+        body: rawBody,
+        json: JSON.parse(rawBody.toString("utf8")),
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      throw new Error("not used");
+    },
+    configOverrides: {
+      requestAudit: {
+        capturePackets: true,
+        maxPacketChars: 4
+      }
+    },
+    contextOverrides: {
+      runtimeStats: { totalRequests: 0, okRequests: 0, errorRequests: 0 },
+      recentRequestsStore: {
+        append(row) {
+          capturedRow = row;
+          return { recentRequests: [row] };
+        }
+      },
+      formatPayloadForAudit(raw, _contentType, maxChars = 0) {
+        let text = "";
+        if (Buffer.isBuffer(raw)) text = raw.toString("utf8");
+        else if (raw && typeof raw === "object") text = JSON.stringify(raw);
+        else text = String(raw || "");
+        return maxChars > 0 && text.length > maxChars ? text.slice(0, maxChars) : text;
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { prompt: "abcdefghijklmnopqrstuvwxyz" }
+  });
+  const res = createMockResponse();
+
+  handlers.auditMiddleware(req, res, () => {});
+  res.setHeader("content-type", "text/plain");
+  res.write("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+  res.end();
+
+  assert.equal(capturedRow?.requestPacket, '{"pr');
+  assert.equal(capturedRow?.responsePacket, "ABCD");
+});
+
+test("audit middleware records audit_error instead of throwing from finish hooks", () => {
+  const runtimeStats = { totalRequests: 0, okRequests: 0, errorRequests: 0 };
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      return {
+        body: rawBody,
+        json: JSON.parse(rawBody.toString("utf8")),
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      throw new Error("not used");
+    },
+    contextOverrides: {
+      runtimeStats,
+      estimateOpenAIChatCompletionTokens() {
+        throw new ReferenceError("soak estimator missing");
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/chat/completions",
+    body: { messages: [{ role: "user", content: "trigger failed request audit estimator" }] }
+  });
+  const res = createMockResponse();
+
+  handlers.auditMiddleware(req, res, () => {});
+  res.status(400);
+
+  assert.doesNotThrow(() => res.end(JSON.stringify({ error: "bad_request" })));
+  assert.equal(runtimeStats.auditErrors, 1);
+  assert.equal(runtimeStats.lastAuditError?.type, "audit_error");
+  assert.equal(runtimeStats.lastAuditError?.phase, "response_finish");
+  assert.match(runtimeStats.lastAuditError?.message || "", /soak estimator missing/);
 });
 
 test("Responses create JSON fallback accepts completed non-SSE upstream payloads", async () => {

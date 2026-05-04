@@ -120,7 +120,7 @@ function createHelpers(overrides = {}) {
       return status === "completed" ? "stop" : "length";
     },
     resolveReasoningEffort(value) {
-      return value || "medium";
+      return value || null;
     },
     resolveCodexCompatibleRoute(model) {
       return {
@@ -214,6 +214,31 @@ test("runCodexConversationViaOAuth does not inject the configured default temper
 
   const captured = getCapturedRequest();
   assert.equal(Object.hasOwn(captured?.json || {}, "temperature"), false);
+});
+
+test("runCodexConversationViaOAuth does not inject reasoning effort when the client omits it", async () => {
+  const { helpers, getCapturedRequest } = createHelpers();
+
+  await helpers.runCodexConversationViaOAuth({
+    model: "gpt-5.4",
+    systemText: "system",
+    conversation: [{ role: "user", text: "hello" }]
+  });
+
+  const captured = getCapturedRequest();
+  assert.equal(Object.hasOwn(captured?.json || {}, "reasoning"), false);
+});
+
+test("buildCodexResponsesRequestBody preserves explicit client reasoning effort", () => {
+  const { helpers } = createHelpers();
+
+  const built = helpers.buildCodexResponsesRequestBody({
+    model: "gpt-5.4",
+    input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }],
+    reasoningEffort: "low"
+  });
+
+  assert.equal(built.body.reasoning?.effort, "low");
 });
 
 test("runCodexConversationViaOAuth drops explicit sampling parameters for codex upstream", async () => {

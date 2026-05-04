@@ -10,6 +10,7 @@ import {
   isResponsesFailureEventType,
   isResponsesSuccessTerminalEventType
 } from "../openai/responses-contract.js";
+import { estimateTokenCountFromText } from "../../http/token-estimation.js";
 
 const SUPPORTED_LOCAL_IMAGE_EXTENSIONS = new Map([
   [".png", "image/png"],
@@ -909,12 +910,6 @@ export function createAnthropicLocalCompatHelpers(context) {
 
     if (converted.length > 0) return converted;
     return [{ role: "user", content: [{ type: "input_text", text: "" }] }];
-  }
-
-  function estimateTokenCountFromText(text) {
-    const source = typeof text === "string" ? text : String(text || "");
-    if (!source) return 0;
-    return Math.max(1, Math.ceil(Buffer.byteLength(source, "utf8") / 4));
   }
 
   function estimateAnthropicCountTokens(rawBody, parsedBody = undefined) {
