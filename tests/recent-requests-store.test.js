@@ -95,6 +95,81 @@ test("recent requests store still loads the legacy inline JSON format", async ()
   assert.equal(detail?.responsePacket, "legacy-response");
 });
 
+test("recent requests store decodes legacy byte-index packet rows", async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-pro-max-recent-requests-bytes-"));
+  const historyPath = path.join(tempDir, "recent-requests.json");
+  const rowsDirectory = `${historyPath}.rows`;
+  const responsePacket =
+    'event: response.completed\n' +
+    'data: {"type":"response.completed","response":{"status":"completed"}}\n\n';
+  const legacyResponsePacket = JSON.stringify(
+    Object.fromEntries(Buffer.from(responsePacket, "utf8").entries()),
+    null,
+    2
+  );
+
+  await fs.mkdir(rowsDirectory, { recursive: true });
+  await fs.writeFile(
+    path.join(rowsDirectory, "req_legacy_bytes.json"),
+    JSON.stringify(
+      {
+        id: "req_legacy_bytes",
+        path: "/v1/responses",
+        responseContentType: "text/event-stream",
+        responsePacket: legacyResponsePacket
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  await fs.writeFile(
+    historyPath,
+    JSON.stringify(
+      {
+        storageVersion: 3,
+        updatedAt: Date.now(),
+        count: 1,
+        recentRequests: [
+          {
+            id: "req_legacy_bytes",
+            file: "req_legacy_bytes.json",
+            summary: {
+              id: "req_legacy_bytes",
+              responseContentType: "text/event-stream",
+              requestPacketChars: 0,
+              requestPacketBytes: 0,
+              upstreamRequestPacketChars: 0,
+              upstreamRequestPacketBytes: 0,
+              responsePacketChars: legacyResponsePacket.length,
+              responsePacketBytes: Buffer.byteLength(legacyResponsePacket, "utf8")
+            }
+          }
+        ]
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const store = createRecentRequestsStore({
+    filePath: historyPath,
+    maxEntries: 5
+  });
+  await store.load();
+
+  const detail = await store.getById("req_legacy_bytes");
+  assert.equal(detail?.responsePacket, responsePacket);
+
+  const preview = await store.getPacketSliceById("req_legacy_bytes", "responsePacket", {
+    offset: 0,
+    limit: 65536
+  });
+  assert.equal(preview?.text, responsePacket);
+  assert.equal(preview?.totalChars, responsePacket.length);
+});
+
 test("recent requests store backfills cached input tokens from response packets", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-pro-max-recent-requests-cache-"));
   const historyPath = path.join(tempDir, "recent-requests.json");

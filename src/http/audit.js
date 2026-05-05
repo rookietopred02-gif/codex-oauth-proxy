@@ -72,6 +72,10 @@ export function toChunkBuffer(chunk, encoding = "utf8") {
   if (chunk === undefined || chunk === null) return Buffer.alloc(0);
   if (Buffer.isBuffer(chunk)) return chunk;
   if (chunk instanceof Uint8Array) return Buffer.from(chunk);
+  if (ArrayBuffer.isView(chunk)) {
+    return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  }
+  if (chunk instanceof ArrayBuffer) return Buffer.from(chunk);
   if (typeof chunk === "string") return Buffer.from(chunk, encoding || "utf8");
   return Buffer.from(String(chunk), encoding || "utf8");
 }
@@ -96,19 +100,110 @@ export function sanitizeAuditPayload(text) {
   return out;
 }
 
-export function formatPayloadForAudit(raw, contentType, maxChars = 0) {
-  let text = "";
+function formatDecodedAuditText(text, contentType) {
+  const ct = parseContentType(contentType);
+  const looksJson = ct.includes("json") || /^[\s]*[\[{]/.test(text);
+  if (looksJson) {
+    try {
+      return JSON.stringify(redactAuditValue(JSON.parse(text)), null, 2);
+    } catch {
+      // keep original when non-standard JSON
+    }
+  }
+  return sanitizeAuditPayload(text);
+}
+
+function textFromAuditBytes(raw) {
   if (Buffer.isBuffer(raw)) {
     if (raw.length === 0) return "";
-    text = raw.toString("utf8");
-  } else if (raw && typeof raw === "object") {
-    try {
-      text = JSON.stringify(raw, null, 2);
-    } catch {
-      text = String(raw);
+    return raw.toString("utf8");
+  }
+  if (raw instanceof Uint8Array) {
+    if (raw.byteLength === 0) return "";
+    return Buffer.from(raw).toString("utf8");
+  }
+  if (ArrayBuffer.isView(raw)) {
+    if (raw.byteLength === 0) return "";
+    return Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength).toString("utf8");
+  }
+  if (raw instanceof ArrayBuffer) {
+    if (raw.byteLength === 0) return "";
+    return Buffer.from(raw).toString("utf8");
+  }
+  return null;
+}
+
+function isMostlyText(value) {
+  const sample = String(value || "").slice(0, 4096);
+  if (!sample) return false;
+  let printable = 0;
+  for (const char of sample) {
+    const code = char.charCodeAt(0);
+    if (code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127)) {
+      printable += 1;
     }
-  } else {
-    text = String(raw || "");
+  }
+  return printable / sample.length >= 0.9;
+}
+
+function looksLikeDecodedAuditText(value, contentType) {
+  const text = String(value || "");
+  if (!text) return false;
+  const ct = parseContentType(contentType);
+  if (ct.includes("json") || ct.includes("event-stream") || ct.startsWith("text/")) {
+    return isMostlyText(text);
+  }
+  return /(^|\n)\s*(event:|data:)/.test(text) || /^[\s]*[\[{]/.test(text) || isMostlyText(text);
+}
+
+export function decodeIndexedByteAuditPayload(text, contentType = "") {
+  const source = typeof text === "string" ? text : "";
+  const trimmed = source.trimStart();
+  if (!/^\{\s*"0"\s*:/.test(trimmed)) return "";
+
+  const bytePairs = [];
+  const pairPattern = /"(\d+)"\s*:\s*(\d{1,3})/g;
+  let expectedIndex = 0;
+  let match;
+  while ((match = pairPattern.exec(trimmed))) {
+    const index = Number(match[1]);
+    const byte = Number(match[2]);
+    if (index !== expectedIndex) break;
+    if (!Number.isInteger(byte) || byte < 0 || byte > 255) return "";
+    bytePairs.push(byte);
+    expectedIndex += 1;
+  }
+
+  if (bytePairs.length < 8) return "";
+  let decoded = Buffer.from(bytePairs).toString("utf8");
+  if (!looksLikeDecodedAuditText(decoded, contentType)) return "";
+
+  decoded = formatDecodedAuditText(decoded, contentType);
+  if (/\.\.\. \[truncated \d+ chars\]/.test(source)) {
+    decoded = `${decoded}\n\n... [truncated legacy byte-index packet]`;
+  }
+  return sanitizeAuditPayload(decoded);
+}
+
+export function normalizeAuditPacketText(text, contentType = "") {
+  if (typeof text !== "string" || text.length === 0) return "";
+  return decodeIndexedByteAuditPayload(text, contentType) || text;
+}
+
+export function formatPayloadForAudit(raw, contentType, maxChars = 0) {
+  const byteText = textFromAuditBytes(raw);
+  const decodedFromBytes = byteText !== null;
+  let text = byteText;
+  if (!decodedFromBytes) {
+    if (raw && typeof raw === "object") {
+      try {
+        text = JSON.stringify(raw, null, 2);
+      } catch {
+        text = String(raw);
+      }
+    } else {
+      text = String(raw || "");
+    }
   }
   if (!text) return "";
 
@@ -120,7 +215,7 @@ export function formatPayloadForAudit(raw, contentType, maxChars = 0) {
     } catch {
       // keep original when non-standard JSON
     }
-  } else if (raw && typeof raw === "object") {
+  } else if (!decodedFromBytes && raw && typeof raw === "object") {
     try {
       text = JSON.stringify(redactAuditValue(raw), null, 2);
     } catch {

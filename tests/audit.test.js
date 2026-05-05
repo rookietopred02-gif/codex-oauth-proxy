@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatPayloadForAudit, inferProtocolType, sanitizeAuditPath, sanitizeAuditPayload } from "../src/http/audit.js";
+import {
+  decodeIndexedByteAuditPayload,
+  formatPayloadForAudit,
+  inferProtocolType,
+  sanitizeAuditPath,
+  sanitizeAuditPayload,
+  toChunkBuffer
+} from "../src/http/audit.js";
 
 test("inferProtocolType maps Gemini alias paths to the Gemini protocol", () => {
   assert.equal(inferProtocolType("/v1/models/gemini-2.5-pro:generateContent"), "gemini-v1beta");
@@ -30,6 +37,36 @@ test("formatPayloadForAudit recursively redacts common secret fields", () => {
   assert.match(formatted, /safe prompt/);
   assert.doesNotMatch(formatted, /p@ssw0rd|client-secret-value|refresh-secret-value|token-secret|BEGIN PRIVATE KEY/);
   assert.match(formatted, /\[REDACTED\]/);
+});
+
+test("formatPayloadForAudit decodes typed response bytes as text", () => {
+  const packet =
+    'event: response.completed\n' +
+    'data: {"type":"response.completed","response":{"status":"completed"}}\n\n';
+  const bytes = new Uint8Array(Buffer.from(packet, "utf8"));
+
+  const formatted = formatPayloadForAudit(bytes, "text/event-stream");
+
+  assert.equal(formatted, packet);
+  assert.doesNotMatch(formatted, /"0"\s*:\s*101/);
+});
+
+test("decodeIndexedByteAuditPayload recovers legacy typed-array JSON packets", () => {
+  const packet =
+    'event: response.completed\n' +
+    'data: {"type":"response.completed","response":{"status":"completed"}}\n\n';
+  const legacyPacket = JSON.stringify(Object.fromEntries(Buffer.from(packet, "utf8").entries()), null, 2);
+
+  const decoded = decodeIndexedByteAuditPayload(legacyPacket, "text/event-stream");
+
+  assert.equal(decoded, packet);
+});
+
+test("toChunkBuffer preserves ArrayBuffer view slices", () => {
+  const source = Buffer.from("xxevent: ok\n\nyy", "utf8");
+  const view = new DataView(source.buffer, source.byteOffset + 2, "event: ok\n\n".length);
+
+  assert.equal(toChunkBuffer(view).toString("utf8"), "event: ok\n\n");
 });
 
 test("sanitizeAuditPayload redacts bearer tokens and private key blocks in text", () => {

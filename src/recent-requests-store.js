@@ -5,6 +5,7 @@ import {
   mergeNormalizedTokenUsage,
   normalizeTokenUsage
 } from "./http/token-usage.js";
+import { normalizeAuditPacketText } from "./http/audit.js";
 
 const DEFAULT_MAX_ENTRIES = 120;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 50;
@@ -18,9 +19,22 @@ function clampMaxEntries(value) {
   return Math.max(1, Math.floor(parsed));
 }
 
+function getPacketContentType(row, field) {
+  if (field === "requestPacket") return row.requestContentType;
+  if (field === "upstreamRequestPacket") return row.upstreamRequestContentType;
+  if (field === "responsePacket") return row.responseContentType;
+  return "";
+}
+
 function normalizeRow(row) {
   if (!row || typeof row !== "object" || Array.isArray(row)) return null;
-  return backfillRowTokenUsage({ ...row });
+  const normalized = { ...row };
+  for (const field of REQUEST_PACKET_FIELDS) {
+    if (typeof normalized[field] === "string") {
+      normalized[field] = normalizeAuditPacketText(normalized[field], getPacketContentType(normalized, field));
+    }
+  }
+  return backfillRowTokenUsage(normalized);
 }
 
 function parseJsonLoose(text) {
