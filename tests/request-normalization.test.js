@@ -150,6 +150,23 @@ test("normalizeCodexResponsesRequestBody injects configured service tier when om
   assert.equal(normalized.json.service_tier, "priority");
 });
 
+test("normalizeCodexResponsesRequestBody keeps service tier visible near the top of large payloads", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      instructions: "x".repeat(100_000),
+      input: "hello"
+    }), "utf8")
+  );
+  const upstreamBody = normalized.body.toString("utf8");
+
+  assert.equal(normalized.json.service_tier, "priority");
+  assert(upstreamBody.indexOf('"service_tier"') > 0);
+  assert(upstreamBody.indexOf('"service_tier"') < upstreamBody.indexOf('"instructions"'));
+  assert(upstreamBody.indexOf('"service_tier"') < 64);
+});
+
 test("normalizeCodexResponsesRequestBody preserves explicit client service tier", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
@@ -966,6 +983,22 @@ test("normalizeChatCompletionsRequestBody does not inject the configured default
   );
 
   assert.equal(Object.hasOwn(normalized.json, "temperature"), false);
+});
+
+test("normalizeChatCompletionsRequestBody injects configured service tier for codex upstream", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeChatCompletionsRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      messages: [{ role: "user", content: "hello" }]
+    }), "utf8")
+  );
+  const upstreamBody = normalized.body.toString("utf8");
+
+  assert.equal(normalized.json.service_tier, "priority");
+  assert(upstreamBody.indexOf('"service_tier"') > 0);
+  assert(upstreamBody.indexOf('"service_tier"') < upstreamBody.indexOf('"instructions"'));
+  assert(upstreamBody.indexOf('"service_tier"') < 64);
 });
 
 test("normalizeChatCompletionsRequestBody drops explicit sampling parameters for codex upstream", () => {

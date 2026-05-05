@@ -80,6 +80,23 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     }
   }
 
+  function orderResponsesCreateControlFields(source) {
+    if (!source || typeof source !== "object" || Array.isArray(source)) return source;
+    const priorityFields = ["model", "service_tier", "stream", "store"];
+    const ordered = {};
+    for (const field of priorityFields) {
+      if (Object.prototype.hasOwnProperty.call(source, field)) {
+        ordered[field] = source[field];
+      }
+    }
+    for (const [field, value] of Object.entries(source)) {
+      if (!priorityFields.includes(field)) {
+        ordered[field] = value;
+      }
+    }
+    return ordered;
+  }
+
   function hasExplicitResponsesInstructionOverride(requestBody, options = {}) {
     const settings =
       requestBody && typeof requestBody === "object" && !Array.isArray(requestBody) && requestBody.settings &&
@@ -108,9 +125,9 @@ export function createOpenAIRequestNormalizationHelpers(context) {
       const fallbackInstructions = config.codex.defaultInstructions;
       const json = {
         model: modelRoute.mappedModel,
+        service_tier: config.codex.defaultServiceTier,
         stream: true,
         store: false,
-        service_tier: config.codex.defaultServiceTier,
         instructions: fallbackInstructions,
         input: [{ role: "user", content: [{ type: "input_text", text: "" }] }]
       };
@@ -199,10 +216,11 @@ export function createOpenAIRequestNormalizationHelpers(context) {
       explicit: collaborationMode.explicit,
       originalRequestBody: parsed
     });
+    const upstreamJson = orderResponsesCreateControlFields(normalized);
 
     return {
-      body: Buffer.from(JSON.stringify(normalized), "utf8"),
-      json: normalized,
+      body: Buffer.from(JSON.stringify(upstreamJson), "utf8"),
+      json: upstreamJson,
       collectCompletedResponseAsJson: !wantsStream,
       model: modelRoute.requestedModel,
       modelRoute
@@ -254,10 +272,11 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     if (normalizedChatToolChoice !== undefined) upstreamBody.tool_choice = normalizedChatToolChoice;
     if (parsed.tools !== undefined) upstreamBody.tools = normalizedChatTools;
     applyConfiguredServiceTierDefault(upstreamBody, parsed);
+    const upstreamJson = orderResponsesCreateControlFields(upstreamBody);
 
     return {
-      body: Buffer.from(JSON.stringify(upstreamBody), "utf8"),
-      json: upstreamBody,
+      body: Buffer.from(JSON.stringify(upstreamJson), "utf8"),
+      json: upstreamJson,
       wantsStream,
       model: modelRoute.requestedModel,
       modelRoute
