@@ -362,7 +362,8 @@ export function attachResponsesWebSocketServer(server, context) {
         }
 
         const upstreamContentType = String(session.upstream.headers.get("content-type") || "").toLowerCase();
-        if (!upstreamContentType.includes("text/event-stream")) {
+        const shouldTreatUpstreamAsSse = upstreamContentType.length === 0 || upstreamContentType.includes("text/event-stream");
+        if (!shouldTreatUpstreamAsSse) {
           const raw = await readUpstreamTextOrThrow(session.upstream);
           if (looksLikeSsePayload(raw)) {
             const parsedResult = parseResponsesResultFromSse(raw);

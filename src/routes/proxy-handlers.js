@@ -1380,6 +1380,7 @@ export function createProxyRouteHandlers(context) {
         isResponsesCreateRequest &&
         !collectCompletedResponseAsJson &&
         upstream.ok &&
+        upstreamContentType &&
         !upstreamContentType.includes("event-stream")
       ) {
         let raw;
@@ -1460,7 +1461,17 @@ export function createProxyRouteHandlers(context) {
         return;
       }
 
-      if (upstream.ok && upstreamContentType.includes("event-stream")) {
+      if (
+        upstream.ok &&
+        (upstreamContentType.includes("event-stream") ||
+          (isResponsesCreateRequest && !collectCompletedResponseAsJson && !upstreamContentType))
+      ) {
+        if (!upstreamContentType) {
+          res.setHeader("content-type", "text/event-stream; charset=utf-8");
+          res.setHeader("cache-control", "no-cache");
+          res.setHeader("connection", "keep-alive");
+          res.setHeader("x-accel-buffering", "no");
+        }
         try {
           const streamResult = await pipeSseAndCaptureTokenUsage(upstream, res);
           if (streamResult?.usage) {

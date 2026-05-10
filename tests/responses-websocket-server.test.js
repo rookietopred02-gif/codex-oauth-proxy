@@ -600,20 +600,17 @@ test("Responses WebSocket rejects completed JSON instead of falling back to HTTP
 test("Responses WebSocket accepts upstream SSE without content-type header", async () => {
   const server = createServer();
   const helpers = createResponsesHelpers();
+  const upstream = createControllableReadableStream();
   let rememberedCompletion = null;
 
   const runtime = attachResponsesWebSocketServer(server, {
     ...createAuthContext(),
     async openResponsesCreateProxySession() {
       return {
-        upstream: new Response(
-          'event: response.completed\n' +
-            'data: {"type":"response.completed","response":{"id":"resp_ws_sse_no_header","status":"completed","usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n',
-          {
-            status: 200,
-            headers: {}
-          }
-        ),
+        upstream: new Response(upstream.stream, {
+          status: 200,
+          headers: {}
+        }),
         release() {},
         async markFailure() {},
         async markSuccess() {},
@@ -656,6 +653,17 @@ test("Responses WebSocket accepts upstream SSE without content-type header", asy
       })
     );
 
+    upstream.enqueue(
+      'event: response.output_text.delta\n' +
+        'data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"hel"}\n\n'
+    );
+    const delta = await queue.next();
+    assert.equal(delta.type, "response.output_text.delta");
+    upstream.enqueue(
+      'event: response.completed\n' +
+        'data: {"type":"response.completed","response":{"id":"resp_ws_sse_no_header","status":"completed","usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n'
+    );
+    upstream.close();
     const completed = await queue.next();
     assert.equal(completed.type, "response.completed");
     assert.equal(completed.response?.id, "resp_ws_sse_no_header");
@@ -674,14 +682,13 @@ test("Responses WebSocket rejects truncated SSE without content-type header", as
     ...createAuthContext(),
     async openResponsesCreateProxySession() {
       return {
-        upstream: new Response(
+        upstream: new Response(createReadableStreamFromTextChunks([
           'event: response.output_text.delta\n' +
-            'data: {"type":"response.output_text.delta","delta":"hel"}\n\n',
-          {
-            status: 200,
-            headers: {}
-          }
-        ),
+            'data: {"type":"response.output_text.delta","delta":"hel"}\n\n'
+        ]), {
+          status: 200,
+          headers: {}
+        }),
         release() {},
         async markFailure() {},
         async markSuccess() {},
@@ -727,6 +734,8 @@ test("Responses WebSocket rejects truncated SSE without content-type header", as
       })
     );
 
+    const delta = await queue.next();
+    assert.equal(delta.type, "response.output_text.delta");
     const failed = await queue.next();
     assert.equal(failed.type, "response.failed");
     assert.equal(failed.response?.status_code, 502);

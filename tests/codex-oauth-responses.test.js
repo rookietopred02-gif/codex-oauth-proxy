@@ -280,6 +280,42 @@ test("openCodexResponsesStreamViaOAuth returns the upstream SSE response unchang
   assert.equal(getReleaseCount(), 1);
 });
 
+test("openCodexResponsesStreamViaOAuth streams upstream responses without content-type", async () => {
+  let readBufferedBody = false;
+  const upstreamResponse = new Response(new ReadableStream({
+    start() {}
+  }), {
+    status: 200,
+    headers: {}
+  });
+  const { helpers, getReleaseCount } = createHelpers({
+    async fetchWithUpstreamRetry() {
+      return {
+        response: upstreamResponse,
+        attempts: 1,
+        retryCount: 0,
+        lastTransportError: null
+      };
+    },
+    async readUpstreamTextOrThrow() {
+      readBufferedBody = true;
+      return "";
+    }
+  });
+
+  const opened = await helpers.openCodexResponsesStreamViaOAuth({
+    model: "gpt-5.4",
+    instructions: "system",
+    input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+  });
+
+  assert.equal(opened.bufferedCompletion, null);
+  assert.equal(opened.upstream, upstreamResponse);
+  assert.equal(readBufferedBody, false);
+  opened.release();
+  assert.equal(getReleaseCount(), 1);
+});
+
 test("openCodexResponsesStreamViaOAuth buffers completed JSON responses on stream fallback", async () => {
   const { helpers, getCapturedRequest, getReleaseCount } = createHelpers({
     async fetchWithUpstreamRetry() {

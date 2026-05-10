@@ -425,7 +425,7 @@ export function createCodexOAuthResponsesHelpers(context) {
         await maybeCaptureCodexUsageFromHeaders(currentAuth, response.headers, "response").catch(() => {});
 
         const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-        if (contentType.includes("text/event-stream")) {
+        if (!contentType || contentType.includes("text/event-stream")) {
           return {
             upstream: response,
             bufferedCompletion: null

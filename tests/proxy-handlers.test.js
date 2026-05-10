@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
+import { createServer, request } from "node:http";
 import test from "node:test";
 
 import { createProxyRouteHandlers } from "../src/routes/proxy-handlers.js";
@@ -1903,6 +1904,19 @@ test("Responses create stream fallback converts completed JSON payloads into SSE
 });
 
 test("Responses create stream accepts upstream SSE without content-type header", async () => {
+  const encoder = new TextEncoder();
+  let completedEnqueued = false;
+  let streamedBeforeCompletion = false;
+  const responseHelpers = createOpenAIResponsesCompatHelpers({
+    config: { codex: { defaultModel: "gpt-5.4" } },
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+  });
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
       return {
@@ -1913,37 +1927,274 @@ test("Responses create stream accepts upstream SSE without content-type header",
       };
     },
     async fetchImpl() {
-      return new Response(
-        'event: response.completed\n' +
-          'data: {"type":"response.completed","response":{"id":"resp_sse_no_header","status":"completed","usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n',
-        {
-          status: 200,
-          headers: {}
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'event: response.output_text.delta\n' +
+                'data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"hel"}\n\n'
+            )
+          );
+          setTimeout(() => {
+            completedEnqueued = true;
+            controller.enqueue(
+              encoder.encode(
+                'event: response.completed\n' +
+                  'data: {"type":"response.completed","response":{"id":"resp_sse_no_header","status":"completed","usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n'
+              )
+            );
+            controller.close();
+          }, 10);
         }
-      );
+      }), {
+        status: 200,
+        headers: {}
+      });
     },
     contextOverrides: {
-      parseResponsesResultFromSse() {
-        return {
-          completed: {
-            id: "resp_sse_no_header",
-            status: "completed",
-            usage: {
-              input_tokens: 4,
-              output_tokens: 5,
-              total_tokens: 9
-            },
-            output: [
-              {
-                type: "message",
-                role: "assistant",
-                content: [{ type: "output_text", text: "done" }]
-              }
-            ]
-          },
-          failed: null
-        };
+      parseResponsesResultFromSse: responseHelpers.parseResponsesResultFromSse,
+      pipeSseAndCaptureTokenUsage: responseHelpers.pipeSseAndCaptureTokenUsage
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { model: "gpt-5.4", stream: true, store: false, input: "hello" }
+  });
+  const res = createMockResponse();
+  const originalWrite = res.write.bind(res);
+  res.write = (chunk) => {
+    const text = Buffer.from(chunk).toString("utf8");
+    const result = originalWrite(chunk);
+    if (text.includes("response.output_text.delta") && !completedEnqueued) {
+      streamedBeforeCompletion = true;
+    }
+    return result;
+  };
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.match(String(res.getHeader("content-type") || ""), /text\/event-stream/i);
+  assert.equal(streamedBeforeCompletion, true);
+  assert.match(res.body, /response\.output_text\.delta/);
+  assert.match(res.body, /response\.completed/);
+  assert.match(res.body, /resp_sse_no_header/);
+  assert.deepEqual(res.locals.tokenUsage, {
+    prompt_tokens: 4,
+    completion_tokens: 5,
+    total_tokens: 9
+  });
+});
+
+test("Responses create HTTP stream flushes SSE deltas before upstream completion", async () => {
+  const encoder = new TextEncoder();
+  let completedEnqueued = false;
+  const responseHelpers = createOpenAIResponsesCompatHelpers({
+    config: { codex: { defaultModel: "gpt-5.4" } },
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
       }
+    }
+  });
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      const json = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: Buffer.from(JSON.stringify({ ...json, stream: true }), "utf8"),
+        json: { ...json, stream: true },
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      let upstreamClosed = false;
+      let completionTimer = null;
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'event: response.output_text.delta\n' +
+                'data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"hel"}\n\n'
+            )
+          );
+          completionTimer = setTimeout(() => {
+            if (upstreamClosed) return;
+            completedEnqueued = true;
+            try {
+              controller.enqueue(
+                encoder.encode(
+                  'event: response.completed\n' +
+                    'data: {"type":"response.completed","response":{"id":"resp_http_stream","status":"completed","usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}\n\n'
+                )
+              );
+              controller.close();
+            } catch {}
+          }, 50);
+          completionTimer.unref?.();
+        },
+        cancel() {
+          upstreamClosed = true;
+          if (completionTimer) clearTimeout(completionTimer);
+        }
+      }), {
+        status: 200,
+        headers: {}
+      });
+    },
+    contextOverrides: {
+      parseResponsesResultFromSse: responseHelpers.parseResponsesResultFromSse,
+      pipeSseAndCaptureTokenUsage: responseHelpers.pipeSseAndCaptureTokenUsage
+    }
+  });
+
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", async () => {
+      req.rawBody = Buffer.concat(chunks);
+      req.originalUrl = req.url;
+      req.path = req.url;
+      res.locals = {};
+      res.status = (code) => {
+        res.statusCode = code;
+        return res;
+      };
+      res.json = (payload) => {
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.end(JSON.stringify(payload));
+        return res;
+      };
+      res.send = (payload) => {
+        res.end(payload);
+        return res;
+      };
+      try {
+        await handlers.openAIProxy(req, res);
+      } catch (err) {
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.end(err.message);
+        } else {
+          res.end();
+        }
+      }
+    });
+  });
+
+  server.keepAliveTimeout = 1;
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const url = `http://127.0.0.1:${address.port}/v1/responses`;
+
+  try {
+    let firstChunkSeen = false;
+    const firstChunk = new Promise((resolve, reject) => {
+      let settled = false;
+      let timeout = null;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve(value);
+      };
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        reject(err);
+      };
+      timeout = setTimeout(() => fail(new Error("Timed out waiting for first stream chunk.")), 1000);
+      const clientReq = request(
+        url,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "text/event-stream"
+          }
+        },
+        (clientRes) => {
+          clientRes.setEncoding("utf8");
+          clientRes.on("data", (chunk) => {
+            if (firstChunkSeen) return;
+            firstChunkSeen = true;
+            const first = {
+              chunk,
+              completedEnqueued,
+              statusCode: clientRes.statusCode,
+              contentType: clientRes.headers["content-type"]
+            };
+            clientRes.destroy();
+            finish(first);
+          });
+          clientRes.on("error", fail);
+          clientRes.on("end", () => {
+            if (!firstChunkSeen) fail(new Error("Stream ended before emitting a data chunk."));
+          });
+        }
+      );
+      clientReq.on("error", fail);
+      clientReq.end(JSON.stringify({ model: "gpt-5.4", stream: true, store: false, input: "hello" }));
+    });
+
+    const first = await firstChunk;
+    assert.equal(first.statusCode, 200);
+    assert.match(String(first.contentType || ""), /text\/event-stream/i);
+    assert.equal(first.completedEnqueued, false);
+    assert.match(first.chunk, /response\.output_text\.delta/);
+    assert.doesNotMatch(first.chunk, /response\.completed/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Responses create stream rejects truncated upstream SSE without content-type header", async () => {
+  const responseHelpers = createOpenAIResponsesCompatHelpers({
+    config: { codex: { defaultModel: "gpt-5.4" } },
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+  });
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      return {
+        body: rawBody,
+        json: JSON.parse(rawBody.toString("utf8")),
+        collectCompletedResponseAsJson: false,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      const encoder = new TextEncoder();
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'event: response.output_text.delta\n' +
+                'data: {"type":"response.output_text.delta","delta":"hel"}\n\n'
+            )
+          );
+          controller.close();
+        }
+      }), {
+        status: 200,
+        headers: {}
+      });
+    },
+    contextOverrides: {
+      parseResponsesResultFromSse: responseHelpers.parseResponsesResultFromSse,
+      pipeSseAndCaptureTokenUsage: responseHelpers.pipeSseAndCaptureTokenUsage
     }
   });
   const req = createMockRequest({
@@ -1956,59 +2207,11 @@ test("Responses create stream accepts upstream SSE without content-type header",
   await handlers.openAIProxy(req, res);
 
   assert.equal(res.statusCode, 200);
+  assert.equal(res.jsonPayload, null);
   assert.match(String(res.getHeader("content-type") || ""), /text\/event-stream/i);
-  assert.match(res.body, /response\.completed/);
-  assert.match(res.body, /resp_sse_no_header/);
-  assert.deepEqual(res.locals.tokenUsage, {
-    input_tokens: 4,
-    output_tokens: 5,
-    total_tokens: 9
-  });
-});
-
-test("Responses create stream rejects truncated upstream SSE without content-type header", async () => {
-  const handlers = createHandlers({
-    normalizeResponsesImpl(rawBody) {
-      return {
-        body: rawBody,
-        json: JSON.parse(rawBody.toString("utf8")),
-        collectCompletedResponseAsJson: false,
-        model: "gpt-5.4"
-      };
-    },
-    async fetchImpl() {
-      return new Response(
-        'event: response.output_text.delta\n' +
-          'data: {"type":"response.output_text.delta","delta":"hel"}\n\n',
-        {
-          status: 200,
-          headers: {}
-        }
-      );
-    },
-    contextOverrides: {
-      parseResponsesResultFromSse() {
-        return {
-          completed: null,
-          failed: null
-        };
-      }
-    }
-  });
-  const req = createMockRequest({
-    method: "POST",
-    originalUrl: "/v1/responses",
-    body: { model: "gpt-5.4", stream: true, store: false, input: "hello" }
-  });
-  const res = createMockResponse();
-
-  await handlers.openAIProxy(req, res);
-
-  assert.equal(res.statusCode, 502);
-  assert.deepEqual(res.jsonPayload, {
-    error: "invalid_upstream_sse",
-    message: "Upstream SSE ended before a terminal response event."
-  });
+  assert.match(res.body, /response\.output_text\.delta/);
+  assert.match(res.body, /response\.failed/);
+  assert.match(res.body, /Upstream SSE ended before a terminal response event/);
 });
 
 test("Responses create normalization preserves temperature on non-stream requests", async () => {

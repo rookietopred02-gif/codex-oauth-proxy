@@ -213,6 +213,7 @@ export function createSseSession(
       return false;
     }
     prepareResponse?.();
+    res.flushHeaders?.();
     prepared = true;
     return true;
   };
@@ -234,6 +235,7 @@ export function createSseSession(
       }
       try {
         res.write(heartbeatChunk);
+        res.flush?.();
       } catch {
         markClosed();
       }
@@ -257,6 +259,7 @@ export function createSseSession(
     try {
       res.write(chunk);
       wroteChunk = true;
+      res.flush?.();
       ensureHeartbeatStarted();
       return true;
     } catch (err) {
