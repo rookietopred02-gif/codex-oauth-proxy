@@ -971,6 +971,21 @@ test("GET /admin/auth-pool/export returns a single importable json bundle", asyn
         },
         usage_updated_at: "789.0",
         slot: "9.9"
+      },
+      {
+        entry_id: "entry_d",
+        account_id: "acct_d",
+        enabled: true,
+        token: {
+          access_token: "token_d",
+          expires_at: "1e3"
+        },
+        usage_updated_at: "0x10",
+        slot: {
+          valueOf() {
+            return 4;
+          }
+        }
       }
     ],
     rotation: { next_index: 0 }
@@ -1017,10 +1032,10 @@ test("GET /admin/auth-pool/export returns a single importable json bundle", asyn
     assert.equal(response.status, 200);
     assertNoStoreHeaders(response);
     assert.equal(body.ok, true);
-    assert.equal(body.exported, 3);
+    assert.equal(body.exported, 4);
     assert.match(String(body.fileName || ""), /^codex-oauth-account-pool-.*\.json$/);
     assert.equal(body.payload?.type, "codex-pro-max-auth-pool-export");
-    assert.equal(body.payload?.exported, 3);
+    assert.equal(body.payload?.exported, 4);
     assert.equal(Array.isArray(body.payload?.accounts), true);
     for (const tokenKey of ["access_token", "id_token", "refresh_token", "token_type", "scope", "expires_at"]) {
       assert.equal(Object.prototype.hasOwnProperty.call(body, tokenKey), false);
@@ -1062,6 +1077,9 @@ test("GET /admin/auth-pool/export returns a single importable json bundle", asyn
     assert.equal(body.payload.accounts[2]?.slot, 3);
     assert.equal(body.payload.accounts[2]?.usage_updated_at, 0);
     assert.equal(body.payload.accounts[2]?.expires_at, 0);
+    assert.equal(body.payload.accounts[3]?.slot, 4);
+    assert.equal(body.payload.accounts[3]?.usage_updated_at, 0);
+    assert.equal(body.payload.accounts[3]?.expires_at, 0);
   } finally {
     await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
   }

@@ -21,10 +21,10 @@ export function getDashboardDateLocale(uiLang) {
 
 function parseDashboardDate(value) {
   if (value instanceof Date) return value;
-  if (typeof value === "number") return Number.isSafeInteger(value) ? new Date(value) : null;
+  if (typeof value === "number") return Number.isSafeInteger(value) && value >= 0 ? new Date(value) : null;
   if (typeof value !== "string") return null;
   const normalized = value.trim();
-  if (!/^-?\d+$/.test(normalized)) return null;
+  if (!/^\d+$/.test(normalized)) return null;
   const parsed = Number(normalized);
   return Number.isSafeInteger(parsed) ? new Date(parsed) : null;
 }

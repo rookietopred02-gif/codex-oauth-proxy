@@ -32,6 +32,10 @@ test("formatRecentRequestRate preserves dashboard RPM display behavior", () => {
   assert.equal(formatRecentRequestRate(-1), "0");
   assert.equal(formatRecentRequestRate(Number.NaN), "0");
   assert.equal(formatRecentRequestRate(Symbol("rpm")), "0");
+  assert.equal(formatRecentRequestRate(true), "0");
+  assert.equal(formatRecentRequestRate("1e3"), "0");
+  assert.equal(formatRecentRequestRate("0x10"), "0");
+  assert.equal(formatRecentRequestRate({ valueOf: () => 3 }), "0");
   assert.equal(
     formatRecentRequestRate({
       valueOf() {
@@ -41,6 +45,7 @@ test("formatRecentRequestRate preserves dashboard RPM display behavior", () => {
     "0"
   );
   assert.equal(formatRecentRequestRate("1"), "1");
+  assert.equal(formatRecentRequestRate("1.5"), "1.5");
   assert.equal(formatRecentRequestRate(1.5), "1.5");
   assert.equal(formatRecentRequestRate(99.94), "99.9");
   assert.equal(formatRecentRequestRate(99.95), "100");

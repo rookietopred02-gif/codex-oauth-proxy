@@ -124,6 +124,53 @@ test("dashboard auth rejects decimal-form session ttl values", async () => {
   }
 });
 
+test("dashboard auth bounds malformed throttle and password policy options", async () => {
+  const appDataDir = await createTempAppDataDir();
+  try {
+    const controller = await createDashboardAuthController({
+      storePath: path.join(appDataDir, "data", "dashboard-auth.json"),
+      loginWindowMs: Symbol("window"),
+      loginMaxAttempts: Symbol("attempts"),
+      minimumPasswordLength: Symbol("minimum")
+    });
+
+    await assert.rejects(
+      () => controller.configure({ enabled: true, password: "1234567" }),
+      /Dashboard password must be at least 8 characters/
+    );
+    await controller.configure({ enabled: true, password: "12345678" });
+    await assert.rejects(
+      () => controller.attemptLogin({ headers: {}, socket: { remoteAddress: "127.0.0.1" } }, "not-right"),
+      /Incorrect dashboard password/
+    );
+  } finally {
+    await fs.rm(appDataDir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard auth enforces minimum throttle and password policy bounds", async () => {
+  const appDataDir = await createTempAppDataDir();
+  const req = { headers: {}, socket: { remoteAddress: "127.0.0.2" } };
+  try {
+    const controller = await createDashboardAuthController({
+      storePath: path.join(appDataDir, "data", "dashboard-auth.json"),
+      loginWindowMs: 0,
+      loginMaxAttempts: 0,
+      minimumPasswordLength: 0
+    });
+
+    await assert.rejects(
+      () => controller.configure({ enabled: true, password: "12345" }),
+      /Dashboard password must be at least 6 characters/
+    );
+    await controller.configure({ enabled: true, password: "123456" });
+    await assert.rejects(() => controller.attemptLogin(req, "not-right"), /Incorrect dashboard password/);
+    await assert.rejects(() => controller.attemptLogin(req, "not-right"), /Too many dashboard login attempts/);
+  } finally {
+    await fs.rm(appDataDir, { recursive: true, force: true });
+  }
+});
+
 test("dashboard password protection locks admin routes and stores only a local hash", async () => {
   const appDataDir = await createTempAppDataDir();
   const port = await reserveFreePort();

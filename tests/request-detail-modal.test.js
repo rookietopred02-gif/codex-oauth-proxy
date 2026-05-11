@@ -342,3 +342,98 @@ test("request detail modal rejects decimal-form timestamps on formatter fallback
     restore();
   }
 });
+
+test("request detail modal renders large packets in animation-frame chunks", async () => {
+  const restore = installFakeDom();
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+  const elements = createElements();
+  const frameCallbacks = [];
+  const chunkSize = 16 * 1024;
+  const largePacket = "x".repeat(chunkSize * 2 + 7);
+  globalThis.requestAnimationFrame = (callback) => {
+    frameCallbacks.push(callback);
+    return frameCallbacks.length;
+  };
+
+  const modal = createRequestDetailModal({
+    $(id) {
+      const element = elements.get(id);
+      if (!element) throw new Error(`missing element: ${id}`);
+      return element;
+    },
+    api: async (path) => {
+      if (path === "/admin/requests/row-large") {
+        return {
+          request: {
+            requestContentType: "text/plain",
+            responseContentType: "application/json",
+            packetInfo: {
+              requestPacket: { chars: 0, bytes: 0 },
+              responsePacket: { chars: largePacket.length, bytes: largePacket.length }
+            }
+          }
+        };
+      }
+      if (path.includes("/admin/requests/row-large/packet?")) {
+        const params = new URLSearchParams(path.split("?")[1] || "");
+        const field = params.get("field");
+        return {
+          packet: {
+            text: field === "responsePacket" ? largePacket : "",
+            totalChars: field === "responsePacket" ? largePacket.length : 0,
+            totalBytes: field === "responsePacket" ? largePacket.length : 0,
+            truncated: false
+          }
+        };
+      }
+      throw new Error(`unexpected path: ${path}`);
+    },
+    t: (key) => key,
+    tt: (key, vars = {}) => {
+      if (key === "request_detail_title_fmt") return `${vars.method} ${vars.path}`;
+      if (key === "request_detail_packet_meta") return `${vars.type}|${vars.size}|${vars.mode}`;
+      if (key === "token_usage_format") return `${vars.input}/${vars.output}/${vars.cachedInput}`;
+      return key;
+    },
+    escapeHtml,
+    fmtToken: () => "-",
+    formatDateTime: () => "Apr 11, 2026",
+    copyTextToClipboard: async () => {},
+    showCopyError(err) {
+      throw err;
+    },
+    resolveProtocolLabel: () => "Responses",
+    resolveModelDisplay: () => "gpt-5.4",
+    resolveAccountDisplay: () => "Account",
+    resolveCompatibilityHint: () => "-",
+    getRequestRowById: () => ({
+      id: "row-large",
+      ts: Date.UTC(2026, 3, 11, 10, 0, 0),
+      method: "POST",
+      path: "/v1/responses",
+      transportType: "http",
+      durationMs: 12,
+      status: 200
+    })
+  });
+
+  try {
+    await modal.openRequestDetailModal("row-large");
+
+    const responseCode = elements.get("reqDetailResCode");
+    assert.equal(responseCode.textContent.length, chunkSize);
+    assert.equal(frameCallbacks.length, 1);
+
+    frameCallbacks.shift()();
+    assert.equal(responseCode.textContent.length, chunkSize * 2);
+    assert.equal(frameCallbacks.length, 1);
+
+    frameCallbacks.shift()();
+    assert.equal(responseCode.textContent.length, largePacket.length);
+    assert.equal(responseCode.textContent, largePacket);
+    assert.equal(frameCallbacks.length, 0);
+  } finally {
+    globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    restore();
+  }
+});

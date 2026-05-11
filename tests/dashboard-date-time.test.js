@@ -84,6 +84,8 @@ test("formatDashboardDateTime preserves explicit option overrides and invalid fa
   assert.equal(formatDashboardDateTime("not-a-date", "en", {}, FakeDateTimeFormat), "-");
   assert.equal(formatDashboardDateTime("1770000000123.5", "en", {}, FakeDateTimeFormat), "-");
   assert.equal(formatDashboardDateTime(1770000000123.5, "en", {}, FakeDateTimeFormat), "-");
+  assert.equal(formatDashboardDateTime("-1", "en", {}, FakeDateTimeFormat), "-");
+  assert.equal(formatDashboardDateTime(-1, "en", {}, FakeDateTimeFormat), "-");
   assert.equal(formatDashboardDateTime(true, "en", {}, FakeDateTimeFormat), "-");
   assert.equal(formatDashboardDateTime(Symbol("bad-date"), "en", {}, FakeDateTimeFormat), "-");
   assert.equal(

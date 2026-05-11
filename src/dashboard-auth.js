@@ -299,6 +299,9 @@ export async function createDashboardAuthController(options = {}) {
 
   let state = normalizeStore(null, { defaultEnabled }).store;
   const loginAttempts = new Map();
+  const normalizedLoginWindowMs = Math.max(60 * 1000, toIntegerNumber(loginWindowMs, 15 * 60 * 1000));
+  const normalizedLoginMaxAttempts = Math.max(1, toIntegerNumber(loginMaxAttempts, 10));
+  const normalizedMinimumPasswordLength = Math.max(6, toIntegerNumber(minimumPasswordLength, 8));
 
   async function persistState() {
     await fs.mkdir(path.dirname(storePath), { recursive: true });
@@ -323,7 +326,7 @@ export async function createDashboardAuthController(options = {}) {
   function pruneLoginAttempts(address, now = Date.now()) {
     const key = String(address || "unknown");
     const existing = Array.isArray(loginAttempts.get(key)) ? loginAttempts.get(key) : [];
-    const next = existing.filter((ts) => now - ts < loginWindowMs);
+    const next = existing.filter((ts) => now - ts < normalizedLoginWindowMs);
     if (next.length === 0) {
       loginAttempts.delete(key);
       return [];
@@ -346,14 +349,14 @@ export async function createDashboardAuthController(options = {}) {
   function getLoginThrottle(req) {
     const address = extractClientAddress(req);
     const attempts = pruneLoginAttempts(address);
-    if (attempts.length < loginMaxAttempts) {
+    if (attempts.length < normalizedLoginMaxAttempts) {
       return {
         blocked: false,
         retryAfterSeconds: 0
       };
     }
     const oldest = attempts[0];
-    const retryAfterMs = Math.max(0, loginWindowMs - (Date.now() - oldest));
+    const retryAfterMs = Math.max(0, normalizedLoginWindowMs - (Date.now() - oldest));
     return {
       blocked: true,
       retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000))
@@ -442,8 +445,8 @@ export async function createDashboardAuthController(options = {}) {
     const nextState = { ...state };
     const hasPasswordInput = typeof password === "string" && password.length > 0;
     if (hasPasswordInput) {
-      if (password.length < minimumPasswordLength) {
-        throw new Error(`Dashboard password must be at least ${minimumPasswordLength} characters.`);
+      if (password.length < normalizedMinimumPasswordLength) {
+        throw new Error(`Dashboard password must be at least ${normalizedMinimumPasswordLength} characters.`);
       }
       const passwordRecord = hashDashboardPassword(password);
       nextState.passwordSalt = passwordRecord.salt;
