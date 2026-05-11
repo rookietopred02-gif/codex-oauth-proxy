@@ -138,8 +138,7 @@ export function resolveResponsesDeveloperInstructions(requestBody, config, optio
     requestBody &&
     typeof requestBody === "object" &&
     !Array.isArray(requestBody) &&
-    Object.prototype.hasOwnProperty.call(requestBody, "instructions") &&
-    typeof requestBody.instructions === "string"
+    Object.prototype.hasOwnProperty.call(requestBody, "instructions")
   ) {
     return requestBody.instructions;
   }

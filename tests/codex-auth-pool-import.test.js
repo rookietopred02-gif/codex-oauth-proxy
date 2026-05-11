@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractCodexOAuthImportItems } from "../src/codex-auth-pool-import.js";
+import { extractCodexOAuthImportItems, importCodexOAuthTokens } from "../src/codex-auth-pool-import.js";
 
 const ACCESS_TOKEN_A = [
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
@@ -106,6 +106,27 @@ test("extractCodexOAuthImportItems reads csv rows with token fields", () => {
   assert.equal(items[0].id_token, ID_TOKEN_A);
 });
 
+test("extractCodexOAuthImportItems rejects decimal-form integer metadata", () => {
+  const items = extractCodexOAuthImportItems({
+    items: [
+      {
+        label: "Decimal metadata",
+        access_token: ACCESS_TOKEN_A,
+        slot: "7.9",
+        expires_at: "1711111111.0",
+        expires_in: "3600.5"
+      }
+    ]
+  });
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0].label, "Decimal metadata");
+  assert.equal(items[0].access_token, ACCESS_TOKEN_A);
+  assert.equal(Object.hasOwn(items[0], "slot"), false);
+  assert.equal(Object.hasOwn(items[0], "expires_at"), false);
+  assert.equal(Object.hasOwn(items[0], "expires_in"), false);
+});
+
 test("extractCodexOAuthImportItems reads CPA style delimited text rows", () => {
   const items = extractCodexOAuthImportItems({
     files: [
@@ -162,4 +183,58 @@ test("extractCodexOAuthImportItems ignores id_token-only key value credentials",
   });
 
   assert.deepEqual(items, []);
+});
+
+test("importCodexOAuthTokens rejects decimal-form usage probe concurrency", async () => {
+  let activeProbes = 0;
+  let maxActiveProbes = 0;
+
+  const result = await importCodexOAuthTokens({
+    store: { accounts: [] },
+    items: [
+      { label: "Alice", access_token: ACCESS_TOKEN_A },
+      { label: "Bob", access_token: ACCESS_TOKEN_B }
+    ],
+    probeUsageConcurrency: "1.9",
+    ensureStoreShape(store) {
+      return {
+        store: {
+          ...store,
+          accounts: Array.isArray(store?.accounts) ? store.accounts : []
+        }
+      };
+    },
+    normalizeToken(token) {
+      return token;
+    },
+    upsertAccount(store, token, options = {}) {
+      const entryId = options.label || `entry_${store.accounts.length + 1}`;
+      store.accounts.push({
+        identity_id: entryId,
+        enabled: true,
+        token
+      });
+      return { entryId };
+    },
+    findAccountByRef(accounts, ref) {
+      return (Array.isArray(accounts) ? accounts : []).find((account) => account.identity_id === ref) || null;
+    },
+    async refreshUsageSnapshot(_store, ref) {
+      activeProbes += 1;
+      maxActiveProbes = Math.max(maxActiveProbes, activeProbes);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      activeProbes -= 1;
+      return { ok: true, entryId: ref };
+    },
+    normalizePlanType() {
+      return "";
+    },
+    parseSlotValue(value) {
+      return value;
+    }
+  });
+
+  assert.equal(result.imported, 2);
+  assert.equal(result.usageProbe.probed, 2);
+  assert.equal(maxActiveProbes, 2);
 });

@@ -1,4 +1,10 @@
+import { commitOpenAISseHeaders, setOpenAISseHeaders } from "../http/openai-chat-stream.js";
+import { getRequestBodyErrorStatus } from "../http/request-body.js";
 import { isResponsesCreatePath } from "../protocols/openai/responses-contract.js";
+import {
+  normalizeNonNegativeInteger,
+  readNonNegativeInteger as readStrictNonNegativeInteger
+} from "../upstream-timeouts.js";
 
 export function createProxyRouteHandlers(context) {
   const {
@@ -89,6 +95,14 @@ export function createProxyRouteHandlers(context) {
     return /^\/v1(?:\/codex)?\/responses\/compact\/?$/.test(String(pathname || ""));
   }
 
+  function isResponsesInputTokensPath(pathname) {
+    return /^\/v1(?:\/codex)?\/responses\/input_tokens\/?$/.test(String(pathname || ""));
+  }
+
+  function isResponsesJsonExtensionPath(pathname) {
+    return isResponsesCompactPath(pathname) || isResponsesInputTokensPath(pathname);
+  }
+
   function extractStringField(value, fieldName) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return "";
     const raw = value[fieldName];
@@ -166,9 +180,7 @@ export function createProxyRouteHandlers(context) {
   }
 
   function getAuditPacketCharLimit() {
-    const limit = Number(config?.requestAudit?.maxPacketChars || 0);
-    if (!Number.isFinite(limit) || limit <= 0) return 0;
-    return Math.max(1, Math.floor(limit));
+    return readNonNegativeInteger(config?.requestAudit?.maxPacketChars, 0);
   }
 
   function recordAuditError(err, details = {}) {
@@ -185,12 +197,12 @@ export function createProxyRouteHandlers(context) {
       message: message.slice(0, 1000),
       method: String(details.method || ""),
       path: safePath,
-      statusCode: Number(details.statusCode || 0) || 0,
+      statusCode: readStatusCode(details.statusCode, 0),
       transportType: String(details.transportType || ""),
       phase: String(details.phase || "")
     };
     try {
-      runtimeStats.auditErrors = (Number(runtimeStats.auditErrors || 0) || 0) + 1;
+      runtimeStats.auditErrors = readNonNegativeInteger(runtimeStats.auditErrors, 0) + 1;
       runtimeStats.lastAuditError = auditError;
     } catch {}
     try {
@@ -235,6 +247,9 @@ export function createProxyRouteHandlers(context) {
     const normalizedResponseContentType = parseContentType(responseContentType);
     const capturePackets = shouldCaptureAuditPackets();
     const packetCharLimit = getAuditPacketCharLimit();
+    const normalizedStatusCode = readStatusCode(statusCode, 0);
+    const normalizedStartedAt = readFiniteNumber(startedAt, Date.now());
+    const normalizedRetryCount = readNonNegativeInteger(upstreamRetryCount, 0);
     const responsePacketForUsage = formatPayloadForAudit(responseBody, normalizedResponseContentType, 0);
     const responsePacket = capturePackets
       ? formatPayloadForAudit(responseBody, normalizedResponseContentType, packetCharLimit)
@@ -255,7 +270,7 @@ export function createProxyRouteHandlers(context) {
     const authAccountLabel = resolveAuditAccountLabel(authAccountId);
 
     runtimeStats.totalRequests += 1;
-    if (statusCode >= 200 && statusCode < 400) runtimeStats.okRequests += 1;
+    if (normalizedStatusCode >= 200 && normalizedStatusCode < 400) runtimeStats.okRequests += 1;
     else runtimeStats.errorRequests += 1;
 
     const requestRow = {
@@ -263,8 +278,8 @@ export function createProxyRouteHandlers(context) {
       ts: Date.now(),
       method: normalizedMethod,
       path: safePath,
-      status: Number(statusCode || 0) || 0,
-      durationMs: Math.max(0, Date.now() - Number(startedAt || Date.now())),
+      status: normalizedStatusCode,
+      durationMs: Math.max(0, Date.now() - normalizedStartedAt),
       inputTokens: normalizedTokenUsage?.inputTokens ?? null,
       cachedInputTokens: normalizedTokenUsage?.cachedInputTokens ?? null,
       outputTokens: normalizedTokenUsage?.outputTokens ?? null,
@@ -280,7 +295,7 @@ export function createProxyRouteHandlers(context) {
       authAccountLabel: authAccountLabel || null,
       proxyApiKeyId: proxyApiKeyId || null,
       proxyApiKeyLabel: String(proxyApiKeyLabel || "").trim() || null,
-      upstreamRetryCount: Number.isFinite(Number(upstreamRetryCount)) ? Number(upstreamRetryCount) : 0,
+      upstreamRetryCount: normalizedRetryCount,
       upstreamErrorCode: String(upstreamErrorCode || "").trim() || null,
       upstreamErrorDetail: String(upstreamErrorDetail || "").trim() || null,
       compatibilityHint: String(compatibilityHint || "").trim() || null,
@@ -343,10 +358,86 @@ export function createProxyRouteHandlers(context) {
 
   function createRouteError(statusCode, error, message, extra = {}) {
     const err = new Error(message);
-    err.statusCode = Number(statusCode || 500) || 500;
+    err.statusCode = readStatusCode(statusCode, 500) || 500;
     err.error = error || "request_failed";
     Object.assign(err, extra);
     return err;
+  }
+
+  function readStatusCode(value, fallback = 0) {
+    if (typeof value === "number") {
+      return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;
+    }
+    if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+      return Number(value);
+    }
+    return fallback;
+  }
+
+  function readFiniteNumber(value, fallback = 0) {
+    try {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function readNonNegativeInteger(value, fallback = 0) {
+    return normalizeNonNegativeInteger(value, fallback);
+  }
+
+  function readOptionalNonNegativeInteger(value) {
+    return readStrictNonNegativeInteger(value);
+  }
+
+  function readRetryCountFromResponse(responseLike) {
+    return readNonNegativeInteger(responseLike?.locals?.upstreamRetryCount, 0);
+  }
+
+  function isCodexAuthConflictError(err) {
+    if (readStatusCode(err?.statusCode) !== 409) return false;
+    return ["response_id_account_unavailable", "model_account_unavailable"].includes(String(err?.error || ""));
+  }
+
+  function createCodexAuthRouteError(err) {
+    if (isCodexAuthConflictError(err)) {
+      return createRouteError(409, err.error, err.message);
+    }
+    return createRouteError(401, "unauthorized", err.message, {
+      hint: getAuthModeHint()
+    });
+  }
+
+  async function readProxyRawBodyOrRespond(req, res) {
+    try {
+      return await readRawBody(req);
+    } catch (err) {
+      writeProxyBodyError(res, err);
+      return null;
+    }
+  }
+
+  function writeProxyBodyError(res, err) {
+    res.status(getRequestBodyErrorStatus(err)).json({
+      error: err?.code || "invalid_request",
+      message: err?.message || "Invalid request body."
+    });
+  }
+
+  function sendCodexAuthError(res, err) {
+    if (isCodexAuthConflictError(err)) {
+      res.status(409).json({
+        error: err.error,
+        message: err.message
+      });
+      return;
+    }
+    res.status(401).json({
+      error: "unauthorized",
+      message: err.message,
+      hint: getAuthModeHint()
+    });
   }
 
   function prepareCodexResponsesCreateRequest(rawBody, parsedBody) {
@@ -485,21 +576,13 @@ export function createProxyRouteHandlers(context) {
   }
 
   function sendCompletedResponseAsSse(res, completed) {
-    res.status(200);
-    res.setHeader("content-type", "text/event-stream; charset=utf-8");
-    res.setHeader("cache-control", "no-cache");
-    res.setHeader("connection", "keep-alive");
-    res.setHeader("x-accel-buffering", "no");
+    commitOpenAISseHeaders(res);
     res.write(`data: ${JSON.stringify({ type: "response.completed", response: completed })}\n\n`);
     res.end();
   }
 
   function sendRawSseResponse(res, rawSse) {
-    res.status(200);
-    res.setHeader("content-type", "text/event-stream; charset=utf-8");
-    res.setHeader("cache-control", "no-cache");
-    res.setHeader("connection", "keep-alive");
-    res.setHeader("x-accel-buffering", "no");
+    commitOpenAISseHeaders(res);
     res.write(rawSse);
     res.end();
   }
@@ -597,24 +680,6 @@ export function createProxyRouteHandlers(context) {
     let auth;
     let releaseAuthLease = () => {};
     try {
-      try {
-        auth = await getValidAuthContext({ preferredPoolEntryId, retainLease: true });
-      } catch (err) {
-        throw createRouteError(401, "unauthorized", err.message, {
-          hint: getAuthModeHint()
-        });
-      }
-      releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
-
-      const pinnedCodexRequest =
-        preferredPoolEntryId.length > 0 &&
-        (auth.poolEntryId === preferredPoolEntryId || auth.poolAccountId === preferredPoolEntryId);
-
-      const headers = buildForwardHeaders(req?.headers);
-      if (!applyCodexAuthHeaders(headers, auth)) {
-        throw createRouteError(401, "missing_account_id", "Could not extract chatgpt_account_id from OAuth token.");
-      }
-
       const normalized = normalizeCodexResponsesRequestBody(preparedRequest.rawBody, {
         parsedBody: preparedRequest.parsedBody,
         previousResponseContinuation: replayPreparation.previousResponseContinuation
@@ -637,6 +702,33 @@ export function createProxyRouteHandlers(context) {
           ? false
           : normalized.collectCompletedResponseAsJson
         : false;
+      const requestedModel = String(
+        normalized.modelRoute?.mappedModel || normalized.model || config.codex.defaultModel || ""
+      ).trim();
+
+      try {
+        auth = await getValidAuthContext({ preferredPoolEntryId, retainLease: true, requestedModel });
+      } catch (err) {
+        throw createCodexAuthRouteError(err);
+      }
+      releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
+
+      const pinnedCodexRequest =
+        preferredPoolEntryId.length > 0 &&
+        (auth.poolEntryId === preferredPoolEntryId || auth.poolAccountId === preferredPoolEntryId);
+      if (preferredPoolEntryId.length > 0 && !pinnedCodexRequest) {
+        throw createRouteError(
+          409,
+          "response_id_account_unavailable",
+          "The response_id is pinned to a pooled account that is not currently selectable."
+        );
+      }
+
+      const headers = buildForwardHeaders(req?.headers);
+      if (!applyCodexAuthHeaders(headers, auth)) {
+        throw createRouteError(401, "missing_account_id", "Could not extract chatgpt_account_id from OAuth token.");
+      }
+
       if (normalized.modelRoute && res?.locals) {
         res.locals.modelRoute = normalized.modelRoute;
       }
@@ -666,7 +758,7 @@ export function createProxyRouteHandlers(context) {
           throw createRouteError(502, "upstream_unreachable", details.message || err.message, {
             code: details.code || details.name || null,
             detail: details.detail || null,
-            retry_count: Number(retryState?.locals?.upstreamRetryCount || 0)
+            retry_count: readRetryCountFromResponse(retryState)
           });
         }
 
@@ -688,7 +780,7 @@ export function createProxyRouteHandlers(context) {
         let nextAuth;
         let nextReleaseLease = () => {};
         try {
-          nextAuth = await getValidAuthContext({ retainLease: true });
+          nextAuth = await getValidAuthContext({ retainLease: true, requestedModel });
           nextReleaseLease = typeof nextAuth?.releaseLease === "function" ? nextAuth.releaseLease : () => {};
         } catch {
           break;
@@ -726,7 +818,7 @@ export function createProxyRouteHandlers(context) {
         upstreamRequestBody: normalizedResponsesRequest || normalized.json || upstreamBody,
         upstreamRequestContentType: "application/json",
         responseModel: normalized.model || config.codex.defaultModel,
-        retryCount: Number(retryState?.locals?.upstreamRetryCount || 0),
+        retryCount: readRetryCountFromResponse(retryState),
         upstream,
         async markFailure(message, statusCode = 0) {
           await maybeMarkCodexPoolFailure(auth, message, statusCode).catch(() => {});
@@ -931,7 +1023,8 @@ export function createProxyRouteHandlers(context) {
     }
 
     if (incoming.pathname === "/v1/chat/completions" && req.method === "POST") {
-      await readRawBody(req);
+      const preflightBody = await readProxyRawBodyOrRespond(req, res);
+      if (preflightBody === null) return;
       if (getCachedJsonBody(req) === undefined) {
         try {
           await readJsonBody(req);
@@ -968,12 +1061,15 @@ export function createProxyRouteHandlers(context) {
     }
 
     const requestBody =
-      req.method !== "GET" && req.method !== "HEAD" ? await readRawBody(req) : Buffer.alloc(0);
+      req.method !== "GET" && req.method !== "HEAD" ? await readProxyRawBodyOrRespond(req, res) : Buffer.alloc(0);
+    if (requestBody === null) return;
     let parsedRequestBody = getCachedJsonBody(req);
+    let parsedRequestBodyError = null;
     if (parsedRequestBody === undefined && requestBody.length > 0) {
       try {
         parsedRequestBody = await readJsonBody(req);
-      } catch {
+      } catch (err) {
+        parsedRequestBodyError = err;
         parsedRequestBody = undefined;
       }
     }
@@ -985,6 +1081,15 @@ export function createProxyRouteHandlers(context) {
       target?.endpointKind === "responses" &&
       req.method === "POST" &&
       isResponsesCompactPath(incoming.pathname);
+    if (
+      parsedRequestBodyError &&
+      target?.endpointKind === "responses" &&
+      req.method === "POST" &&
+      (isResponsesCreateRequest || isResponsesJsonExtensionPath(incoming.pathname))
+    ) {
+      writeProxyBodyError(res, parsedRequestBodyError);
+      return;
+    }
     const previousResponseId = isResponsesCreateRequest ? extractPreviousResponseId(requestBody) : "";
     const affinityLookupResponseId = extractResponsesAffinityLookupId(req, target, requestBody, incoming.pathname);
 
@@ -1041,7 +1146,8 @@ export function createProxyRouteHandlers(context) {
             parsedRequestBody
           });
         } catch (err) {
-          const statusCode = Number(err?.statusCode || 500) || 500;
+          const statusCode = readStatusCode(err?.statusCode, 500) || 500;
+          const retryCount = readOptionalNonNegativeInteger(err?.retry_count);
           if (statusCode === 401) {
             res.status(401).json({
               error: err.error || "unauthorized",
@@ -1055,7 +1161,7 @@ export function createProxyRouteHandlers(context) {
             message: err.message,
             ...(err?.code ? { code: err.code } : {}),
             ...(err?.detail ? { detail: err.detail } : {}),
-            ...(Number.isFinite(Number(err?.retry_count)) ? { retry_count: Number(err.retry_count) } : {})
+            ...(retryCount !== null ? { retry_count: retryCount } : {})
           });
           return;
         }
@@ -1075,9 +1181,37 @@ export function createProxyRouteHandlers(context) {
         const headers = buildForwardHeaders(req.headers);
         const preferredPoolEntryId = resolvePinnedCodexPoolEntryId(req, target, requestBody, incoming.pathname);
         let pinnedCodexRequest = false;
+        let requestedModel = "";
+
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          try {
+            if (config.upstreamMode === "codex-chatgpt" && target.endpointKind === "chat-completions") {
+              const normalized = normalizeChatCompletionsRequestBody(body, {
+                parsedBody: parsedRequestBody
+              });
+              body = normalized.body;
+              streamChatCompletionsAsSse = normalized.wantsStream;
+              collectCompletedResponseAsJson = !streamChatCompletionsAsSse;
+              responseShape = "chat-completions";
+              responseModel = normalized.model || responseModel;
+              requestedModel = String(
+                normalized.modelRoute?.mappedModel || normalized.model || config.codex.defaultModel || ""
+              ).trim();
+              if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
+              upstreamAuditBody = normalized.json || body;
+              headers.set("content-type", "application/json");
+            }
+          } catch (err) {
+            res.status(400).json({
+              error: "invalid_request",
+              message: err.message
+            });
+            return;
+          }
+        }
 
         try {
-          auth = await getValidAuthContext({ preferredPoolEntryId, retainLease: true });
+          auth = await getValidAuthContext({ preferredPoolEntryId, retainLease: true, requestedModel });
           releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
           res.locals.authAccountId = auth.poolAccountId || auth.accountId || null;
           pinnedCodexRequest =
@@ -1091,11 +1225,7 @@ export function createProxyRouteHandlers(context) {
             return;
           }
         } catch (err) {
-          res.status(401).json({
-            error: "unauthorized",
-            message: err.message,
-            hint: getAuthModeHint()
-          });
+          sendCodexAuthError(res, err);
           return;
         }
 
@@ -1105,30 +1235,6 @@ export function createProxyRouteHandlers(context) {
             message: "Could not extract chatgpt_account_id from OAuth token."
           });
           return;
-        }
-
-        if (req.method !== "GET" && req.method !== "HEAD") {
-          try {
-            if (config.upstreamMode === "codex-chatgpt" && target.endpointKind === "chat-completions") {
-              const normalized = normalizeChatCompletionsRequestBody(body, {
-                parsedBody: parsedRequestBody
-              });
-              body = normalized.body;
-              streamChatCompletionsAsSse = normalized.wantsStream;
-              collectCompletedResponseAsJson = !streamChatCompletionsAsSse;
-              responseShape = "chat-completions";
-              responseModel = normalized.model || responseModel;
-              if (normalized.modelRoute) res.locals.modelRoute = normalized.modelRoute;
-              upstreamAuditBody = normalized.json || body;
-              headers.set("content-type", "application/json");
-            }
-          } catch (err) {
-            res.status(400).json({
-              error: "invalid_request",
-              message: err.message
-            });
-            return;
-          }
         }
 
         const init = {
@@ -1157,7 +1263,7 @@ export function createProxyRouteHandlers(context) {
               message: details.message || err.message,
               code: details.code || details.name || null,
               detail: details.detail || null,
-              retry_count: Number(res.locals?.upstreamRetryCount || 0)
+              retry_count: readRetryCountFromResponse(res)
             });
             return;
           }
@@ -1180,7 +1286,7 @@ export function createProxyRouteHandlers(context) {
           let nextAuth;
           let nextReleaseLease = () => {};
           try {
-            nextAuth = await getValidAuthContext({ retainLease: true });
+            nextAuth = await getValidAuthContext({ retainLease: true, requestedModel });
             nextReleaseLease = typeof nextAuth?.releaseLease === "function" ? nextAuth.releaseLease : () => {};
           } catch {
             break;
@@ -1212,14 +1318,14 @@ export function createProxyRouteHandlers(context) {
           raw = await readUpstreamTextOrThrow(upstream);
         } catch (err) {
           const details = extractUpstreamTransportError(err);
-          noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          noteUpstreamRetry(res, readRetryCountFromResponse(res), err);
           await markPoolFailure(`Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`, 502);
           res.status(502).json({
             error: "upstream_body_read_failed",
             message: err.message,
             code: details.code || details.name || null,
             detail: details.detail || null,
-            retry_count: Number(res.locals?.upstreamRetryCount || 0)
+            retry_count: readRetryCountFromResponse(res)
           });
           return;
         }
@@ -1244,14 +1350,15 @@ export function createProxyRouteHandlers(context) {
 
         const parsedResponse = parseResponsesResultFromSse(raw);
         if (parsedResponse.failed) {
+          const failureStatusCode = readStatusCode(parsedResponse.failed.statusCode, 502) || 502;
           await markPoolFailure(
             `Upstream SSE response failed on ${req.method} ${req.originalUrl}: ${truncate(parsedResponse.failed.message, 200)}`,
-            parsedResponse.failed.statusCode
+            failureStatusCode
           );
-          res.status(parsedResponse.failed.statusCode || 502).json({
+          res.status(failureStatusCode).json({
             error: "upstream_response_failed",
             message: parsedResponse.failed.message,
-            retry_count: Number(res.locals?.upstreamRetryCount || 0)
+            retry_count: readRetryCountFromResponse(res)
           });
           return;
         }
@@ -1287,14 +1394,14 @@ export function createProxyRouteHandlers(context) {
             raw = await readUpstreamTextOrThrow(upstream);
           } catch (err) {
             const details = extractUpstreamTransportError(err);
-            noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+            noteUpstreamRetry(res, readRetryCountFromResponse(res), err);
             await markPoolFailure(`Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`, 502);
             res.status(502).json({
               error: "upstream_body_read_failed",
               message: err.message,
               code: details.code || details.name || null,
               detail: details.detail || null,
-              retry_count: Number(res.locals?.upstreamRetryCount || 0)
+              retry_count: readRetryCountFromResponse(res)
             });
             return;
           }
@@ -1323,7 +1430,7 @@ export function createProxyRouteHandlers(context) {
           }
           await markPoolSuccess();
         } catch (err) {
-          noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          noteUpstreamRetry(res, readRetryCountFromResponse(res), err);
           await markPoolFailure(`Invalid upstream SSE on ${req.method} ${req.originalUrl}: ${err.message}`, 502);
           if (!res.headersSent) {
             res.status(502).json({
@@ -1331,7 +1438,7 @@ export function createProxyRouteHandlers(context) {
               message: err.message,
               code: err?.code || err?.cause?.code || null,
               detail: extractUpstreamTransportError(err).detail || null,
-              retry_count: Number(res.locals?.upstreamRetryCount || 0)
+              retry_count: readRetryCountFromResponse(res)
             });
           } else {
             res.end();
@@ -1348,14 +1455,14 @@ export function createProxyRouteHandlers(context) {
           raw = await readUpstreamTextOrThrow(upstream);
         } catch (err) {
           const details = extractUpstreamTransportError(err);
-          noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          noteUpstreamRetry(res, readRetryCountFromResponse(res), err);
           await markPoolFailure(`Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`, 502);
           res.status(502).json({
             error: "upstream_body_read_failed",
             message: err.message,
             code: details.code || details.name || null,
             detail: details.detail || null,
-            retry_count: Number(res.locals?.upstreamRetryCount || 0)
+            retry_count: readRetryCountFromResponse(res)
           });
           return;
         }
@@ -1388,14 +1495,14 @@ export function createProxyRouteHandlers(context) {
           raw = await readUpstreamTextOrThrow(upstream);
         } catch (err) {
           const details = extractUpstreamTransportError(err);
-          noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          noteUpstreamRetry(res, readRetryCountFromResponse(res), err);
           await markPoolFailure(`Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`, 502);
           res.status(502).json({
             error: "upstream_body_read_failed",
             message: err.message,
             code: details.code || details.name || null,
             detail: details.detail || null,
-            retry_count: Number(res.locals?.upstreamRetryCount || 0)
+            retry_count: readRetryCountFromResponse(res)
           });
           return;
         }
@@ -1403,9 +1510,10 @@ export function createProxyRouteHandlers(context) {
         if (looksLikeSsePayload(raw)) {
           const parsedResponse = parseResponsesResultFromSse(raw);
           if (parsedResponse.failed) {
+            const failureStatusCode = readStatusCode(parsedResponse.failed.statusCode, 502) || 502;
             await markPoolFailure(
               `Upstream SSE response failed on ${req.method} ${req.originalUrl}: ${truncate(parsedResponse.failed.message, 200)}`,
-              parsedResponse.failed.statusCode
+              failureStatusCode
             );
             sendRawSseResponse(res, raw);
             return;
@@ -1467,10 +1575,7 @@ export function createProxyRouteHandlers(context) {
           (isResponsesCreateRequest && !collectCompletedResponseAsJson && !upstreamContentType))
       ) {
         if (!upstreamContentType) {
-          res.setHeader("content-type", "text/event-stream; charset=utf-8");
-          res.setHeader("cache-control", "no-cache");
-          res.setHeader("connection", "keep-alive");
-          res.setHeader("x-accel-buffering", "no");
+          setOpenAISseHeaders(res);
         }
         try {
           const streamResult = await pipeSseAndCaptureTokenUsage(upstream, res);
@@ -1478,9 +1583,10 @@ export function createProxyRouteHandlers(context) {
             res.locals.tokenUsage = streamResult.usage;
           }
           if (streamResult?.failed) {
+            const failureStatusCode = readStatusCode(streamResult.failed.statusCode, 502) || 502;
             await markPoolFailure(
               `Upstream SSE response failed on ${req.method} ${req.originalUrl}: ${truncate(streamResult.failed.message, 200)}`,
-              streamResult.failed.statusCode
+              failureStatusCode
             );
             return;
           }
@@ -1489,7 +1595,7 @@ export function createProxyRouteHandlers(context) {
           }
           await markPoolSuccess();
         } catch (err) {
-          noteUpstreamRetry(res, res.locals?.upstreamRetryCount || 0, err);
+          noteUpstreamRetry(res, readRetryCountFromResponse(res), err);
           await markPoolFailure(`Invalid upstream SSE on ${req.method} ${req.originalUrl}: ${err.message}`, 502);
           if (!res.headersSent) {
             res.status(502).json({
@@ -1497,7 +1603,7 @@ export function createProxyRouteHandlers(context) {
               message: err.message,
               code: err?.code || err?.cause?.code || null,
               detail: extractUpstreamTransportError(err).detail || null,
-              retry_count: Number(res.locals?.upstreamRetryCount || 0)
+              retry_count: readRetryCountFromResponse(res)
             });
           } else {
             res.end();

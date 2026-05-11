@@ -1,4 +1,5 @@
 import { assertCodexOAuthMode } from "./admin-shared.js";
+import { setNoStoreHeaders } from "../http/cache-headers.js";
 import {
   captureActiveCodexAccountPointer,
   resetCodexAccountHealth,
@@ -13,6 +14,46 @@ function sanitizeExportSegment(value, fallback) {
     .replace(/-{2,}/g, "-")
     .replace(/^-+|-+$/g, "");
   return cleaned || fallback;
+}
+
+function parseIntegerValue(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : null;
+  }
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function toHttpStatusCode(value, fallback = 400) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;
+  }
+  if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+    return Number(value);
+  }
+  return fallback;
+}
+
+function toPositiveInteger(value, fallback) {
+  const parsed = parseIntegerValue(value);
+  if (parsed !== null && parsed > 0) return parsed;
+  const fallbackParsed = parseIntegerValue(fallback);
+  return fallbackParsed !== null && fallbackParsed > 0 ? fallbackParsed : 1;
+}
+
+function toNonNegativeInteger(value, fallback = 0) {
+  const parsed = parseIntegerValue(value);
+  if (parsed !== null && parsed >= 0) return parsed;
+  const fallbackParsed = parseIntegerValue(fallback);
+  return fallbackParsed !== null && fallbackParsed >= 0 ? fallbackParsed : 0;
+}
+
+function toNullablePositiveInteger(value) {
+  const parsed = parseIntegerValue(value);
+  return parsed !== null && parsed > 0 ? parsed : null;
 }
 
 export function registerAdminPoolRoutes(app, context) {
@@ -49,7 +90,21 @@ export function registerAdminPoolRoutes(app, context) {
     return normalized;
   }
 
+  async function readAdminPoolJsonBody(req, res) {
+    try {
+      return { ok: true, body: (await readJsonBody(req)) || {} };
+    } catch (err) {
+      const statusCode = toHttpStatusCode(err?.statusCode, 400);
+      res.status(statusCode).json({
+        error: err?.code || "invalid_request",
+        message: err?.message || "Invalid request body."
+      });
+      return { ok: false, body: null };
+    }
+  }
+
   app.get("/admin/auth-pool", async (_req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
     const normalized = await syncCodexOAuthStore({ persistIfChanged: true });
@@ -74,15 +129,15 @@ export function registerAdminPoolRoutes(app, context) {
           entryId: d.entryId,
           accountId: account.account_id,
           label: account.label || "",
-          slot: Number(account.slot || 0) || idx + 1,
+          slot: toPositiveInteger(account.slot, idx + 1),
           enabled: account.enabled !== false,
-          expiresAt: account.token?.expires_at || null,
-          lastUsedAt: account.last_used_at || 0,
-          failureCount: account.failure_count || 0,
-          cooldownUntil: account.cooldown_until || 0,
+          expiresAt: toNullablePositiveInteger(account.token?.expires_at),
+          lastUsedAt: toNonNegativeInteger(account.last_used_at, 0),
+          failureCount: toNonNegativeInteger(account.failure_count, 0),
+          cooldownUntil: toNonNegativeInteger(account.cooldown_until, 0),
           lastError: account.last_error || "",
           usageSnapshot: account.usage_snapshot || null,
-          usageUpdatedAt: account.usage_updated_at || 0,
+          usageUpdatedAt: toNonNegativeInteger(account.usage_updated_at, 0),
           healthScore: d.healthScore,
           healthStatus: d.healthStatus,
           primaryRemaining: d.primaryRemaining,
@@ -95,9 +150,12 @@ export function registerAdminPoolRoutes(app, context) {
   });
 
   app.post("/admin/auth-pool/toggle", async (req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = await readJsonBody(req);
+    const bodyResult = await readAdminPoolJsonBody(req, res);
+    if (!bodyResult.ok) return;
+    const body = bodyResult.body;
     const accountRef = String(body.entryId || body.accountId || "").trim();
     const enabled = body.enabled !== false;
     if (!accountRef) {
@@ -123,9 +181,12 @@ export function registerAdminPoolRoutes(app, context) {
   });
 
   app.post("/admin/auth-pool/activate", async (req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = await readJsonBody(req);
+    const bodyResult = await readAdminPoolJsonBody(req, res);
+    if (!bodyResult.ok) return;
+    const body = bodyResult.body;
     const accountRef = String(body.entryId || body.accountId || "").trim();
     if (!accountRef) {
       res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
@@ -150,9 +211,12 @@ export function registerAdminPoolRoutes(app, context) {
   });
 
   app.post("/admin/auth-pool/remove", async (req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = await readJsonBody(req);
+    const bodyResult = await readAdminPoolJsonBody(req, res);
+    if (!bodyResult.ok) return;
+    const body = bodyResult.body;
     const accountRef = String(body.entryId || body.accountId || "").trim();
     if (!accountRef) {
       res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
@@ -187,9 +251,12 @@ export function registerAdminPoolRoutes(app, context) {
   });
 
   app.post("/admin/auth-pool/import", async (req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = await readJsonBody(req);
+    const bodyResult = await readAdminPoolJsonBody(req, res);
+    if (!bodyResult.ok) return;
+    const body = bodyResult.body;
     try {
       const importItems = extractCodexOAuthImportItems({
         items: Array.isArray(body.tokens) ? body.tokens : [],
@@ -214,13 +281,14 @@ export function registerAdminPoolRoutes(app, context) {
   });
 
   app.get("/admin/auth-pool/export", async (_req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
     const { store } = await syncCodexOAuthStore();
     const accounts = Array.isArray(store.accounts) ? store.accounts : [];
     const exportedAccounts = accounts.map((account, index) => {
       const entryId = getCodexPoolEntryId(account) || `entry_${index + 1}`;
-      const slot = Number(account?.slot || 0) || index + 1;
+      const slot = toPositiveInteger(account?.slot, index + 1);
       const token = account?.token || {};
       const usageSnapshot =
         account?.usage_snapshot && typeof account.usage_snapshot === "object" ? account.usage_snapshot : null;
@@ -233,13 +301,13 @@ export function registerAdminPoolRoutes(app, context) {
         account_id: account?.account_id || null,
         plan_type: planType || null,
         usage_snapshot: usageSnapshot,
-        usage_updated_at: Number(account?.usage_updated_at || 0) || 0,
+        usage_updated_at: toNonNegativeInteger(account?.usage_updated_at, 0),
         access_token: token?.access_token || "",
         id_token: token?.id_token || null,
         refresh_token: token?.refresh_token || null,
         token_type: token?.token_type || "Bearer",
         scope: token?.scope || null,
-        expires_at: Number(token?.expires_at || 0) || 0
+        expires_at: toNonNegativeInteger(token?.expires_at, 0)
       };
     });
     const generatedAt = new Date().toISOString();
@@ -263,9 +331,12 @@ export function registerAdminPoolRoutes(app, context) {
   });
 
   app.post("/admin/auth-pool/refresh-usage", async (req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = await readJsonBody(req);
+    const bodyResult = await readAdminPoolJsonBody(req, res);
+    if (!bodyResult.ok) return;
+    const body = bodyResult.body;
     const accountRef = String(body.entryId || body.accountId || "").trim();
     const includeDisabled = body.includeDisabled === true;
 
@@ -361,9 +432,12 @@ export function registerAdminPoolRoutes(app, context) {
   });
 
   app.post("/admin/auth-pool/refresh-tokens", async (req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Account pool management")) return;
 
-    const body = await readJsonBody(req);
+    const bodyResult = await readAdminPoolJsonBody(req, res);
+    if (!bodyResult.ok) return;
+    const body = bodyResult.body;
     const accountRef = String(body.entryId || body.accountId || "").trim();
     const includeDisabled = body.includeDisabled !== false;
 
@@ -396,9 +470,12 @@ export function registerAdminPoolRoutes(app, context) {
   });
 
   app.post("/admin/auth-pool/switch-local", async (req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Local Codex account switch")) return;
 
-    const body = await readJsonBody(req);
+    const bodyResult = await readAdminPoolJsonBody(req, res);
+    if (!bodyResult.ok) return;
+    const body = bodyResult.body;
     const accountRef = String(body.entryId || body.accountId || "").trim();
     if (!accountRef) {
       res.status(400).json({ error: "invalid_request", message: "entryId/accountId is required." });
@@ -469,6 +546,7 @@ export function registerAdminPoolRoutes(app, context) {
   });
 
   app.get("/admin/preheat/state", (_req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Preheat")) return;
     res.json({
       ok: true,
@@ -477,9 +555,12 @@ export function registerAdminPoolRoutes(app, context) {
   });
 
   app.post("/admin/preheat/run", async (req, res) => {
+    setNoStoreHeaders(res);
     if (!assertCodexOAuthMode(config, res, "Preheat")) return;
     try {
-      const body = await readJsonBody(req);
+      const bodyResult = await readAdminPoolJsonBody(req, res);
+      if (!bodyResult.ok) return;
+      const body = bodyResult.body;
       const summary = await runCodexPreheat("manual", {
         model: typeof body.model === "string" ? body.model : "",
         allModels: body.allModels === true

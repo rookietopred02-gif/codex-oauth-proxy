@@ -33,10 +33,48 @@ export function createCodexPoolSelectionHelpers(options) {
   const SMART_ACTIVE_STICKY_SECONDARY_MARGIN = 8;
   const SMART_ACTIVE_STICKY_PRIMARY_MARGIN = 12;
   const SMART_LOW_QUOTA_PAUSE_SEC = 15 * 60;
+  const MODEL_CAPABILITY_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
+
+  function toFiniteNumber(value, fallback = null) {
+    if (value === null || value === undefined || value === "") return fallback;
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? value : fallback;
+    }
+    if (typeof value !== "string") return fallback;
+    const normalized = value.trim();
+    if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(normalized)) return fallback;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function toPositiveFiniteNumber(value, fallback = null) {
+    const parsed = toFiniteNumber(value, null);
+    return parsed !== null && parsed > 0 ? parsed : fallback;
+  }
+
+  function toIntegerNumber(value, fallback = null) {
+    if (value === null || value === undefined || value === "") return fallback;
+    if (typeof value === "number") return Number.isSafeInteger(value) ? value : fallback;
+    if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+      const parsed = Number(value.trim());
+      return Number.isSafeInteger(parsed) ? parsed : fallback;
+    }
+    return fallback;
+  }
+
+  function toPositiveInteger(value, fallback = null) {
+    const parsed = toIntegerNumber(value, null);
+    return parsed !== null && parsed > 0 ? parsed : fallback;
+  }
+
+  function toNonNegativeIntegerNumber(value, fallback = 0) {
+    const parsed = toIntegerNumber(value, null);
+    return parsed !== null && parsed >= 0 ? parsed : fallback;
+  }
 
   function parsePercentOrNull(value) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return null;
+    const n = toFiniteNumber(value, null);
+    if (n === null) return null;
     return Math.max(0, Math.min(100, n));
   }
 
@@ -99,14 +137,14 @@ export function createCodexPoolSelectionHelpers(options) {
 
   function hasCodexUsageWindow(usageWindow) {
     if (!usageWindow || typeof usageWindow !== "object") return false;
-    const windowMinutes = Number(usageWindow.window_minutes);
-    if (Number.isFinite(windowMinutes) && windowMinutes > 0) return true;
+    const windowMinutes = toPositiveFiniteNumber(usageWindow.window_minutes, null);
+    if (windowMinutes !== null) return true;
 
-    const resetAt = Number(usageWindow.reset_at);
-    if (Number.isFinite(resetAt) && resetAt > 0) return true;
+    const resetAt = toPositiveFiniteNumber(usageWindow.reset_at, null);
+    if (resetAt !== null) return true;
 
-    const resetAfterSec = Number(usageWindow.reset_after_seconds);
-    if (Number.isFinite(resetAfterSec) && resetAfterSec > 0) return true;
+    const resetAfterSec = toPositiveFiniteNumber(usageWindow.reset_after_seconds, null);
+    if (resetAfterSec !== null) return true;
 
     const usedPercent = parsePercentOrNull(usageWindow.used_percent);
     if (usedPercent !== null && usedPercent > 0) return true;
@@ -141,8 +179,8 @@ export function createCodexPoolSelectionHelpers(options) {
     let secondaryRemaining = secondaryHasWindow ? readUsageRemainingPercent(usage?.secondary) : null;
     let primaryUsed = primaryHasWindow ? readUsageUsedPercent(usage?.primary) : null;
     let secondaryUsed = secondaryHasWindow ? readUsageUsedPercent(usage?.secondary) : null;
-    let primaryWindowMinutes = Number(usage?.primary?.window_minutes);
-    let secondaryWindowMinutes = Number(usage?.secondary?.window_minutes);
+    let primaryWindowMinutes = toPositiveFiniteNumber(usage?.primary?.window_minutes, null);
+    let secondaryWindowMinutes = toPositiveFiniteNumber(usage?.secondary?.window_minutes, null);
     const planType = String(normalizePlanTypeSafe(usage?.plan_type) || "").trim().toLowerCase();
 
     if (planType === "free") {
@@ -151,14 +189,14 @@ export function createCodexPoolSelectionHelpers(options) {
         windows.push({
           remaining: primaryRemaining,
           used: primaryUsed,
-          minutes: Number.isFinite(primaryWindowMinutes) ? primaryWindowMinutes : null
+          minutes: primaryWindowMinutes
         });
       }
       if (secondaryHasWindow) {
         windows.push({
           remaining: secondaryRemaining,
           used: secondaryUsed,
-          minutes: Number.isFinite(secondaryWindowMinutes) ? secondaryWindowMinutes : null
+          minutes: secondaryWindowMinutes
         });
       }
 
@@ -175,7 +213,7 @@ export function createCodexPoolSelectionHelpers(options) {
       secondaryHasWindow = false;
       primaryRemaining = preferred?.remaining ?? null;
       primaryUsed = preferred?.used ?? null;
-      primaryWindowMinutes = Number.isFinite(preferred?.minutes) ? preferred.minutes : 10080;
+      primaryWindowMinutes = toPositiveFiniteNumber(preferred?.minutes, 10080);
       secondaryRemaining = null;
       secondaryUsed = null;
       secondaryWindowMinutes = null;
@@ -187,8 +225,8 @@ export function createCodexPoolSelectionHelpers(options) {
       isSingleWindow,
       primaryHasWindow,
       secondaryHasWindow,
-      primaryWindowMinutes: Number.isFinite(primaryWindowMinutes) ? primaryWindowMinutes : null,
-      secondaryWindowMinutes: Number.isFinite(secondaryWindowMinutes) ? secondaryWindowMinutes : null,
+      primaryWindowMinutes,
+      secondaryWindowMinutes,
       primaryRemaining,
       secondaryRemaining,
       primaryUsed,
@@ -204,11 +242,11 @@ export function createCodexPoolSelectionHelpers(options) {
   }
 
   function getCodexUsageWindowResetAt(usageWindow, snapshotTimestampSec = 0) {
-    const resetAt = Number(usageWindow?.reset_at);
-    if (Number.isFinite(resetAt) && resetAt > 0) return Math.floor(resetAt);
+    const resetAt = toPositiveFiniteNumber(usageWindow?.reset_at, null);
+    if (resetAt !== null) return Math.floor(resetAt);
 
-    const resetAfterSec = Number(usageWindow?.reset_after_seconds);
-    if (!Number.isFinite(resetAfterSec) || resetAfterSec <= 0) return null;
+    const resetAfterSec = toPositiveFiniteNumber(usageWindow?.reset_after_seconds, null);
+    if (resetAfterSec === null) return null;
 
     const baseTimestamp =
       Number.isFinite(snapshotTimestampSec) && snapshotTimestampSec > 0
@@ -221,7 +259,7 @@ export function createCodexPoolSelectionHelpers(options) {
     const usageStats = usage || getCodexUsageWindowStats(account);
     const usageSnapshot = account?.usage_snapshot && typeof account.usage_snapshot === "object" ? account.usage_snapshot : null;
     const snapshotTimestamp =
-      Number(account?.usage_updated_at || usageSnapshot?.fetched_at || 0) || 0;
+      toPositiveFiniteNumber(account?.usage_updated_at || usageSnapshot?.fetched_at || 0, 0);
     if (snapshotTimestamp <= 0) return 0;
 
     const lowQuotaThreshold = resolveCodexLowQuotaThreshold(usageStats);
@@ -272,8 +310,8 @@ export function createCodexPoolSelectionHelpers(options) {
 
   function classifyCodexPoolHealth(account, nowSec = Math.floor(Date.now() / 1000), usage = null) {
     const enabled = account?.enabled !== false;
-    const cooldownUntil = Number(account?.cooldown_until || 0);
-    const expiresAt = Number(account?.token?.expires_at || 0);
+    const cooldownUntil = toNonNegativeIntegerNumber(account?.cooldown_until, 0);
+    const expiresAt = toNonNegativeIntegerNumber(account?.token?.expires_at, 0);
     const inCooldown = cooldownUntil > nowSec;
     const expired = expiresAt > 0 && expiresAt <= nowSec;
     const expiringSoon = expiresAt > nowSec && expiresAt - nowSec < 180;
@@ -307,9 +345,9 @@ export function createCodexPoolSelectionHelpers(options) {
   ) {
     const usageStats = usage || getCodexUsageWindowStats(account);
     const healthMeta = health || classifyCodexPoolHealth(account, nowSec, usageStats);
-    const failureCount = Number(account?.failure_count || 0);
-    const cooldownUntil = Number(account?.cooldown_until || 0);
-    const expiresAt = Number(account?.token?.expires_at || 0);
+    const failureCount = toNonNegativeIntegerNumber(account?.failure_count, 0);
+    const cooldownUntil = toNonNegativeIntegerNumber(account?.cooldown_until, 0);
+    const expiresAt = toNonNegativeIntegerNumber(account?.token?.expires_at, 0);
     const isActive = getEntryId?.(account) === String(activeEntryId || "");
 
     let score = 100;
@@ -400,8 +438,8 @@ export function createCodexPoolSelectionHelpers(options) {
     const healthPriorityDiff = getCodexSmartHealthPriority(a) - getCodexSmartHealthPriority(b);
     if (healthPriorityDiff !== 0) return healthPriorityDiff;
 
-    const aFailures = Number(a?.account?.failure_count || 0);
-    const bFailures = Number(b?.account?.failure_count || 0);
+    const aFailures = toNonNegativeIntegerNumber(a?.account?.failure_count, 0);
+    const bFailures = toNonNegativeIntegerNumber(b?.account?.failure_count, 0);
     const aFailureBlocked = aFailures >= 5 ? 1 : 0;
     const bFailureBlocked = bFailures >= 5 ? 1 : 0;
     if (aFailureBlocked !== bFailureBlocked) return aFailureBlocked - bFailureBlocked;
@@ -429,7 +467,7 @@ export function createCodexPoolSelectionHelpers(options) {
     const bIsActive = b?.isActive === true;
     if (aIsActive !== bIsActive) return aIsActive ? -1 : 1;
 
-    const healthScoreDiff = Number(b?.healthScore || 0) - Number(a?.healthScore || 0);
+    const healthScoreDiff = toFiniteNumber(b?.healthScore, 0) - toFiniteNumber(a?.healthScore, 0);
     if (healthScoreDiff !== 0) return healthScoreDiff;
 
     if ((b.secondaryUsed ?? -1) !== (a.secondaryUsed ?? -1)) {
@@ -438,8 +476,8 @@ export function createCodexPoolSelectionHelpers(options) {
     if ((b.primaryUsed ?? -1) !== (a.primaryUsed ?? -1)) {
       return (a.primaryUsed ?? -1) - (b.primaryUsed ?? -1);
     }
-    const aUsed = Number(a.account?.last_used_at || 0);
-    const bUsed = Number(b.account?.last_used_at || 0);
+    const aUsed = toNonNegativeIntegerNumber(a.account?.last_used_at, 0);
+    const bUsed = toNonNegativeIntegerNumber(b.account?.last_used_at, 0);
     if (aUsed !== bUsed) return aUsed - bUsed;
     return String(a.entryId || "").localeCompare(String(b.entryId || ""));
   }
@@ -503,12 +541,12 @@ export function createCodexPoolSelectionHelpers(options) {
       (account) =>
         account &&
         account.enabled !== false &&
-        Number(account.token_invalidated_at || account.tokenInvalidatedAt || 0) <= 0
+        toNonNegativeIntegerNumber(account.token_invalidated_at || account.tokenInvalidatedAt || 0, 0) <= 0
     );
     if (enabledAccounts.length === 0) return [];
     const filteredEnabledAccounts = filterCodexPoolAccounts(enabledAccounts, getPoolFilterSafe());
     if (filteredEnabledAccounts.length === 0) return [];
-    const eligible = filteredEnabledAccounts.filter((account) => Number(account.cooldown_until || 0) <= nowSec);
+    const eligible = filteredEnabledAccounts.filter((account) => toNonNegativeIntegerNumber(account.cooldown_until, 0) <= nowSec);
     return eligible.filter((account) => {
       const health = classifyCodexPoolHealth(account, nowSec);
       return !health.hardLimited;
@@ -517,8 +555,57 @@ export function createCodexPoolSelectionHelpers(options) {
 
   function rotateListFromIndex(list, startIndex) {
     if (!Array.isArray(list) || list.length === 0) return [];
-    const safeStart = Math.max(0, Math.min(Number(startIndex || 0), list.length - 1));
+    const safeStart = Math.max(0, Math.min(toNonNegativeIntegerNumber(startIndex, 0), list.length - 1));
     return list.slice(safeStart).concat(list.slice(0, safeStart));
+  }
+
+  function normalizeCodexModelIds(values) {
+    return [
+      ...new Set(
+        (Array.isArray(values) ? values : [])
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
+      )
+    ].sort();
+  }
+
+  function readCachedCodexModelIds(account, nowMs = Date.now()) {
+    const codexCapabilities = account?.model_capabilities?.codex;
+    if (!codexCapabilities || typeof codexCapabilities !== "object" || Array.isArray(codexCapabilities)) {
+      return null;
+    }
+    const fetchedAtRaw = toPositiveInteger(codexCapabilities.fetched_at, null);
+    if (fetchedAtRaw === null) return null;
+    const fetchedAtMs = fetchedAtRaw > 100000000000 ? fetchedAtRaw : fetchedAtRaw * 1000;
+    if (
+      !Number.isFinite(fetchedAtMs) ||
+      fetchedAtMs <= 0 ||
+      nowMs - fetchedAtMs > MODEL_CAPABILITY_CACHE_MAX_AGE_MS
+    ) {
+      return null;
+    }
+    const modelIds = normalizeCodexModelIds(codexCapabilities.supported_models || []);
+    return modelIds.length > 0 ? modelIds : null;
+  }
+
+  function prioritizeCodexModelCapableAccounts(candidates, requestedModel) {
+    const model = String(requestedModel || "").trim();
+    const ordered = Array.isArray(candidates) ? candidates.filter(Boolean) : [];
+    if (!model || ordered.length === 0) return ordered;
+
+    const nowMs = Date.now();
+    const ranked = ordered.map((account, index) => {
+      const cachedModels = readCachedCodexModelIds(account, nowMs);
+      return {
+        account,
+        index,
+        rank: !cachedModels ? 1 : cachedModels.includes(model) ? 0 : 2
+      };
+    });
+    return ranked
+      .filter((item) => item.rank < 2)
+      .sort((left, right) => left.rank - right.rank || left.index - right.index)
+      .map((item) => item.account);
   }
 
   function prioritizeUnleasedCodexAccounts(candidates, preferredPoolEntryId = "") {
@@ -546,6 +633,7 @@ export function createCodexPoolSelectionHelpers(options) {
     const enabled = getCodexEnabledAccounts(store);
     const preferredPoolEntryId =
       typeof options.preferredPoolEntryId === "string" ? options.preferredPoolEntryId.trim() : "";
+    const requestedModel = typeof options.requestedModel === "string" ? options.requestedModel.trim() : "";
     const strategy =
       typeof options.strategy === "string" && options.strategy.trim().length > 0
         ? options.strategy.trim()
@@ -573,8 +661,8 @@ export function createCodexPoolSelectionHelpers(options) {
       candidates =
         activeAccount &&
         activeAccount.enabled !== false &&
-        Number(activeAccount.token_invalidated_at || activeAccount.tokenInvalidatedAt || 0) <= 0 &&
-        Number(activeAccount.cooldown_until || 0) <= nowSec &&
+        toNonNegativeIntegerNumber(activeAccount.token_invalidated_at || activeAccount.tokenInvalidatedAt || 0, 0) <= 0 &&
+        toNonNegativeIntegerNumber(activeAccount.cooldown_until, 0) <= nowSec &&
         !classifyCodexPoolHealth(activeAccount, nowSec).hardLimited
           ? [activeAccount]
           : [];
@@ -597,9 +685,11 @@ export function createCodexPoolSelectionHelpers(options) {
     if (!Array.isArray(candidates) || candidates.length === 0) {
       if (strategy === "manual") return [];
       if (enabled.length === 0) return [];
-      const start = Number(store?.rotation?.next_index || 0) % enabled.length;
+      const start = toNonNegativeIntegerNumber(store?.rotation?.next_index, 0) % enabled.length;
       candidates = rotateListFromIndex(enabled, start);
     }
+
+    candidates = prioritizeCodexModelCapableAccounts(candidates, requestedModel);
 
     if (strategy === "manual") {
       return candidates;
@@ -609,10 +699,7 @@ export function createCodexPoolSelectionHelpers(options) {
       return prioritizeUnleasedCodexAccounts(candidates);
     }
 
-    const preferredPool = filterCodexPoolAccounts((Array.isArray(store?.accounts) ? store.accounts : []).filter(
-      (account) => account && account.enabled !== false
-    ));
-    const preferred = preferredPool.find((account) => getEntryId?.(account) === preferredPoolEntryId);
+    const preferred = candidates.find((account) => getEntryId?.(account) === preferredPoolEntryId);
     if (!preferred) return prioritizeUnleasedCodexAccounts(candidates);
 
     const preferredId = getEntryId?.(preferred);

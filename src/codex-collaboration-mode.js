@@ -64,6 +64,23 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function toIntegerNumber(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : fallback;
+  }
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : fallback;
+  }
+  return fallback;
+}
+
+function toNonNegativeInteger(value, fallback) {
+  const parsed = toIntegerNumber(value, null);
+  return parsed !== null && parsed >= 0 ? parsed : fallback;
+}
+
 export function normalizeCodexCollaborationMode(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === PLAN_COLLABORATION_MODE) return PLAN_COLLABORATION_MODE;
@@ -294,9 +311,10 @@ export function createCodexCollaborationModeResolver(options = {}) {
     path.join(codexHome, "archived_sessions")
   ];
   const sessionStateCache = new Map();
-  const turnModeResolveTimeoutMs = Math.max(0, Number(
-    options.turnModeResolveTimeoutMs ?? DEFAULT_TURN_MODE_RESOLVE_TIMEOUT_MS
-  ) || 0);
+  const turnModeResolveTimeoutMs = toNonNegativeInteger(
+    options.turnModeResolveTimeoutMs,
+    DEFAULT_TURN_MODE_RESOLVE_TIMEOUT_MS
+  );
 
   async function findSessionFile(sessionId) {
     const normalizedSessionId = String(sessionId || "").trim();

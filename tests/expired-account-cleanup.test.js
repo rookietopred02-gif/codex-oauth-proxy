@@ -4,6 +4,8 @@ import test from "node:test";
 import { isCodexTokenInvalidatedError } from "../src/codex-token-invalidated.js";
 import {
   createExpiredAccountCleanupController,
+  findInvalidatedAccountCleanupCandidates,
+  normalizeExpiredAccountCleanupConfig,
   shouldAutoRemoveInvalidatedAccount
 } from "../src/expired-account-cleanup.js";
 
@@ -14,6 +16,11 @@ const ACCOUNT_DEACTIVATED_REASON =
 
 test("token_revoked invalidated oauth failures are recognized for auto-rm", () => {
   assert.equal(isCodexTokenInvalidatedError(401, TOKEN_REVOKED_REASON), true);
+  assert.equal(isCodexTokenInvalidatedError("401", TOKEN_REVOKED_REASON), true);
+  assert.equal(isCodexTokenInvalidatedError("401.0", TOKEN_REVOKED_REASON), false);
+  assert.equal(isCodexTokenInvalidatedError(401.5, TOKEN_REVOKED_REASON), false);
+  assert.equal(isCodexTokenInvalidatedError(600, TOKEN_REVOKED_REASON), false);
+  assert.equal(isCodexTokenInvalidatedError(Symbol("status"), TOKEN_REVOKED_REASON), false);
   assert.equal(
     shouldAutoRemoveInvalidatedAccount({
       last_status_code: 401,
@@ -32,6 +39,83 @@ test("account_deactivated failures are recognized for auto-rm", () => {
     }),
     true
   );
+});
+
+test("expired account cleanup ignores malformed numeric markers without throwing", () => {
+  assert.deepEqual(
+    normalizeExpiredAccountCleanupConfig({
+      enabled: true,
+      intervalSeconds: Symbol("interval")
+    }),
+    {
+      enabled: true,
+      intervalSeconds: 30
+    }
+  );
+  assert.deepEqual(
+    normalizeExpiredAccountCleanupConfig({
+      enabled: true,
+      intervalSeconds: "12.9"
+    }),
+    {
+      enabled: true,
+      intervalSeconds: 30
+    }
+  );
+  assert.equal(
+    shouldAutoRemoveInvalidatedAccount({
+      token_invalidated_at: Symbol("invalidated"),
+      last_status_code: Symbol("status"),
+      last_error: TOKEN_REVOKED_REASON
+    }),
+    false
+  );
+  assert.equal(
+    shouldAutoRemoveInvalidatedAccount({
+      token_invalidated_at: "12345.9"
+    }),
+    false
+  );
+  assert.equal(
+    shouldAutoRemoveInvalidatedAccount({
+      last_status_code: "401.9",
+      last_error: TOKEN_REVOKED_REASON
+    }),
+    false
+  );
+  assert.equal(
+    shouldAutoRemoveInvalidatedAccount({
+      last_status_code: "401.0",
+      last_error: TOKEN_REVOKED_REASON
+    }),
+    false
+  );
+
+  const candidates = findInvalidatedAccountCleanupCandidates([
+    {
+      identity_id: "entry_malformed",
+      token_invalidated_at: Symbol("invalidated"),
+      last_status_code: Symbol("status"),
+      last_error: TOKEN_REVOKED_REASON
+    },
+    {
+      identity_id: "entry_decimal_invalidated",
+      token_invalidated_at: "12345.9"
+    },
+    {
+      identity_id: "entry_invalidated",
+      token_invalidated_at: "12345"
+    }
+  ]);
+
+  assert.deepEqual(candidates, [
+    {
+      ref: "entry_invalidated",
+      entryId: "entry_invalidated",
+      accountId: null,
+      invalidatedAt: 12345
+    }
+  ]);
 });
 
 test("expired account cleanup removes invalidated accounts even while leased", async () => {

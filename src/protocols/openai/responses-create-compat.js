@@ -30,6 +30,7 @@ const MATRIX = Object.freeze({
   user: Object.freeze({ official: true, codexResponses: "passthrough" }),
   client_metadata: Object.freeze({ official: false, codexResponses: "passthrough" }),
   collaborationMode: Object.freeze({ official: false, codexResponses: "local_transform" }),
+  collaboration_mode: Object.freeze({ official: false, codexResponses: "local_transform" }),
   generate: Object.freeze({ official: false, codexResponses: "local_transform" }),
   messages: Object.freeze({ official: false, codexResponses: "alias" }),
   reasoning_effort: Object.freeze({ official: false, codexResponses: "alias" }),

@@ -5,6 +5,22 @@ function addUniqueProcessListener(eventName, handler) {
   }
 }
 
+function readListenPort(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 && value < 65536 ? value : null;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) && parsed >= 0 && parsed < 65536 ? parsed : null;
+  }
+  return null;
+}
+
+function resolveListenPort(value, fallback, defaultPort = 8787) {
+  return readListenPort(value) ?? readListenPort(fallback) ?? defaultPort;
+}
+
 export function startConfiguredServer({
   app,
   config,
@@ -32,8 +48,7 @@ export function startConfiguredServer({
 
     const nextHost = String(overrides.host || config.host || "127.0.0.1").trim() || "127.0.0.1";
     const rawPort = overrides.port ?? config.port;
-    const requestedPort = Number(rawPort);
-    const nextPort = Number.isFinite(requestedPort) ? requestedPort : Number(config.port || 8787);
+    const nextPort = resolveListenPort(rawPort, config.port);
 
     startPromise = new Promise((resolve, reject) => {
       const server = app.listen(nextPort, nextHost);

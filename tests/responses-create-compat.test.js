@@ -13,7 +13,7 @@ const responsesOpenApiContract = JSON.parse(
   readFileSync(new URL("./fixtures/openai-responses-openapi.json", import.meta.url), "utf8")
 );
 
-test("responses create compat matrix covers the official create fields used by fixtures", () => {
+function getOfficialCreateFixtureFields() {
   const expectedFields = new Set([
     "model",
     "stream",
@@ -24,6 +24,11 @@ test("responses create compat matrix covers the official create fields used by f
   ]);
   expectedFields.delete("messages");
   expectedFields.delete("reasoning_effort");
+  return expectedFields;
+}
+
+test("responses create compat matrix covers the official create fields used by fixtures", () => {
+  const expectedFields = getOfficialCreateFixtureFields();
 
   for (const fieldName of expectedFields) {
     assert.equal(
@@ -39,17 +44,32 @@ test("responses create compat matrix covers the official create fields used by f
   }
 });
 
+test("responses create fixture covers every official codex passthrough field", () => {
+  const fixtureFields = getOfficialCreateFixtureFields();
+
+  for (const [fieldName, descriptor] of Object.entries(RESPONSES_CREATE_FIELD_MATRIX)) {
+    if (descriptor?.official !== true || descriptor?.codexResponses !== "passthrough") continue;
+    assert.equal(
+      fixtureFields.has(fieldName),
+      true,
+      `expected fixture passthrough coverage for official Responses create field ${fieldName}`
+    );
+  }
+});
+
 test("responses create compat matrix keeps local alias fields separate from official fields", () => {
   assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("messages"), true);
   assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("reasoning_effort"), true);
   assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("client_metadata"), true);
   assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("collaborationMode"), true);
+  assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("collaboration_mode"), true);
   assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("generate"), true);
   assert.equal(RESPONSES_CREATE_ALIAS_FIELDS.includes("settings"), true);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("messages"), false);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("reasoning_effort"), false);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("client_metadata"), false);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("collaborationMode"), false);
+  assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("collaboration_mode"), false);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("generate"), false);
   assert.equal(OFFICIAL_RESPONSES_CREATE_FIELDS.includes("settings"), false);
 });

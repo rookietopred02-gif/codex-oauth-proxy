@@ -7,19 +7,35 @@ import test from "node:test";
 
 import { __testing as appServerTesting, startAppServer, stopAppServer } from "../src/app-server.js";
 
+const FETCH_FORBIDDEN_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
+  101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161,
+  179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563,
+  587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061,
+  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080
+]);
+
+function isFetchAllowedPort(port) {
+  return Number.isInteger(port) && port > 0 && !FETCH_FORBIDDEN_PORTS.has(port);
+}
+
 async function reserveFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? Number(address.port || 0) : 0;
-      server.close((err) => {
-        if (err) reject(err);
-        else resolve(port);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const port = await new Promise((resolve, reject) => {
+      const server = createServer();
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        const reservedPort = typeof address === "object" && address ? Number(address.port || 0) : 0;
+        server.close((err) => {
+          if (err) reject(err);
+          else resolve(reservedPort);
+        });
       });
     });
-  });
+    if (isFetchAllowedPort(port)) return port;
+  }
+  throw new Error("Could not reserve a fetch-compatible test port.");
 }
 
 async function createTempAppDataDir() {
@@ -76,6 +92,50 @@ test("startAppServer explicit port overrides the desktop env PORT", async () => 
     assert.equal(backend.port, explicitPort);
     assert.equal(backend.url, `http://127.0.0.1:${explicitPort}`);
     await assertHealth(backend.url);
+  } finally {
+    await stopAppServer("TEST");
+    await fs.rm(appDataDir, { recursive: true, force: true });
+  }
+});
+
+test("desktop embedded server port parser rejects decimal-form values", async () => {
+  const appDataDir = await createTempAppDataDir();
+  await writeDesktopEnv(appDataDir, ["PORT=8788.9", "AUTH_MODE=codex-oauth"]);
+
+  try {
+    assert.equal(appServerTesting.normalizeEmbeddedServerPort("8787"), 8787);
+    assert.equal(appServerTesting.normalizeEmbeddedServerPort("8787.0"), null);
+    assert.equal(appServerTesting.normalizeEmbeddedServerPort(8787.5), null);
+    assert.equal(
+      appServerTesting.resolveEmbeddedServerPort(path.join(appDataDir, ".env"), "9898.1"),
+      8787
+    );
+    assert.equal(appServerTesting.resolveEmbeddedServerPort(path.join(appDataDir, ".env")), 8787);
+  } finally {
+    await fs.rm(appDataDir, { recursive: true, force: true });
+  }
+});
+
+test("proxy API auth failures are not cacheable", async () => {
+  const appDataDir = await createTempAppDataDir();
+  const port = await reserveFreePort();
+
+  await writeDesktopEnv(appDataDir, [`PORT=${port}`, "AUTH_MODE=codex-oauth"]);
+
+  try {
+    const backend = await startAppServer({
+      appDataDir,
+      host: "127.0.0.1"
+    });
+
+    const response = await fetch(`${backend.url}/v1/models`);
+    const body = await response.json();
+
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
+    assert.equal(response.headers.get("pragma"), "no-cache");
+    assert.equal(response.headers.get("expires"), "0");
+    assert.equal(body.error, "proxy_api_key_not_configured");
   } finally {
     await stopAppServer("TEST");
     await fs.rm(appDataDir, { recursive: true, force: true });

@@ -1,4 +1,7 @@
-import { DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS } from "../upstream-timeouts.js";
+import {
+  DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS,
+  normalizeUpstreamStreamIdleTimeoutMs
+} from "../upstream-timeouts.js";
 
 export function isResponseClosed(res) {
   return Boolean(
@@ -89,7 +92,8 @@ export function parseSseJsonEventBlock(block) {
 export function createUpstreamIdleTimeoutError(
   timeoutMs = DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS
 ) {
-  const err = new Error(`Upstream SSE stalled for ${timeoutMs}ms without data.`);
+  const normalizedTimeoutMs = normalizeUpstreamStreamIdleTimeoutMs(timeoutMs);
+  const err = new Error(`Upstream SSE stalled for ${normalizedTimeoutMs}ms without data.`);
   err.code = "UPSTREAM_STREAM_IDLE_TIMEOUT";
   return err;
 }
@@ -99,7 +103,8 @@ export async function readUpstreamChunkWithIdleTimeout(
   upstream,
   timeoutMs = DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS
 ) {
-  if (!(timeoutMs > 0)) {
+  const normalizedTimeoutMs = normalizeUpstreamStreamIdleTimeoutMs(timeoutMs);
+  if (!(normalizedTimeoutMs > 0)) {
     return await reader.read();
   }
 
@@ -109,7 +114,8 @@ export async function readUpstreamChunkWithIdleTimeout(
       reader.read(),
       new Promise((_, reject) => {
         timer = setTimeout(() => {
-          const timeoutError = createUpstreamIdleTimeoutError(timeoutMs);
+          const timeoutError = createUpstreamIdleTimeoutError(normalizedTimeoutMs);
+          reject(timeoutError);
           const cancelReader =
             typeof reader?.cancel === "function" ? reader.cancel.bind(reader) : null;
           if (cancelReader) {
@@ -117,8 +123,7 @@ export async function readUpstreamChunkWithIdleTimeout(
           } else {
             cancelUpstreamStream(upstream, reader).catch(() => {});
           }
-          reject(timeoutError);
-        }, timeoutMs);
+        }, normalizedTimeoutMs);
         timer.unref?.();
       })
     ]);

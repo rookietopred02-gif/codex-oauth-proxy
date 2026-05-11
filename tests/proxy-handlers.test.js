@@ -133,13 +133,26 @@ function createHandlers({ normalizeResponsesImpl, fetchImpl, configOverrides = {
     runtimeAuditMaxBodyBytes: 1024,
     runtimeAuditMaxTextChars: 1024,
     async readJsonBody(req) {
-      return req.rawBody.length > 0 ? JSON.parse(req.rawBody.toString("utf8")) : undefined;
+      if (req.rawBody.length === 0) return undefined;
+      try {
+        return JSON.parse(req.rawBody.toString("utf8"));
+      } catch {
+        const error = new Error("Body must be valid JSON.");
+        error.code = "invalid_json";
+        error.statusCode = 400;
+        throw error;
+      }
     },
     async readRawBody(req) {
       return req.rawBody || Buffer.alloc(0);
     },
     getCachedJsonBody(req) {
-      return req.rawBody.length > 0 ? JSON.parse(req.rawBody.toString("utf8")) : undefined;
+      if (req.rawBody.length === 0) return undefined;
+      try {
+        return JSON.parse(req.rawBody.toString("utf8"));
+      } catch {
+        return undefined;
+      }
     },
     extractPreviousResponseId() {
       return "";
@@ -489,6 +502,94 @@ test("recent proxy audit rows mark normal requests as HTTP transport", () => {
   assert.equal(appendedRows[0]?.transportType, "http");
 });
 
+test("recent proxy audit rows tolerate malformed numeric metadata", () => {
+  const appendedRows = [];
+  const packetLimits = [];
+  const runtimeStats = {
+    totalRequests: 0,
+    okRequests: 0,
+    errorRequests: 0,
+    auditErrors: Symbol("audit-errors"),
+    recentRequests: []
+  };
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("Not used in malformed audit metadata test.");
+    },
+    async fetchImpl() {
+      throw new Error("Not used in malformed audit metadata test.");
+    },
+    configOverrides: {
+      requestAudit: {
+        capturePackets: true,
+        maxPacketChars: Symbol("packet-limit")
+      }
+    },
+    contextOverrides: {
+      runtimeStats,
+      recentRequestsStore: {
+        append(row) {
+          appendedRows.push(row);
+          return { recentRequests: appendedRows };
+        }
+      },
+      formatPayloadForAudit(raw, _contentType, maxChars) {
+        packetLimits.push(maxChars);
+        return Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw || "");
+      }
+    }
+  });
+
+  const row = handlers.recordRecentProxyRequest({
+    method: "GET",
+    rawPath: "/v1/responses",
+    statusCode: Symbol("status"),
+    startedAt: Symbol("started-at"),
+    upstreamRetryCount: Symbol("retry-count"),
+    requestBody: Buffer.from("request", "utf8"),
+    upstreamRequestBody: Buffer.from("upstream", "utf8"),
+    responseBody: Buffer.from("response", "utf8")
+  });
+
+  assert.equal(row.status, 0);
+  assert.equal(row.upstreamRetryCount, 0);
+  assert.ok(row.durationMs >= 0);
+  assert.equal(row.requestPacket, "request");
+  assert.equal(row.upstreamRequestPacket, "upstream");
+  assert.equal(row.responsePacket, "response");
+  assert.deepEqual(packetLimits, [0, 0, 0, 0]);
+  assert.equal(runtimeStats.totalRequests, 1);
+  assert.equal(runtimeStats.okRequests, 0);
+  assert.equal(runtimeStats.errorRequests, 1);
+  assert.equal(appendedRows.length, 1);
+
+  const outOfRangeRow = handlers.recordRecentProxyRequest({
+    method: "GET",
+    rawPath: "/v1/responses",
+    statusCode: 700
+  });
+
+  assert.equal(outOfRangeRow.status, 0);
+  assert.equal(runtimeStats.totalRequests, 2);
+  assert.equal(runtimeStats.okRequests, 0);
+  assert.equal(runtimeStats.errorRequests, 2);
+  assert.equal(appendedRows.length, 2);
+
+  const decimalStatusRow = handlers.recordRecentProxyRequest({
+    method: "GET",
+    rawPath: "/v1/responses",
+    statusCode: "500.0",
+    upstreamRetryCount: "1.9"
+  });
+
+  assert.equal(decimalStatusRow.status, 0);
+  assert.equal(decimalStatusRow.upstreamRetryCount, 0);
+  assert.equal(runtimeStats.totalRequests, 3);
+  assert.equal(runtimeStats.okRequests, 0);
+  assert.equal(runtimeStats.errorRequests, 3);
+  assert.equal(appendedRows.length, 3);
+});
+
 test("recent proxy audit backfills cached input tokens from response packets", () => {
   const appendedRows = [];
   const runtimeStats = {
@@ -602,6 +703,450 @@ test("POST /v1/responses applies create normalization before forwarding upstream
   assert.equal(Buffer.from(capturedInit.body).toString("utf8"), JSON.stringify(normalizedJson));
 });
 
+test("Responses create proxy session forwards the mapped model to auth selection and retry", async () => {
+  const authOptions = [];
+  let authCounter = 0;
+  let fetchCalls = 0;
+  const normalizedJson = {
+    model: "gpt-5.5",
+    stream: true,
+    input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+  };
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      return {
+        body: Buffer.from(JSON.stringify(normalizedJson), "utf8"),
+        json: normalizedJson,
+        collectCompletedResponseAsJson: false,
+        model: "gpt-alias",
+        modelRoute: {
+          requestedModel: "gpt-alias",
+          mappedModel: "gpt-5.5"
+        }
+      };
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      return new Response("", {
+        status: fetchCalls === 1 ? 429 : 200,
+        headers: { "content-type": "text/event-stream" }
+      });
+    },
+    contextOverrides: {
+      isCodexPoolRetryEnabled() {
+        return true;
+      },
+      shouldRotateCodexAccountForStatus(status) {
+        return Number(status || 0) === 429;
+      },
+      async getValidAuthContext(options = {}) {
+        authOptions.push(options);
+        authCounter += 1;
+        return {
+          accessToken: `token_${authCounter}`,
+          accountId: `acct_${authCounter}`,
+          poolEntryId: `pool_${authCounter}`,
+          poolAccountId: `pool_${authCounter}`,
+          releaseLease() {}
+        };
+      }
+    }
+  });
+  const payload = {
+    model: "gpt-alias",
+    input: "hello"
+  };
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {}
+    },
+    createMockResponse(),
+    {
+      originalUrl: "/v1/responses",
+      requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+      parsedRequestBody: payload
+    }
+  );
+
+  assert.equal(fetchCalls, 2);
+  assert.deepEqual(
+    authOptions.map((options) => options.requestedModel),
+    ["gpt-5.5", "gpt-5.5"]
+  );
+  session.release();
+});
+
+test("Responses create proxy reports model-specific pool selection failures", async () => {
+  let fetchCalls = 0;
+  const normalizedJson = {
+    model: "gpt-5.5",
+    input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+  };
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      return {
+        body: Buffer.from(JSON.stringify(normalizedJson), "utf8"),
+        json: normalizedJson,
+        collectCompletedResponseAsJson: false,
+        model: "gpt-alias",
+        modelRoute: {
+          requestedModel: "gpt-alias",
+          mappedModel: "gpt-5.5"
+        }
+      };
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      throw new Error("request should not reach upstream without a capable account");
+    },
+    contextOverrides: {
+      async getValidAuthContext(options = {}) {
+        assert.equal(options.requestedModel, "gpt-5.5");
+        const err = new Error('No selectable OAuth account is known to support the requested model "gpt-5.5".');
+        err.statusCode = 409;
+        err.error = "model_account_unavailable";
+        err.requestedModel = "gpt-5.5";
+        throw err;
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { model: "gpt-alias", input: "hello" }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.jsonPayload?.error, "model_account_unavailable");
+  assert.match(res.jsonPayload?.message || "", /gpt-5\.5/);
+});
+
+test("Chat completions proxy forwards the mapped model to auth selection and retry", async () => {
+  const authOptions = [];
+  let authCounter = 0;
+  let fetchCalls = 0;
+  const normalizedJson = {
+    model: "gpt-5.5",
+    stream: true,
+    store: false,
+    input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+  };
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("Responses normalizer should not run for chat completions");
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      return new Response(
+        'data: {"type":"response.completed","response":{"id":"resp_chat","status":"completed","usage":{},"output":[]}}\n\n',
+        {
+          status: fetchCalls === 1 ? 429 : 200,
+          headers: { "content-type": "text/event-stream" }
+        }
+      );
+    },
+    contextOverrides: {
+      normalizeChatCompletionsRequestBody() {
+        return {
+          body: Buffer.from(JSON.stringify(normalizedJson), "utf8"),
+          json: normalizedJson,
+          wantsStream: false,
+          model: "gpt-alias",
+          modelRoute: {
+            requestedModel: "gpt-alias",
+            mappedModel: "gpt-5.5"
+          }
+        };
+      },
+      isCodexPoolRetryEnabled() {
+        return true;
+      },
+      shouldRotateCodexAccountForStatus(status) {
+        return Number(status || 0) === 429;
+      },
+      async getValidAuthContext(options = {}) {
+        authOptions.push(options);
+        authCounter += 1;
+        return {
+          accessToken: `token_${authCounter}`,
+          accountId: `acct_${authCounter}`,
+          poolEntryId: `pool_${authCounter}`,
+          poolAccountId: `pool_${authCounter}`,
+          releaseLease() {}
+        };
+      },
+      parseResponsesResultFromSse() {
+        return {
+          completed: {
+            id: "resp_chat",
+            status: "completed",
+            usage: {},
+            output: []
+          },
+          failed: null
+        };
+      },
+      convertResponsesToChatCompletion(completed) {
+        return {
+          id: "chatcmpl_test",
+          object: "chat.completion",
+          model: completed?.model || "",
+          choices: [],
+          usage: {}
+        };
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/chat/completions",
+    body: { model: "gpt-alias", messages: [{ role: "user", content: "hello" }] }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(fetchCalls, 2);
+  assert.deepEqual(
+    authOptions.map((options) => options.requestedModel),
+    ["gpt-5.5", "gpt-5.5"]
+  );
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.jsonPayload?.model, "gpt-alias");
+});
+
+test("Chat completions proxy reports model-specific pool selection failures", async () => {
+  let fetchCalls = 0;
+  const normalizedJson = {
+    model: "gpt-5.5",
+    stream: true,
+    store: false,
+    input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+  };
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("Responses normalizer should not run for chat completions");
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      throw new Error("request should not reach upstream without a capable account");
+    },
+    contextOverrides: {
+      normalizeChatCompletionsRequestBody() {
+        return {
+          body: Buffer.from(JSON.stringify(normalizedJson), "utf8"),
+          json: normalizedJson,
+          wantsStream: false,
+          model: "gpt-alias",
+          modelRoute: {
+            requestedModel: "gpt-alias",
+            mappedModel: "gpt-5.5"
+          }
+        };
+      },
+      async getValidAuthContext(options = {}) {
+        assert.equal(options.requestedModel, "gpt-5.5");
+        const err = new Error('No selectable OAuth account is known to support the requested model "gpt-5.5".');
+        err.statusCode = 409;
+        err.error = "model_account_unavailable";
+        err.requestedModel = "gpt-5.5";
+        throw err;
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/chat/completions",
+    body: { model: "gpt-alias", messages: [{ role: "user", content: "hello" }] }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.jsonPayload?.error, "model_account_unavailable");
+  assert.match(res.jsonPayload?.message || "", /gpt-5\.5/);
+});
+
+test("Chat completions proxy treats malformed auth failure statuses as unauthorized", async () => {
+  let fetchCalls = 0;
+  const normalizedJson = {
+    model: "gpt-5.4",
+    stream: false,
+    store: false,
+    input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+  };
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("Responses normalizer should not run for chat completions");
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      throw new Error("Upstream should not be reached after auth failure.");
+    },
+    contextOverrides: {
+      normalizeChatCompletionsRequestBody() {
+        return {
+          body: Buffer.from(JSON.stringify(normalizedJson), "utf8"),
+          json: normalizedJson,
+          wantsStream: false,
+          model: "gpt-5.4"
+        };
+      },
+      async getValidAuthContext() {
+        const err = new Error("Auth failed with malformed status metadata.");
+        err.statusCode = Symbol("bad-status");
+        throw err;
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/chat/completions",
+    body: { model: "gpt-5.4", messages: [{ role: "user", content: "hello" }] }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.jsonPayload?.error, "unauthorized");
+  assert.match(res.jsonPayload?.message || "", /malformed status/i);
+});
+
+test("Chat completions proxy normalizes malformed retry metadata on transport failures", async () => {
+  let upstreamCalls = 0;
+  const normalizedJson = {
+    model: "gpt-5.4",
+    stream: false,
+    store: false,
+    input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+  };
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("Responses normalizer should not run for chat completions");
+    },
+    async fetchImpl() {
+      throw new Error("Default fetch should not run when fetchUpstreamWithRetry is overridden.");
+    },
+    contextOverrides: {
+      normalizeChatCompletionsRequestBody() {
+        return {
+          body: Buffer.from(JSON.stringify(normalizedJson), "utf8"),
+          json: normalizedJson,
+          wantsStream: false,
+          model: "gpt-5.4"
+        };
+      },
+      async fetchUpstreamWithRetry(_url, _init, retryState) {
+        upstreamCalls += 1;
+        retryState.locals.upstreamRetryCount = "1.9";
+        const err = new Error("network down");
+        err.code = "ECONNRESET";
+        throw err;
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/chat/completions",
+    body: { model: "gpt-5.4", messages: [{ role: "user", content: "hello" }] }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(upstreamCalls, 1);
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.jsonPayload?.error, "upstream_unreachable");
+  assert.equal(res.jsonPayload?.code, "ECONNRESET");
+  assert.equal(res.jsonPayload?.retry_count, 0);
+});
+
+test("OpenAI proxy returns a bounded JSON error when the request body is too large", async () => {
+  let fetchCalls = 0;
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("Normalizer should not run after a body-size failure.");
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      throw new Error("Upstream should not be reached after a body-size failure.");
+    },
+    contextOverrides: {
+      async readRawBody() {
+        const err = new Error("Request body exceeds the 16 byte limit.");
+        err.code = "request_body_too_large";
+        err.statusCode = 413;
+        throw err;
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { input: "x".repeat(32) }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(fetchCalls, 0);
+  assert.equal(res.statusCode, 413);
+  assert.deepEqual(res.jsonPayload, {
+    error: "request_body_too_large",
+    message: "Request body exceeds the 16 byte limit."
+  });
+});
+
+test("POST /v1/responses rejects malformed JSON before auth or upstream", async () => {
+  let authCalls = 0;
+  let fetchCalls = 0;
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("Responses create normalization must not run after malformed JSON.");
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      throw new Error("malformed Responses create bodies must not reach upstream");
+    },
+    contextOverrides: {
+      async getValidAuthContext() {
+        authCalls += 1;
+        return {
+          accessToken: "token",
+          accountId: "acct_123",
+          releaseLease() {}
+        };
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: "{\"input\":"
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(authCalls, 0);
+  assert.equal(fetchCalls, 0);
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.jsonPayload?.error, "invalid_json");
+  assert.equal(res.jsonPayload?.message, "Body must be valid JSON.");
+});
+
 test("POST /v1/responses forwards explicit client create fields after normalization", async () => {
   let capturedInit = null;
   const realNormalizer = createRealResponsesNormalizer();
@@ -670,6 +1215,126 @@ test("POST /v1/responses forwards explicit client create fields after normalizat
     effort: "low",
     summary: "concise"
   });
+  assert.equal(session.collectCompletedResponseAsJson, true);
+  session.release();
+});
+
+test("POST /v1/responses forwards web search sources include when omitted", async () => {
+  let capturedInit = null;
+  const realNormalizer = createRealResponsesNormalizer();
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody, options) {
+      return realNormalizer.normalizeCodexResponsesRequestBody(rawBody, options);
+    },
+    async fetchImpl(_url, init) {
+      capturedInit = init;
+      return new Response(
+        JSON.stringify({
+          id: "resp_web_search_sources",
+          status: "completed",
+          output: [],
+          usage: {}
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    }
+  });
+  const payload = {
+    model: "gpt-5.4",
+    stream: false,
+    input: "Search for current docs.",
+    tools: [
+      {
+        type: "web_search",
+        search_context_size: "low"
+      }
+    ]
+  };
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {}
+    },
+    createMockResponse(),
+    {
+      originalUrl: "/v1/responses",
+      requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+      parsedRequestBody: payload
+    }
+  );
+
+  const upstreamPayload = JSON.parse(Buffer.from(capturedInit.body).toString("utf8"));
+  assert.deepEqual(upstreamPayload.include, [
+    "reasoning.encrypted_content",
+    "web_search_call.action.sources"
+  ]);
+  assert.deepEqual(upstreamPayload.tools, payload.tools);
+  assert.equal(session.collectCompletedResponseAsJson, true);
+  session.release();
+});
+
+test("POST /v1/responses forwards web search sources include for dated web search tools", async () => {
+  let capturedInit = null;
+  const realNormalizer = createRealResponsesNormalizer();
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody, options) {
+      return realNormalizer.normalizeCodexResponsesRequestBody(rawBody, options);
+    },
+    async fetchImpl(_url, init) {
+      capturedInit = init;
+      return new Response(
+        JSON.stringify({
+          id: "resp_dated_web_search_sources",
+          status: "completed",
+          output: [],
+          usage: {}
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    }
+  });
+  const payload = {
+    model: "gpt-5.4",
+    stream: false,
+    input: "Search for current docs.",
+    tools: [
+      {
+        type: "web_search_2025_08_26",
+        search_context_size: "low"
+      }
+    ]
+  };
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {}
+    },
+    createMockResponse(),
+    {
+      originalUrl: "/v1/responses",
+      requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+      parsedRequestBody: payload
+    }
+  );
+
+  const upstreamPayload = JSON.parse(Buffer.from(capturedInit.body).toString("utf8"));
+  assert.deepEqual(upstreamPayload.include, [
+    "reasoning.encrypted_content",
+    "web_search_call.action.sources"
+  ]);
+  assert.deepEqual(upstreamPayload.tools, payload.tools);
   assert.equal(session.collectCompletedResponseAsJson, true);
   session.release();
 });
@@ -984,6 +1649,111 @@ test("Responses create proxy session emulates previous_response_id from the loca
   session.rememberCompletion({ id: "resp_next", output: [] });
   assert.equal(rememberedEntry.responseId, "resp_next");
   session.release();
+});
+
+test("Responses create proxy session fails locally instead of falling back from the pinned account", async () => {
+  let capturedPreferredPoolEntryId = "";
+  let fetchCalls = 0;
+  let releaseCalls = 0;
+  const sourceEntry = {
+    responseId: "resp_prev",
+    inputHistory: [
+      {
+        role: "user",
+        content: [{ type: "input_text", text: "previous turn" }]
+      }
+    ],
+    updatedAt: Date.now()
+  };
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      const json = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: rawBody,
+        json,
+        collectCompletedResponseAsJson: false,
+        model: json.model || "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      return new Response("ok", { status: 200, headers: { "content-type": "text/event-stream" } });
+    },
+    contextOverrides: {
+      isCodexMultiAccountEnabled() {
+        return true;
+      },
+      isCodexPoolRetryEnabled() {
+        return true;
+      },
+      async getValidAuthContext(options = {}) {
+        capturedPreferredPoolEntryId = options.preferredPoolEntryId || "";
+        return {
+          accessToken: "token",
+          accountId: "acct_free",
+          poolEntryId: "pool_free",
+          poolAccountId: "pool_free",
+          releaseLease() {
+            releaseCalls += 1;
+          }
+        };
+      },
+      extractPreviousResponseId(rawBody) {
+        return JSON.parse(rawBody.toString("utf8")).previous_response_id || "";
+      },
+      codexResponseAffinity: {
+        lookup(responseId) {
+          assert.equal(responseId, "resp_prev");
+          return { poolEntryId: "pool_team", accountId: "acct_team" };
+        },
+        remember() {},
+        forget() {}
+      },
+      codexResponsesChain: {
+        lookup(responseId) {
+          assert.equal(responseId, "resp_prev");
+          return sourceEntry;
+        },
+        remember() {}
+      },
+      expandResponsesRequestBodyFromChain
+    }
+  });
+  const payload = {
+    model: "gpt-5.4",
+    previous_response_id: "resp_prev",
+    input: "next"
+  };
+  const requestBody = Buffer.from(JSON.stringify(payload), "utf8");
+  let session = null;
+  let thrown = null;
+
+  try {
+    session = await handlers.openResponsesCreateProxySession(
+      {
+        method: "POST",
+        originalUrl: "/v1/responses",
+        url: "/v1/responses",
+        headers: {}
+      },
+      createMockResponse(),
+      {
+        originalUrl: "/v1/responses",
+        requestBody,
+        parsedRequestBody: payload
+      }
+    );
+  } catch (err) {
+    thrown = err;
+  } finally {
+    session?.release();
+  }
+
+  assert.equal(capturedPreferredPoolEntryId, "pool_team");
+  assert.equal(fetchCalls, 0);
+  assert.equal(releaseCalls, 1);
+  assert.equal(thrown?.statusCode, 409);
+  assert.equal(thrown?.error, "response_id_account_unavailable");
 });
 
 test("Responses create proxy session keeps WebSocket callers on the stream-first bridge path", async () => {
@@ -1630,6 +2400,102 @@ test("POST /v1/responses/compact fails locally instead of falling back from the 
   assert.equal(res.jsonPayload?.error, "response_id_account_unavailable");
 });
 
+for (const extensionPath of ["/v1/responses/compact", "/v1/responses/input_tokens"]) {
+  test(`POST ${extensionPath} rejects malformed JSON before auth or upstream`, async () => {
+    let authCalls = 0;
+    let fetchCalls = 0;
+    const handlers = createHandlers({
+      normalizeResponsesImpl() {
+        throw new Error("extension routes must not run create normalization");
+      },
+      async fetchImpl() {
+        fetchCalls += 1;
+        throw new Error("malformed extension bodies must not reach upstream");
+      },
+      contextOverrides: {
+        async getValidAuthContext() {
+          authCalls += 1;
+          return {
+            accessToken: "token",
+            accountId: "acct_123",
+            releaseLease() {}
+          };
+        }
+      }
+    });
+    const req = createMockRequest({
+      method: "POST",
+      originalUrl: extensionPath,
+      body: "{\"response_id\":"
+    });
+    const res = createMockResponse();
+
+    await handlers.openAIProxy(req, res);
+
+    assert.equal(authCalls, 0);
+    assert.equal(fetchCalls, 0);
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.jsonPayload?.error, "invalid_json");
+    assert.equal(res.jsonPayload?.message, "Body must be valid JSON.");
+  });
+}
+
+test("GET /v1/responses/{response_id} fails locally instead of falling back from the pinned account", async () => {
+  let capturedPreferredPoolEntryId = "";
+  let fetchCalls = 0;
+  let releaseCalls = 0;
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("create normalization should not run for read methods");
+    },
+    async fetchImpl() {
+      fetchCalls += 1;
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    },
+    contextOverrides: {
+      isCodexMultiAccountEnabled() {
+        return true;
+      },
+      isCodexPoolRetryEnabled() {
+        return true;
+      },
+      async getValidAuthContext(options = {}) {
+        capturedPreferredPoolEntryId = options.preferredPoolEntryId || "";
+        return {
+          accessToken: "token",
+          accountId: "acct_free",
+          poolEntryId: "pool_free",
+          poolAccountId: "pool_free",
+          releaseLease() {
+            releaseCalls += 1;
+          }
+        };
+      },
+      codexResponseAffinity: {
+        lookup(responseId) {
+          assert.equal(responseId, "resp_prev");
+          return { poolEntryId: "pool_team", accountId: "acct_team" };
+        },
+        remember() {},
+        forget() {}
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "GET",
+    originalUrl: "/v1/responses/resp_prev"
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(capturedPreferredPoolEntryId, "pool_team");
+  assert.equal(fetchCalls, 0);
+  assert.equal(releaseCalls, 1);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.jsonPayload?.error, "response_id_account_unavailable");
+});
+
 test("audit middleware omits persisted packets when capture is disabled", () => {
   let capturedRow = null;
   const handlers = createHandlers({
@@ -1843,6 +2709,60 @@ test("Responses create JSON fallback accepts completed non-SSE upstream payloads
   });
 });
 
+test("Responses create JSON fallback coerces out-of-range failed SSE statuses", async () => {
+  let failureStatusCode = null;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      return {
+        body: rawBody,
+        json: JSON.parse(rawBody.toString("utf8")),
+        collectCompletedResponseAsJson: true,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      return new Response(
+        'event: response.failed\n' +
+          'data: {"type":"response.failed","response":{"error":{"message":"upstream failed"}}}\n\n',
+        {
+          status: 200,
+          headers: { "content-type": "text/event-stream" }
+        }
+      );
+    },
+    contextOverrides: {
+      async maybeMarkCodexPoolFailure(_auth, _message, statusCode) {
+        failureStatusCode = statusCode;
+      },
+      parseResponsesResultFromSse() {
+        return {
+          completed: null,
+          failed: {
+            message: "upstream failed",
+            statusCode: 700
+          }
+        };
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { model: "gpt-5.4", input: "hello" }
+  });
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(res.statusCode, 502);
+  assert.equal(failureStatusCode, 502);
+  assert.deepEqual(res.jsonPayload, {
+    error: "upstream_response_failed",
+    message: "upstream failed",
+    retry_count: 0
+  });
+});
+
 test("Responses create stream fallback converts completed JSON payloads into SSE", async () => {
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
@@ -1947,7 +2867,7 @@ test("Responses create stream accepts upstream SSE without content-type header",
           }, 10);
         }
       }), {
-        status: 200,
+        status: 202,
         headers: {}
       });
     },
@@ -1974,8 +2894,11 @@ test("Responses create stream accepts upstream SSE without content-type header",
 
   await handlers.openAIProxy(req, res);
 
-  assert.equal(res.statusCode, 200);
+  assert.equal(res.statusCode, 202);
   assert.match(String(res.getHeader("content-type") || ""), /text\/event-stream/i);
+  assert.equal(res.getHeader("cache-control"), "no-cache");
+  assert.equal(res.getHeader("connection"), "keep-alive");
+  assert.equal(res.getHeader("x-accel-buffering"), "no");
   assert.equal(streamedBeforeCompletion, true);
   assert.match(res.body, /response\.output_text\.delta/);
   assert.match(res.body, /response\.completed/);
@@ -1987,7 +2910,7 @@ test("Responses create stream accepts upstream SSE without content-type header",
   });
 });
 
-test("Responses create HTTP stream flushes SSE deltas before upstream completion", async () => {
+test("Responses create HTTP stream flushes official SSE events before upstream completion", async () => {
   const encoder = new TextEncoder();
   let completedEnqueued = false;
   const responseHelpers = createOpenAIResponsesCompatHelpers({
@@ -2017,8 +2940,8 @@ test("Responses create HTTP stream flushes SSE deltas before upstream completion
         start(controller) {
           controller.enqueue(
             encoder.encode(
-              'event: response.output_text.delta\n' +
-                'data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"hel"}\n\n'
+              'event: response.mcp_call_arguments.delta\n' +
+                'data: {"type":"response.mcp_call_arguments.delta","item_id":"mcp_1","output_index":0,"sequence_number":1,"delta":"{\\"city\\""}\n\n'
             )
           );
           completionTimer = setTimeout(() => {
@@ -2148,7 +3071,7 @@ test("Responses create HTTP stream flushes SSE deltas before upstream completion
     assert.equal(first.statusCode, 200);
     assert.match(String(first.contentType || ""), /text\/event-stream/i);
     assert.equal(first.completedEnqueued, false);
-    assert.match(first.chunk, /response\.output_text\.delta/);
+    assert.match(first.chunk, /response\.mcp_call_arguments\.delta/);
     assert.doesNotMatch(first.chunk, /response\.completed/);
   } finally {
     await new Promise((resolve) => server.close(resolve));

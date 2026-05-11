@@ -184,16 +184,25 @@ export function parseBooleanEnv(value, fallback = false) {
 }
 
 export function parseSlotValue(value) {
-  if (value === undefined || value === null || value === "") return null;
-  const n = Number(String(value).trim());
-  if (!Number.isFinite(n)) return null;
-  const slot = Math.floor(n);
+  const slot = parseIntegerValue(value);
+  if (slot === null) return null;
   if (slot < 1 || slot > 64) return null;
   return slot;
 }
 
+function parseIntegerValue(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : null;
+  }
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 export function parseNumberEnv(value, fallback, options = {}) {
-  const n = Number(value);
+  const n = options.integer ? parseIntegerValue(value) : Number(value);
   if (!Number.isFinite(n)) return fallback;
   let out = n;
   if (Number.isFinite(options.min)) out = Math.max(options.min, out);
@@ -357,6 +366,11 @@ export function createServerConfig(options = {}) {
     max: 65535,
     integer: true
   });
+  const resolvedCodexOAuthCallbackPort = parseNumberEnv(env.CODEX_OAUTH_CALLBACK_PORT, 1455, {
+    min: 1,
+    max: 65535,
+    integer: true
+  });
 
   const config = {
     host: env.HOST || "127.0.0.1",
@@ -401,11 +415,11 @@ export function createServerConfig(options = {}) {
       clientId: OPENAI_CODEX_CLIENT_ID,
       clientSecret: "",
       callbackBindHost: env.CODEX_OAUTH_CALLBACK_BIND_HOST || "127.0.0.1",
-      callbackPort: Number(env.CODEX_OAUTH_CALLBACK_PORT || 1455),
+      callbackPort: resolvedCodexOAuthCallbackPort,
       callbackPath: env.CODEX_OAUTH_CALLBACK_PATH || "/auth/callback",
       redirectUri:
         env.CODEX_OAUTH_REDIRECT_URI ||
-        `http://localhost:${env.CODEX_OAUTH_CALLBACK_PORT || 1455}${env.CODEX_OAUTH_CALLBACK_PATH || "/auth/callback"}`,
+        `http://localhost:${resolvedCodexOAuthCallbackPort}${env.CODEX_OAUTH_CALLBACK_PATH || "/auth/callback"}`,
       scopes: OPENAI_CODEX_SCOPES,
       originator: env.CODEX_OAUTH_ORIGINATOR || "pi",
       multiAccountEnabled: parseBooleanEnv(env.CODEX_MULTI_ACCOUNT_ENABLED, true),

@@ -223,6 +223,73 @@ test("Codex collaboration mode resolver waits for turn context before using task
   assert.equal(bridged.settings?._codex_resolved_developer_instructions, planInstructions);
 });
 
+test("Codex collaboration mode resolver rejects decimal-form turn mode timeout options", async () => {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-collab-mode-timeout-decimal-"));
+  const sessionDir = path.join(codexHome, "sessions", "2026", "04", "24");
+  await fs.mkdir(sessionDir, { recursive: true });
+  const sessionId = "sess_decimal_timeout_123";
+  const turnId = "turn_decimal_timeout_456";
+  const planInstructions = "# Plan Mode (Conversational)\nUse the plan-only flow.";
+  const sessionFile = path.join(sessionDir, `rollout-2026-04-24T00-00-00-${sessionId}.jsonl`);
+  await fs.writeFile(
+    sessionFile,
+    JSON.stringify({
+      type: "session_meta",
+      payload: {
+        id: sessionId,
+        base_instructions: {
+          text: "Base instructions"
+        }
+      }
+    }) + "\n",
+    "utf8"
+  );
+
+  const resolver = createCodexCollaborationModeResolver({
+    codexHome,
+    turnModeResolveTimeoutMs: "0.9"
+  });
+  const appendTurnContext = new Promise((resolve) => {
+    setTimeout(async () => {
+      await fs.appendFile(
+        sessionFile,
+        JSON.stringify({
+          type: "turn_context",
+          payload: {
+            turn_id: turnId,
+            collaboration_mode: {
+              mode: "plan",
+              settings: {
+                developer_instructions: planInstructions
+              }
+            }
+          }
+        }) + "\n",
+        "utf8"
+      );
+      resolve();
+    }, 50);
+  });
+
+  const bridged = await resolver.bridgeRequest({
+    model: "gpt-5.4",
+    prompt_cache_key: sessionId,
+    instructions: "Base instructions",
+    client_metadata: {
+      "x-codex-turn-metadata": JSON.stringify({
+        session_id: sessionId,
+        turn_id: turnId
+      })
+    },
+    input: "hello"
+  });
+  await appendTurnContext;
+
+  assert.equal(bridged.collaborationMode, "plan");
+  assert.equal(bridged.settings?.developer_instructions, null);
+  assert.equal(bridged.settings?._codex_resolved_developer_instructions, planInstructions);
+});
+
 test("Codex collaboration mode resolver ignores session filename substring collisions", async () => {
   const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "codex-collab-mode-collision-"));
   const sessionDir = path.join(codexHome, "sessions", "2026", "04", "24");

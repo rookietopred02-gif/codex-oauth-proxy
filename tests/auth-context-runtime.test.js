@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { createAuthContextRuntime } from "../src/server/auth-context-runtime.js";
 
-function createRuntime({ strategy = "smart", pickCandidates, deriveEntryId } = {}) {
+function createRuntime({ strategy = "smart", pickCandidates, deriveEntryId, refreshAccessToken } = {}) {
   const savedStores = [];
   const runtime = createAuthContextRuntime({
     config: {
@@ -65,7 +65,8 @@ function createRuntime({ strategy = "smart", pickCandidates, deriveEntryId } = {
       if (store.active_account_id === account.identity_id) {
         store.active_account_id = null;
       }
-    }
+    },
+    refreshAccessToken
   });
 
   return { runtime, savedStores };
@@ -131,6 +132,155 @@ test("smart strategy only attempts the top health-aware account per auth lookup"
   assert.equal(Number(savedStores[0]?.accounts?.[1]?.last_used_at || 0), 0);
 });
 
+test("auth context normalizes malformed failure counters after pooled account failures", async () => {
+  const refreshError = new Error("refresh failed");
+  refreshError.statusCode = Symbol("status");
+  const { runtime, savedStores } = createRuntime({
+    strategy: "smart",
+    pickCandidates(store) {
+      return Array.isArray(store?.accounts) ? store.accounts : [];
+    },
+    async refreshAccessToken() {
+      throw refreshError;
+    }
+  });
+
+  const store = {
+    token: null,
+    active_account_id: "entry_malformed",
+    rotation: { next_index: 0 },
+    accounts: [
+      {
+        identity_id: "entry_malformed",
+        account_id: "acct_malformed",
+        enabled: true,
+        token: {
+          access_token: "token_malformed",
+          refresh_token: "refresh_malformed",
+          expires_at: 0
+        },
+        failure_count: "1.9",
+        cooldown_until: "not-a-time",
+        last_error: ""
+      }
+    ]
+  };
+
+  await assert.rejects(
+    () =>
+      runtime.getValidAuthContextFromCodexOAuthStore(store, {
+        tokenStorePath: "store.json",
+        tokenUrl: "https://example.test/token",
+        clientId: "client"
+      }),
+    /Selected pooled OAuth account failed/
+  );
+
+  assert.equal(store.accounts[0].failure_count, 1);
+  assert.equal(store.accounts[0].last_status_code, 0);
+  assert.ok(Number.isFinite(store.accounts[0].cooldown_until));
+  assert.ok(store.accounts[0].cooldown_until > Math.floor(Date.now() / 1000));
+  assert.equal(savedStores.length, 1);
+  assert.equal(savedStores[0]?.accounts?.[0]?.failure_count, 1);
+  assert.ok(Number.isFinite(savedStores[0]?.accounts?.[0]?.cooldown_until));
+});
+
+test("auth context drops out-of-range failed account status metadata", async () => {
+  const refreshError = new Error("refresh failed");
+  refreshError.statusCode = 700;
+  const { runtime, savedStores } = createRuntime({
+    strategy: "smart",
+    pickCandidates(store) {
+      return Array.isArray(store?.accounts) ? store.accounts : [];
+    },
+    async refreshAccessToken() {
+      throw refreshError;
+    }
+  });
+
+  const store = {
+    token: null,
+    active_account_id: "entry_bad_status",
+    rotation: { next_index: 0 },
+    accounts: [
+      {
+        identity_id: "entry_bad_status",
+        account_id: "acct_bad_status",
+        enabled: true,
+        token: {
+          access_token: "token_bad_status",
+          refresh_token: "refresh_bad_status",
+          expires_at: 0
+        },
+        failure_count: 0,
+        cooldown_until: 0,
+        last_error: ""
+      }
+    ]
+  };
+
+  await assert.rejects(
+    () =>
+      runtime.getValidAuthContextFromCodexOAuthStore(store, {
+        tokenStorePath: "store.json",
+        tokenUrl: "https://example.test/token",
+        clientId: "client"
+      }),
+    /Selected pooled OAuth account failed/
+  );
+
+  assert.equal(store.accounts[0].last_status_code, 0);
+  assert.equal(savedStores[0]?.accounts?.[0]?.last_status_code, 0);
+});
+
+test("auth context drops decimal-form failed account status metadata", async () => {
+  const refreshError = new Error("refresh failed");
+  refreshError.statusCode = "401.0";
+  const { runtime, savedStores } = createRuntime({
+    strategy: "smart",
+    pickCandidates(store) {
+      return Array.isArray(store?.accounts) ? store.accounts : [];
+    },
+    async refreshAccessToken() {
+      throw refreshError;
+    }
+  });
+
+  const store = {
+    token: null,
+    active_account_id: "entry_decimal_status",
+    rotation: { next_index: 0 },
+    accounts: [
+      {
+        identity_id: "entry_decimal_status",
+        account_id: "acct_decimal_status",
+        enabled: true,
+        token: {
+          access_token: "token_decimal_status",
+          refresh_token: "refresh_decimal_status",
+          expires_at: 0
+        },
+        failure_count: 0,
+        cooldown_until: 0,
+        last_error: ""
+      }
+    ]
+  };
+
+  await assert.rejects(
+    () =>
+      runtime.getValidAuthContextFromCodexOAuthStore(store, {
+        tokenStorePath: "store.json",
+        tokenUrl: "https://example.test/token",
+        clientId: "client"
+      }),
+    /Selected pooled OAuth account failed/
+  );
+
+  assert.equal(store.accounts[0].last_status_code, 0);
+  assert.equal(savedStores[0]?.accounts?.[0]?.last_status_code, 0);
+});
+
 test("non-smart strategies can still fall through to the next pooled account", async () => {
   const { runtime, savedStores } = createRuntime({
     strategy: "sticky",
@@ -185,6 +335,241 @@ test("non-smart strategies can still fall through to the next pooled account", a
   assert.equal(store.accounts[0].failure_count, 1);
   assert.ok(Number(store.accounts[1].last_used_at || 0) > 0);
   assert.equal(savedStores.length, 1);
+});
+
+test("preferred pooled account selection fails before mutating fallback account state", async () => {
+  const { runtime, savedStores } = createRuntime({
+    strategy: "sticky",
+    pickCandidates(store, options = {}) {
+      assert.equal(options.preferredPoolEntryId, "entry_a");
+      return Array.isArray(store?.accounts) ? [store.accounts[1]] : [];
+    }
+  });
+
+  const store = {
+    token: null,
+    active_account_id: "entry_a",
+    rotation: { next_index: 0 },
+    accounts: [
+      {
+        identity_id: "entry_a",
+        account_id: "acct_a",
+        enabled: true,
+        token: {
+          access_token: "token_a",
+          expires_at: Math.floor(Date.now() / 1000) + 3600
+        },
+        failure_count: 0,
+        cooldown_until: 0,
+        last_error: ""
+      },
+      {
+        identity_id: "entry_b",
+        account_id: "acct_b",
+        enabled: true,
+        token: {
+          access_token: "token_b",
+          expires_at: Math.floor(Date.now() / 1000) + 3600
+        },
+        failure_count: 0,
+        cooldown_until: 0,
+        last_error: "",
+        last_used_at: 0
+      }
+    ]
+  };
+
+  await assert.rejects(
+    () =>
+      runtime.getValidAuthContextFromCodexOAuthStore(
+        store,
+        {
+          tokenStorePath: "store.json",
+          tokenUrl: "https://example.test/token",
+          clientId: "client"
+        },
+        { preferredPoolEntryId: "entry_a" }
+      ),
+    {
+      statusCode: 409,
+      error: "response_id_account_unavailable"
+    }
+  );
+
+  assert.equal(store.active_account_id, "entry_a");
+  assert.equal(store.token, null);
+  assert.equal(Number(store.accounts[1].last_used_at || 0), 0);
+  assert.equal(savedStores.length, 0);
+});
+
+test("auth context forwards requested model into pooled account selection", async () => {
+  let capturedRequestedModel = "";
+  const { runtime, savedStores } = createRuntime({
+    strategy: "sticky",
+    pickCandidates(store, options = {}) {
+      capturedRequestedModel = options.requestedModel || "";
+      return Array.isArray(store?.accounts) ? [store.accounts[0]] : [];
+    }
+  });
+
+  const store = {
+    token: null,
+    active_account_id: "entry_a",
+    rotation: { next_index: 0 },
+    accounts: [
+      {
+        identity_id: "entry_a",
+        account_id: "acct_a",
+        enabled: true,
+        token: {
+          access_token: "token_a",
+          expires_at: Math.floor(Date.now() / 1000) + 3600
+        },
+        failure_count: 0,
+        cooldown_until: 0,
+        last_error: ""
+      }
+    ]
+  };
+
+  const context = await runtime.getValidAuthContextFromCodexOAuthStore(
+    store,
+    {
+      tokenStorePath: "store.json",
+      tokenUrl: "https://example.test/token",
+      clientId: "client"
+    },
+    { requestedModel: "gpt-5.5" }
+  );
+
+  assert.equal(capturedRequestedModel, "gpt-5.5");
+  assert.equal(context.accessToken, "token_a");
+  assert.equal(savedStores.length, 1);
+});
+
+test("auth context reports a model-specific pool selection failure", async () => {
+  const pickCalls = [];
+  const { runtime, savedStores } = createRuntime({
+    strategy: "sticky",
+    pickCandidates(store, options = {}) {
+      pickCalls.push({ ...options });
+      if (options.requestedModel) return [];
+      return Array.isArray(store?.accounts) ? [store.accounts[0]] : [];
+    }
+  });
+
+  const store = {
+    token: null,
+    active_account_id: "entry_a",
+    rotation: { next_index: 0 },
+    accounts: [
+      {
+        identity_id: "entry_a",
+        account_id: "acct_a",
+        enabled: true,
+        token: {
+          access_token: "token_a",
+          expires_at: Math.floor(Date.now() / 1000) + 3600
+        },
+        failure_count: 0,
+        cooldown_until: 0,
+        last_error: ""
+      }
+    ]
+  };
+
+  await assert.rejects(
+    () =>
+      runtime.getValidAuthContextFromCodexOAuthStore(
+        store,
+        {
+          tokenStorePath: "store.json",
+          tokenUrl: "https://example.test/token",
+          clientId: "client"
+        },
+        { requestedModel: "gpt-5.5" }
+      ),
+    {
+      statusCode: 409,
+      error: "model_account_unavailable",
+      requestedModel: "gpt-5.5"
+    }
+  );
+
+  assert.deepEqual(
+    pickCalls.map((options) => options.requestedModel || ""),
+    ["gpt-5.5", ""]
+  );
+  assert.equal(savedStores.length, 0);
+});
+
+test("manual auth context reports a model-specific failure instead of using fallback accounts", async () => {
+  const pickCalls = [];
+  const { runtime, savedStores } = createRuntime({
+    strategy: "manual",
+    pickCandidates(store, options = {}) {
+      pickCalls.push({ ...options });
+      if (options.requestedModel) return [];
+      return Array.isArray(store?.accounts) ? [store.accounts[0]] : [];
+    }
+  });
+
+  const store = {
+    token: null,
+    active_account_id: "entry_a",
+    rotation: { next_index: 0 },
+    accounts: [
+      {
+        identity_id: "entry_a",
+        account_id: "acct_a",
+        enabled: true,
+        token: {
+          access_token: "token_a",
+          expires_at: Math.floor(Date.now() / 1000) + 3600
+        },
+        failure_count: 0,
+        cooldown_until: 0,
+        last_error: ""
+      },
+      {
+        identity_id: "entry_b",
+        account_id: "acct_b",
+        enabled: true,
+        token: {
+          access_token: "token_b",
+          expires_at: Math.floor(Date.now() / 1000) + 3600
+        },
+        failure_count: 0,
+        cooldown_until: 0,
+        last_error: ""
+      }
+    ]
+  };
+
+  await assert.rejects(
+    () =>
+      runtime.getValidAuthContextFromCodexOAuthStore(
+        store,
+        {
+          tokenStorePath: "store.json",
+          tokenUrl: "https://example.test/token",
+          clientId: "client"
+        },
+        { requestedModel: "gpt-5.5" }
+      ),
+    {
+      statusCode: 409,
+      error: "model_account_unavailable",
+      requestedModel: "gpt-5.5"
+    }
+  );
+
+  assert.deepEqual(
+    pickCalls.map((options) => options.requestedModel || ""),
+    ["gpt-5.5", ""]
+  );
+  assert.equal(Number(store.accounts[1].last_used_at || 0), 0);
+  assert.equal(savedStores.length, 0);
 });
 
 test("auth context preserves an explicit pooled account variant instead of collapsing it back to the token account id", async () => {

@@ -27,8 +27,37 @@ function fromBase64Url(input) {
   return Buffer.from(`${normalized}${padding}`, "base64");
 }
 
+function toFiniteNumber(value, fallback = 0) {
+  try {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function toIntegerNumber(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && Number.isFinite(value) ? value : fallback;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return Number(value.trim());
+  }
+  return fallback;
+}
+
+function normalizeByteLength(value, fallback = 32) {
+  const parsed = toFiniteNumber(value, fallback);
+  return Math.max(16, Math.floor(parsed || fallback));
+}
+
+function normalizeSessionTtlSeconds(value) {
+  const parsed = toIntegerNumber(value, 0);
+  return Math.max(300, parsed || 0);
+}
+
 function randomBase64Url(bytes = 32) {
-  return toBase64Url(crypto.randomBytes(Math.max(16, Number(bytes || 32) || 32)));
+  return toBase64Url(crypto.randomBytes(normalizeByteLength(bytes)));
 }
 
 function normalizeBoolean(value, fallback = false) {
@@ -177,10 +206,11 @@ function signSessionPayload(payloadText, sessionSecret) {
 
 function buildSessionCookieValue(store, sessionTtlSeconds) {
   const nowSec = Math.floor(Date.now() / 1000);
+  const ttlSeconds = normalizeSessionTtlSeconds(sessionTtlSeconds);
   const payloadText = JSON.stringify({
     v: 1,
     iat: nowSec,
-    exp: nowSec + Math.max(300, Number(sessionTtlSeconds || 0) || 0),
+    exp: nowSec + ttlSeconds,
     nonce: randomBase64Url(12)
   });
   const encodedPayload = toBase64Url(Buffer.from(payloadText, "utf8"));
@@ -227,7 +257,7 @@ function verifySessionCookieValue(rawValue, store) {
     };
   }
 
-  const expiresAt = Number(payload?.exp || 0);
+  const expiresAt = toFiniteNumber(payload?.exp, 0);
   const nowSec = Math.floor(Date.now() / 1000);
   if (!Number.isFinite(expiresAt) || expiresAt <= nowSec) {
     return {
@@ -331,9 +361,10 @@ export async function createDashboardAuthController(options = {}) {
   }
 
   function buildSessionCookie(req) {
-    return serializeCookie(DASHBOARD_SESSION_COOKIE, buildSessionCookieValue(state, sessionTtlSeconds), {
+    const ttlSeconds = normalizeSessionTtlSeconds(sessionTtlSeconds);
+    return serializeCookie(DASHBOARD_SESSION_COOKIE, buildSessionCookieValue(state, ttlSeconds), {
       path: "/",
-      maxAge: sessionTtlSeconds,
+      maxAge: ttlSeconds,
       httpOnly: true,
       sameSite: "Strict",
       secure: requestIsSecure(req)

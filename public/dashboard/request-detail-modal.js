@@ -19,6 +19,46 @@ const REQUEST_DETAIL_PACKET_FIELDS = {
   }
 };
 
+function toIntegerNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "number") return Number.isSafeInteger(value) ? value : fallback;
+  if (typeof value !== "string") return fallback;
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) return fallback;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+
+function toNonNegativeInteger(value, fallback = 0) {
+  const n = toIntegerNumber(value, null);
+  return n !== null && n >= 0 ? n : fallback;
+}
+
+function safeString(value, fallback = "-") {
+  if (value === null || value === undefined || value === "") return fallback;
+  try {
+    const text = String(value);
+    return text.length > 0 ? text : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function toStatusCode(value) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 100 && value <= 599 ? value : null;
+  }
+  if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+    return Number(value);
+  }
+  return null;
+}
+
+function formatStatus(value) {
+  const statusCode = toStatusCode(value);
+  return statusCode === null ? "-" : String(statusCode);
+}
+
 export function createRequestDetailModal(deps) {
   const {
     $,
@@ -56,11 +96,30 @@ export function createRequestDetailModal(deps) {
   }
 
   function formatPacketBytes(bytes) {
-    const size = Number(bytes || 0);
-    if (!Number.isFinite(size) || size <= 0) return "0 B";
+    const size = toNonNegativeInteger(bytes, 0);
+    if (size <= 0) return "0 B";
     if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(size >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
     if (size >= 1024) return `${(size / 1024).toFixed(size >= 10 * 1024 ? 0 : 1)} KB`;
     return `${size} B`;
+  }
+
+  function formatRequestDetailTime(value) {
+    if (value === null || value === undefined || value === "") return "-";
+    if (typeof formatDateTime === "function") {
+      try {
+        const formatted = formatDateTime(value, { dateStyle: "medium", timeStyle: "medium" });
+        return typeof formatted === "string" && formatted ? formatted : "-";
+      } catch {}
+    }
+
+    const fallbackTs = toIntegerNumber(value, null);
+    if (fallbackTs === null) return "-";
+    try {
+      const date = new Date(fallbackTs);
+      return Number.isFinite(date.getTime()) ? date.toLocaleString() : "-";
+    } catch {
+      return "-";
+    }
   }
 
   function getPacketDescriptor(field) {
@@ -125,6 +184,12 @@ export function createRequestDetailModal(deps) {
     appendChunk();
   }
 
+  function cancelRequestDetailRenders() {
+    for (const descriptor of Object.values(REQUEST_DETAIL_PACKET_FIELDS)) {
+      requestDetailRenderTokens.delete(descriptor.codeId);
+    }
+  }
+
   function resetRequestDetailCopyButton(buttonId) {
     const button = $(buttonId);
     if (!(button instanceof HTMLButtonElement)) return;
@@ -152,6 +217,21 @@ export function createRequestDetailModal(deps) {
     const descriptor = getPacketDescriptor(field);
     if (!requestId || !descriptor) return;
 
+    const cacheEntry = getRequestDetailCacheEntry(requestId);
+    const cachedPacket = getPacketCacheEntry(cacheEntry, field);
+    const knownChars = toNonNegativeInteger(cacheEntry?.detail?.packetInfo?.[field]?.chars, null);
+    const knownEmpty =
+      cachedPacket &&
+      !cachedPacket.fullText &&
+      !cachedPacket.previewText &&
+      (cachedPacket.fullLoaded ||
+        (cachedPacket.previewLoaded && cachedPacket.truncated !== true) ||
+        (Number.isFinite(knownChars) && knownChars <= 0));
+    if (knownEmpty) {
+      resetRequestDetailCopyButton(buttonId);
+      return;
+    }
+
     const button = $(buttonId);
     if (button instanceof HTMLButtonElement) {
       resetRequestDetailCopyButton(buttonId);
@@ -161,7 +241,10 @@ export function createRequestDetailModal(deps) {
     try {
       const packet = await loadRequestDetailPacket(requestId, field, { full: true });
       const text = packet?.fullLoaded ? packet.fullText : packet?.previewText || "";
-      if (!text) return;
+      if (!text) {
+        resetRequestDetailCopyButton(buttonId);
+        return;
+      }
       await copyTextToClipboard(text);
       markRequestDetailCopySuccess(buttonId);
     } catch (err) {
@@ -171,13 +254,10 @@ export function createRequestDetailModal(deps) {
   }
 
   function buildReqDetailMetaItems(row) {
-    const timeText =
-      row?.ts && typeof formatDateTime === "function"
-        ? formatDateTime(row.ts, { dateStyle: "medium", timeStyle: "medium" })
-        : row?.ts
-          ? new Date(Number(row.ts)).toLocaleString()
-          : "-";
-    const latencyText = Number.isFinite(Number(row?.durationMs)) ? `${Number(row.durationMs)} ms` : "-";
+    const latency = toNonNegativeInteger(row?.durationMs, null);
+    const retryCount = toNonNegativeInteger(row?.upstreamRetryCount, 0);
+    const timeText = formatRequestDetailTime(row?.ts);
+    const latencyText = latency === null ? "-" : `${latency} ms`;
     const tokenText = tt("token_usage_format", {
       input: fmtToken(row?.inputTokens),
       cachedInput: fmtToken(row?.cachedInputTokens),
@@ -188,11 +268,10 @@ export function createRequestDetailModal(deps) {
     const transportText = formatRequestTransport(row);
     const modelText = resolveModelDisplay(row);
     const accountText = resolveAccountDisplay(row);
-    const pathText = `${String(row?.method || "-")} ${String(row?.path || "-")}`;
-    const statusText = String(row?.status ?? "-");
-    const retryCount = Math.max(0, Number(row?.upstreamRetryCount || 0));
-    const transportErrorCode = String(row?.upstreamErrorCode || "").trim();
-    const transportErrorDetail = String(row?.upstreamErrorDetail || "").trim();
+    const pathText = `${safeString(row?.method)} ${safeString(row?.path)}`;
+    const statusText = formatStatus(row?.status);
+    const transportErrorCode = safeString(row?.upstreamErrorCode, "").trim();
+    const transportErrorDetail = safeString(row?.upstreamErrorDetail, "").trim();
     const compatibilityText = resolveCompatibilityHint(row?.compatibilityHint);
 
     const items = [
@@ -223,8 +302,8 @@ export function createRequestDetailModal(deps) {
   }
 
   function formatRequestTransport(row) {
-    const method = String(row?.method || "").trim().toUpperCase();
-    const transport = String(row?.transportType || "").trim().toLowerCase();
+    const method = safeString(row?.method, "").trim().toUpperCase();
+    const transport = safeString(row?.transportType, "").trim().toLowerCase();
     if (transport === "websocket" || method === "WS") return "WebSocket";
     if (transport === "http") return method ? `HTTP ${method}` : "HTTP";
     return method || "-";
@@ -270,11 +349,10 @@ export function createRequestDetailModal(deps) {
     if (!descriptor || !cacheEntry || !packet) return;
 
     const detail = cacheEntry.detail;
-    const type = String(detail?.[descriptor.contentTypeKey] || "").trim() || "-";
+    const type = safeString(detail?.[descriptor.contentTypeKey], "").trim() || "-";
+    const packetBytes = toNonNegativeInteger(packet.totalBytes, null);
     const totalBytes =
-      Number.isFinite(Number(packet.totalBytes)) && Number(packet.totalBytes) > 0
-        ? Number(packet.totalBytes)
-        : Number(detail?.packetInfo?.[field]?.bytes || 0);
+      packetBytes !== null && packetBytes > 0 ? packetBytes : toNonNegativeInteger(detail?.packetInfo?.[field]?.bytes, 0);
     const mode = packet.fullLoaded ? t("request_detail_packet_full") : t("request_detail_packet_preview");
     $(descriptor.metaId).textContent = tt("request_detail_packet_meta", {
       type,
@@ -320,8 +398,8 @@ export function createRequestDetailModal(deps) {
     cacheEntry.detail = detail;
     for (const field of Object.keys(REQUEST_DETAIL_PACKET_FIELDS)) {
       const packet = getPacketCacheEntry(cacheEntry, field);
-      packet.totalChars = Number(detail?.packetInfo?.[field]?.chars || packet.totalChars || 0);
-      packet.totalBytes = Number(detail?.packetInfo?.[field]?.bytes || packet.totalBytes || 0);
+      packet.totalChars = toNonNegativeInteger(detail?.packetInfo?.[field]?.chars, toNonNegativeInteger(packet.totalChars, 0));
+      packet.totalBytes = toNonNegativeInteger(detail?.packetInfo?.[field]?.bytes, toNonNegativeInteger(packet.totalBytes, 0));
     }
     return detail;
   }
@@ -359,7 +437,10 @@ export function createRequestDetailModal(deps) {
     renderRequestDetailPacketState(requestId, field);
 
     try {
-      const knownChars = Number(cacheEntry.detail?.packetInfo?.[field]?.chars || packet.totalChars || 0);
+      const knownChars = toNonNegativeInteger(
+        cacheEntry.detail?.packetInfo?.[field]?.chars,
+        toNonNegativeInteger(packet.totalChars, 0)
+      );
       const packetPayload = await fetchRequestDetailPacket(
         requestId,
         field,
@@ -367,8 +448,8 @@ export function createRequestDetailModal(deps) {
       );
       if (!packetPayload || activeRequestDetailId !== requestId) return packet;
 
-      packet.totalChars = Number(packetPayload.totalChars || 0);
-      packet.totalBytes = Number(packetPayload.totalBytes || 0);
+      packet.totalChars = toNonNegativeInteger(packetPayload.totalChars, 0);
+      packet.totalBytes = toNonNegativeInteger(packetPayload.totalBytes, 0);
       packet.truncated = packetPayload.truncated === true;
       packet.error = "";
 
@@ -408,8 +489,8 @@ export function createRequestDetailModal(deps) {
 
     activeRequestDetailId = id;
     $("reqDetailTitle").textContent = tt("request_detail_title_fmt", {
-      method: String(row.method || "-"),
-      path: String(row.path || "-")
+      method: safeString(row.method),
+      path: safeString(row.path)
     });
     renderRequestDetailMeta(row);
 
@@ -460,6 +541,7 @@ export function createRequestDetailModal(deps) {
 
   function closeRequestDetailModal() {
     activeRequestDetailId = "";
+    cancelRequestDetailRenders();
     resetRequestDetailCopyButton("reqDetailReqCopyBtn");
     resetRequestDetailCopyButton("reqDetailResCopyBtn");
     $("reqDetailBackdrop").hidden = true;

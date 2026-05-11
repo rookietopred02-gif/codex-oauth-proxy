@@ -4,6 +4,10 @@ import { createSseSession } from "./sse-runtime.js";
 
 export function commitOpenAISseHeaders(res) {
   res.status(200);
+  setOpenAISseHeaders(res);
+}
+
+export function setOpenAISseHeaders(res) {
   res.setHeader("content-type", "text/event-stream; charset=utf-8");
   res.setHeader("cache-control", "no-cache");
   res.setHeader("connection", "keep-alive");

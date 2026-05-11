@@ -34,8 +34,28 @@ export function createProviderRoutingHelpers({
   OFFICIAL_CODEX_MODELS,
   getValidAuthContext,
   getCodexOriginator,
-  getCachedJsonBody
+  getCachedJsonBody,
+  modelCatalogBodyTimeoutMs = 5000
 }) {
+  function toFiniteNumber(value, fallback = 0) {
+    try {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function toHttpStatusCode(value, fallback = 0) {
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (!/^[1-5]\d{2}$/.test(text)) return fallback;
+      return Number(text);
+    }
+    const parsed = toFiniteNumber(value, fallback);
+    return Number.isInteger(parsed) && parsed >= 100 && parsed <= 599 ? parsed : fallback;
+  }
+
   function getModeDefaultModel(mode) {
     if (mode === "gemini-v1beta") return config.gemini.defaultModel;
     if (mode === "anthropic-v1") return config.anthropic.defaultModel;
@@ -288,6 +308,18 @@ export function createProviderRoutingHelpers({
     return "";
   }
 
+  function getModelCatalogBodyTimeoutMs() {
+    const parsed = toFiniteNumber(modelCatalogBodyTimeoutMs, 5000);
+    return parsed > 0 ? Math.floor(parsed) : 0;
+  }
+
+  async function readModelCatalogJsonOrNull(resp, errorMessage) {
+    const readPromise = resp.json().catch(() => null);
+    const timeoutMs = getModelCatalogBodyTimeoutMs();
+    if (!(timeoutMs > 0)) return await readPromise;
+    return await withTimeout(readPromise, timeoutMs, errorMessage).catch(() => null);
+  }
+
   function getOpenAICompatibleModelIds() {
     const ids = [
       config.codex.defaultModel,
@@ -362,7 +394,7 @@ export function createProviderRoutingHelpers({
       "Codex model catalog request timed out."
     );
     if (!resp.ok) return [];
-    const json = await resp.json().catch(() => null);
+    const json = await readModelCatalogJsonOrNull(resp, "Codex model catalog response body timed out.");
     const models = Array.isArray(json?.models) ? json.models : [];
     return uniqueNonEmptyModelIds(models.map((model) => extractModelId(model, ["slug", "id", "name", "model"])));
   }
@@ -379,7 +411,7 @@ export function createProviderRoutingHelpers({
       "Gemini model catalog request timed out."
     );
     if (!resp.ok) return [];
-    const json = await resp.json().catch(() => null);
+    const json = await readModelCatalogJsonOrNull(resp, "Gemini model catalog response body timed out.");
     const models = Array.isArray(json?.models) ? json.models : [];
     return uniqueNonEmptyModelIds(
       models.map((m) => {
@@ -406,7 +438,7 @@ export function createProviderRoutingHelpers({
       "Anthropic model catalog request timed out."
     );
     if (!resp.ok) return [];
-    const json = await resp.json().catch(() => null);
+    const json = await readModelCatalogJsonOrNull(resp, "Anthropic model catalog response body timed out.");
     const models = Array.isArray(json?.data) ? json.data : [];
     return uniqueNonEmptyModelIds(models.map((m) => (typeof m?.id === "string" ? m.id : "")));
   }
@@ -498,7 +530,7 @@ export function createProviderRoutingHelpers({
   }
 
   function shouldFallbackGeminiUpstreamToCompat(req, httpStatus) {
-    return shouldPreferGeminiCompat(req) && [401, 403, 429].includes(Number(httpStatus || 0));
+    return shouldPreferGeminiCompat(req) && [401, 403, 429].includes(toHttpStatusCode(httpStatus || 0));
   }
 
   function resolveGeminiApiKey(req) {

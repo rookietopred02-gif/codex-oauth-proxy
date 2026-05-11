@@ -125,3 +125,110 @@ test("pool renderer collapses free plans to a single weekly refresh window", () 
   assert.equal(usageView.primaryRefreshAt, 222);
   assert.equal(usageView.secondaryRefreshAt, null);
 });
+
+test("pool renderer ignores malformed numeric account fields", () => {
+  const renderer = createRenderer();
+  const throwingNumber = {
+    valueOf() {
+      throw new Error("bad number");
+    }
+  };
+
+  assert.equal(renderer.getAccountSlotNumber({ slot: Symbol("slot"), _slot: 7 }, 2), 7);
+
+  const html = renderer.buildAccountCardHtml(
+    {
+      entryId: "entry_malformed",
+      accountId: "acct_malformed",
+      label: "Malformed account",
+      enabled: true,
+      slot: throwingNumber,
+      _slot: "3",
+      healthScore: Symbol("score"),
+      failureCount: "not-a-number",
+      cooldownUntil: Symbol("cooldown"),
+      expiresAt: throwingNumber,
+      lastUsedAt: "nope",
+      usageUpdatedAt: throwingNumber,
+      usageSnapshot: {
+        plan_type: "team",
+        fetched_at: 500,
+        primary: {
+          used_percent: Symbol("used"),
+          remaining_percent: throwingNumber,
+          window_minutes: "bad",
+          reset_at: Symbol("reset")
+        },
+        secondary: {
+          used_percent: Infinity,
+          remaining_percent: "101",
+          window_minutes: 10080,
+          reset_after_seconds: Symbol("after")
+        }
+      }
+    },
+    "entry_other",
+    true
+  );
+
+  assert.match(html, /account_slot<\/div><div class="v">#3<\/div>/);
+  assert.match(html, /account_failures<\/div><div class="v">0<\/div>/);
+  assert.doesNotMatch(html, /\bNaN\b|Infinity|Symbol/);
+  assert.doesNotMatch(html, /width:(?:NaN|Infinity|-Infinity)%/);
+});
+
+test("pool renderer rejects decimal-form integer account metadata", () => {
+  const renderer = createRenderer();
+
+  assert.equal(renderer.getAccountSlotNumber({ slot: "3.9", _slot: "4.0" }, 0), 1);
+  assert.equal(
+    renderer.resolveUsageWindows({
+      usageUpdatedAt: "500.5",
+      usageSnapshot: {
+        plan_type: "team",
+        primary: {
+          remaining_percent: "80.5",
+          window_minutes: "300.0",
+          reset_at: "900.9"
+        },
+        secondary: {
+          remaining_percent: 60,
+          window_minutes: 10080,
+          reset_after_seconds: "30.5"
+        }
+      }
+    }).primaryRefreshAt,
+    null
+  );
+
+  const html = renderer.buildAccountCardHtml(
+    {
+      entryId: "entry_decimal",
+      accountId: "acct_decimal",
+      label: "Decimal account",
+      enabled: true,
+      slot: "3.9",
+      _slot: "4.0",
+      failureCount: "2.9",
+      cooldownUntil: "3000.2",
+      expiresAt: "1000.9",
+      lastUsedAt: "2000.0",
+      usageUpdatedAt: "4000.8",
+      usageSnapshot: {
+        plan_type: "team",
+        fetched_at: "5000.7",
+        primary: {
+          remaining_percent: "80.5",
+          window_minutes: "300.0",
+          reset_at: "6000.2"
+        }
+      }
+    },
+    "entry_other",
+    true
+  );
+
+  assert.match(html, /account_slot<\/div><div class="v">#1<\/div>/);
+  assert.match(html, /account_failures<\/div><div class="v">0<\/div>/);
+  assert.doesNotMatch(html, /1000\.9|2000\.0|3000\.2|4000\.8|5000\.7|6000\.2/);
+});

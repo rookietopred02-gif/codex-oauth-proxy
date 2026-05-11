@@ -34,6 +34,14 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     requestBody.include = [...existing, value];
   }
 
+  function hasResponsesWebSearchTool(tools) {
+    if (!Array.isArray(tools)) return false;
+    return tools.some((tool) => {
+      const type = typeof tool?.type === "string" ? tool.type.trim() : "";
+      return /^web_search(?:_preview)?(?:_\d{4}_\d{2}_\d{2})?$/.test(type);
+    });
+  }
+
   function assertCodexResponsesCreateFieldsSupported(requestBody) {
     for (const fieldName of Object.keys(requestBody)) {
       assertResponsesCreateFieldSupported(fieldName, "codexResponses", "OpenAI Responses create requests");
@@ -110,8 +118,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
       requestBody &&
       typeof requestBody === "object" &&
       !Array.isArray(requestBody) &&
-      Object.prototype.hasOwnProperty.call(requestBody, "instructions") &&
-      typeof requestBody.instructions === "string"
+      Object.prototype.hasOwnProperty.call(requestBody, "instructions")
     ) {
       return true;
     }
@@ -176,7 +183,9 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     if (!hasExplicitStore) normalized.store = false;
     applyConfiguredServiceTierDefault(normalized, parsed);
     const collaborationMode = resolveResponsesCollaborationMode(normalized);
-    const messageInstructions = extractDeveloperInstructionTextFromMessages(normalized.messages);
+    const hasOfficialPrompt = Object.prototype.hasOwnProperty.call(normalized, "prompt");
+    const useMessagesAlias = normalized.input === undefined && !hasOfficialPrompt && Array.isArray(normalized.messages);
+    const messageInstructions = useMessagesAlias ? extractDeveloperInstructionTextFromMessages(normalized.messages) : "";
     normalized.instructions = resolveResponsesDeveloperInstructions(normalized, config, {
       messageInstructions
     });
@@ -188,10 +197,14 @@ export function createOpenAIRequestNormalizationHelpers(context) {
       messageInstructions,
       allowMessageInstructions: !isPreviousResponseContinuation
     });
-    if (isPreviousResponseContinuation && !explicitInstructionOverride && !collaborationMode.explicit) {
+    if (
+      (isPreviousResponseContinuation || hasOfficialPrompt) &&
+      !explicitInstructionOverride &&
+      !collaborationMode.explicit
+    ) {
       delete normalized.instructions;
     }
-    if (normalized.input === undefined && Array.isArray(normalized.messages)) {
+    if (useMessagesAlias) {
       normalized.input = toResponsesInputFromChatMessages(normalized.messages);
     } else {
       normalized.input = normalizeResponsesInput(normalized.input);
@@ -206,6 +219,9 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     else normalized.tool_choice = normalizedToolChoice;
     if (!hasExplicitInclude && normalized.store === false) {
       ensureResponsesInclude(normalized, "reasoning.encrypted_content");
+    }
+    if (!hasExplicitInclude && hasResponsesWebSearchTool(normalized.tools)) {
+      ensureResponsesInclude(normalized, "web_search_call.action.sources");
     }
     preserveExplicitReasoningEffort(normalized, parsed);
     delete normalized.generate;
@@ -271,6 +287,9 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     );
     if (normalizedChatToolChoice !== undefined) upstreamBody.tool_choice = normalizedChatToolChoice;
     if (parsed.tools !== undefined) upstreamBody.tools = normalizedChatTools;
+    if (hasResponsesWebSearchTool(upstreamBody.tools)) {
+      ensureResponsesInclude(upstreamBody, "web_search_call.action.sources");
+    }
     applyConfiguredServiceTierDefault(upstreamBody, parsed);
     const upstreamJson = orderResponsesCreateControlFields(upstreamBody);
 

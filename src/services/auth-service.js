@@ -21,6 +21,31 @@ export function createAuthService({
   let proxyApiKeyStoreFlushTimer = null;
   const PROXY_API_KEY_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789";
 
+  function toIntegerNumber(value, fallback = 0) {
+    if (typeof value === "number") {
+      return Number.isInteger(value) && Number.isFinite(value) ? value : fallback;
+    }
+    if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+      const parsed = Number(value.trim());
+      return Number.isSafeInteger(parsed) ? parsed : fallback;
+    }
+    return fallback;
+  }
+
+  function toNonNegativeInteger(value, fallback = 0) {
+    const parsed = toIntegerNumber(value, fallback);
+    return parsed >= 0 ? parsed : Math.max(0, fallback);
+  }
+
+  function toCacheTtlMs(value, fallback = 15000) {
+    return Math.max(1000, toNonNegativeInteger(value, fallback));
+  }
+
+  function toFlushDelayMs(value, fallback = 2000) {
+    const parsed = toNonNegativeInteger(value, fallback);
+    return Math.max(250, parsed || fallback);
+  }
+
   function clearAuthContextCache() {
     authContextCache.mode = "";
     authContextCache.accessToken = "";
@@ -49,7 +74,7 @@ export function createAuthService({
     authContextCache.accountId = context.accountId || null;
     authContextCache.poolEntryId = context.poolEntryId || null;
     authContextCache.poolAccountId = context.poolAccountId || null;
-    authContextCache.expiresAt = Date.now() + Math.max(1000, Math.floor(ttlMs));
+    authContextCache.expiresAt = Date.now() + toCacheTtlMs(ttlMs);
   }
 
   function hashProxyApiKey(value) {
@@ -73,29 +98,39 @@ export function createAuthService({
         continue;
       }
       const id = String(item.id || "").trim() || `key_${crypto.randomUUID().replace(/-/g, "")}`;
-      const hash = String(item.hash || "").trim().toLowerCase();
+      const legacyPlaintextKey =
+        typeof item.value === "string" && item.value.trim()
+          ? item.value.trim()
+          : typeof item.apiKey === "string" && item.apiKey.trim()
+            ? item.apiKey.trim()
+            : "";
+      let hash = String(item.hash || "").trim().toLowerCase();
       if (item.value || item.apiKey) changed = true;
+      if (!/^[a-f0-9]{64}$/.test(hash) && legacyPlaintextKey) {
+        hash = hashProxyApiKey(legacyPlaintextKey);
+        changed = true;
+      }
       if (!/^[a-f0-9]{64}$/.test(hash)) {
         changed = true;
         continue;
       }
       const label = String(item.label || "").trim() || "unnamed";
-      const prefix = String(item.prefix || "").trim() || "sk-";
-      const createdAt = Number(item.created_at || item.createdAt || nowSec);
-      const lastUsedAt = Number(item.last_used_at || item.lastUsedAt || 0);
-      const useCount = Number(item.use_count || item.useCount || 0);
-      const revokedAt = Number(item.revoked_at || item.revokedAt || 0);
-      const expiresAt = Number(item.expires_at || item.expiresAt || 0);
+      const prefix = String(item.prefix || "").trim() || legacyPlaintextKey.slice(0, 10) || "sk-";
+      const createdAt = toNonNegativeInteger(item.created_at || item.createdAt || nowSec, nowSec);
+      const lastUsedAt = toNonNegativeInteger(item.last_used_at || item.lastUsedAt || 0);
+      const useCount = toNonNegativeInteger(item.use_count || item.useCount || 0);
+      const revokedAt = toNonNegativeInteger(item.revoked_at || item.revokedAt || 0);
+      const expiresAt = toNonNegativeInteger(item.expires_at || item.expiresAt || 0);
       out.keys.push({
         id,
         label,
         prefix,
         hash,
-        created_at: Number.isFinite(createdAt) ? createdAt : nowSec,
-        last_used_at: Number.isFinite(lastUsedAt) ? Math.max(0, Math.floor(lastUsedAt)) : 0,
-        use_count: Number.isFinite(useCount) ? Math.max(0, Math.floor(useCount)) : 0,
-        revoked_at: Number.isFinite(revokedAt) ? Math.max(0, Math.floor(revokedAt)) : 0,
-        expires_at: Number.isFinite(expiresAt) ? Math.max(0, Math.floor(expiresAt)) : 0
+        created_at: createdAt,
+        last_used_at: lastUsedAt,
+        use_count: useCount,
+        revoked_at: revokedAt,
+        expires_at: expiresAt
       });
     }
     return { store: out, changed };
@@ -105,9 +140,9 @@ export function createAuthService({
     const keys = Array.isArray(store?.keys) ? store.keys : [];
     return keys.filter((entry) => {
       if (!entry || typeof entry !== "object") return false;
-      if (Number(entry.revoked_at || 0) > 0) return false;
-      const expiresAt = Number(entry.expires_at || 0);
-      if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= nowSec) return false;
+      if (toNonNegativeInteger(entry.revoked_at || 0) > 0) return false;
+      const expiresAt = toNonNegativeInteger(entry.expires_at || 0);
+      if (expiresAt > 0 && expiresAt <= nowSec) return false;
       return true;
     });
   }
@@ -119,7 +154,7 @@ export function createAuthService({
       return false;
     }
     const before = store.keys.length;
-    store.keys = store.keys.filter((entry) => Number(entry?.revoked_at || 0) <= 0);
+    store.keys = store.keys.filter((entry) => toNonNegativeInteger(entry?.revoked_at || 0) <= 0);
     return store.keys.length !== before;
   }
 
@@ -148,7 +183,7 @@ export function createAuthService({
       persistProxyApiKeyStore(proxyApiKeyStore).catch((err) => {
         logger.warn?.(`[api-keys] failed to persist usage: ${err.message}`);
       });
-    }, Math.max(250, Number(delayMs) || 2000));
+    }, toFlushDelayMs(delayMs));
   }
 
   function createProxyApiKey() {
@@ -216,7 +251,7 @@ export function createAuthService({
   function recordManagedProxyApiKeyUsage(entry) {
     if (!entry || typeof entry !== "object") return;
     entry.last_used_at = Math.floor(Date.now() / 1000);
-    entry.use_count = Number(entry.use_count || 0) + 1;
+    entry.use_count = toNonNegativeInteger(entry.use_count || 0) + 1;
     scheduleProxyApiKeyStoreFlush();
   }
 
@@ -234,15 +269,15 @@ export function createAuthService({
       active: activeKeys.length,
       keys: keys
         .map((entry) => {
-          const expiresAt = Number(entry.expires_at || 0);
-          const revokedAt = Number(entry.revoked_at || 0);
+          const expiresAt = toNonNegativeInteger(entry.expires_at || 0);
+          const revokedAt = toNonNegativeInteger(entry.revoked_at || 0);
           return {
             id: String(entry.id || ""),
             label: String(entry.label || ""),
             prefix: String(entry.prefix || "sk-"),
-            createdAt: Number(entry.created_at || 0) || null,
-            lastUsedAt: Number(entry.last_used_at || 0) || null,
-            useCount: Number(entry.use_count || 0) || 0,
+            createdAt: toNonNegativeInteger(entry.created_at || 0) || null,
+            lastUsedAt: toNonNegativeInteger(entry.last_used_at || 0) || null,
+            useCount: toNonNegativeInteger(entry.use_count || 0) || 0,
             expiresAt: expiresAt > 0 ? expiresAt : null,
             revokedAt: revokedAt > 0 ? revokedAt : null,
             active: activeIds.has(String(entry.id || ""))

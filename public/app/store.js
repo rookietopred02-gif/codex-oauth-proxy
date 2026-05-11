@@ -32,7 +32,9 @@ export function readStoredString(key) {
 export function readStoredBool(key) {
   const raw = readStoredString(key);
   if (raw === null) return null;
-  return raw === "1";
+  if (raw === "1") return true;
+  if (raw === "0") return false;
+  return null;
 }
 
 export function writeStoredString(key, value) {
@@ -45,7 +47,10 @@ export function writeStoredString(key, value) {
 
 export function readStoredNumber(key, fallback, min, max) {
   const raw = readStoredString(key);
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, Math.floor(n)));
+  if (raw === null) return fallback;
+  const normalized = raw.trim();
+  if (!/^-?\d+$/.test(normalized)) return fallback;
+  const n = Number(normalized);
+  if (!Number.isSafeInteger(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
 }

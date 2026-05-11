@@ -4,14 +4,27 @@ import {
   parseSseJsonEventBlock
 } from "./sse-runtime.js";
 import { createOpenAIChatCompletionStream } from "./openai-chat-stream.js";
+import {
+  normalizeTokenUsage,
+  toChatUsageFromNormalizedTokenUsage
+} from "./token-usage.js";
+
+function toChatUsage(fields) {
+  const normalized = normalizeTokenUsage(fields);
+  return normalized ? toChatUsageFromNormalizedTokenUsage(normalized) : null;
+}
+
+function readTokenCount(value, fallback = 0) {
+  return normalizeTokenUsage({ input_tokens: value })?.inputTokens ?? fallback;
+}
 
 function toGeminiChatUsage(usageMetadata) {
   if (!usageMetadata || typeof usageMetadata !== "object") return null;
-  return {
-    prompt_tokens: Number(usageMetadata.promptTokenCount || 0),
-    completion_tokens: Number(usageMetadata.candidatesTokenCount || 0),
-    total_tokens: Number(usageMetadata.totalTokenCount || 0)
-  };
+  return toChatUsage({
+    input_tokens: usageMetadata.promptTokenCount,
+    output_tokens: usageMetadata.candidatesTokenCount,
+    total_tokens: usageMetadata.totalTokenCount
+  });
 }
 
 function extractGeminiChunkText(payload) {
@@ -179,7 +192,7 @@ export async function pipeAnthropicSseAsOpenAIChatCompletions(
         }
 
         if (eventName === "message_start") {
-          promptTokens = Number(event?.message?.usage?.input_tokens || promptTokens || 0);
+          promptTokens = readTokenCount(event?.message?.usage?.input_tokens, promptTokens);
           return;
         }
 
@@ -264,7 +277,7 @@ export async function pipeAnthropicSseAsOpenAIChatCompletions(
         }
 
         if (eventName === "message_delta") {
-          completionTokens = Number(event?.usage?.output_tokens || completionTokens || 0);
+          completionTokens = readTokenCount(event?.usage?.output_tokens, completionTokens);
           const stopReason = event?.delta?.stop_reason;
           if (typeof stopReason === "string" && stopReason.length > 0) {
             finalFinishReason =
@@ -287,11 +300,15 @@ export async function pipeAnthropicSseAsOpenAIChatCompletions(
       throw new Error("Upstream SSE ended before Anthropic message_stop event.");
     }
 
-    const usage = {
-      prompt_tokens: Number(promptTokens || 0),
-      completion_tokens: Number(completionTokens || 0),
-      total_tokens: Number(promptTokens || 0) + Number(completionTokens || 0)
-    };
+    const usage =
+      toChatUsage({
+        input_tokens: promptTokens,
+        output_tokens: completionTokens
+      }) || {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0
+      };
 
     if (!stream.isClosed()) {
       stream.finish({

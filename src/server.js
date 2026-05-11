@@ -41,7 +41,13 @@ import {
   pipeGeminiSseAsOpenAIChatCompletions
 } from "./http/provider-stream-adapters.js";
 import { sendOpenAICompletionAsSse } from "./http/openai-chat-stream.js";
-import { getCachedJsonBody, readJsonBody, readRawBody } from "./http/request-body.js";
+import {
+  getCachedJsonBody,
+  getRequestBodyErrorStatus,
+  isRequestBodyError,
+  readJsonBody,
+  readRawBody
+} from "./http/request-body.js";
 import { estimateTokenCountFromText } from "./http/token-estimation.js";
 import { createUpstreamRuntimeHelpers } from "./http/upstream-runtime.js";
 import { createAnthropicLocalCompatHelpers } from "./protocols/anthropic/local-compat.js";
@@ -483,11 +489,15 @@ const {
 
 function startExpiredAccountCleanupTimer() {
   if (expiredAccountCleanupTimer) return expiredAccountCleanupTimer;
+  const intervalSeconds = Math.max(
+    10,
+    parseFiniteNumber(config.expiredAccountCleanup.intervalSeconds || 30) ?? 30
+  );
   expiredAccountCleanupTimer = setInterval(() => {
     expiredAccountCleanupController.run("interval").catch((err) => {
       console.warn(`[auth-pool] account auto-rm failed: ${err?.message || err}`);
     });
-  }, Math.max(10, Number(config.expiredAccountCleanup.intervalSeconds || 30)) * 1000);
+  }, intervalSeconds * 1000);
   expiredAccountCleanupTimer.unref?.();
   return expiredAccountCleanupTimer;
 }
@@ -1018,6 +1028,7 @@ async function getAuthStatus() {
 async function getValidAuthContext(options = {}) {
   const preferredPoolEntryId =
     typeof options.preferredPoolEntryId === "string" ? options.preferredPoolEntryId.trim() : "";
+  const requestedModel = typeof options.requestedModel === "string" ? options.requestedModel.trim() : "";
   const retainLease = options.retainLease === true;
   const allowCache = !(
     config.authMode === "codex-oauth" &&
@@ -1041,7 +1052,8 @@ async function getValidAuthContext(options = {}) {
     context = await getValidAuthContextFromProfileStore();
   } else if (config.authMode === "codex-oauth") {
     context = await getValidAuthContextFromCodexOAuthStore(codexOAuthStore, config.codexOAuth, {
-      preferredPoolEntryId
+      preferredPoolEntryId,
+      requestedModel
     });
   } else {
     context = await getValidAuthContextFromOAuthStore(customOAuthStore, config.customOAuth);
@@ -1077,7 +1089,7 @@ function extractCodexModelId(value) {
 
 function readCachedCodexModelIdsForAccount(account, nowMs = Date.now()) {
   const codexCapabilities = account?.model_capabilities?.codex;
-  const fetchedAtRaw = Number(codexCapabilities?.fetched_at || 0);
+  const fetchedAtRaw = parseNonNegativeIntegerValue(codexCapabilities?.fetched_at) || 0;
   const fetchedAtMs = fetchedAtRaw > 100000000000 ? fetchedAtRaw : fetchedAtRaw * 1000;
   if (!Number.isFinite(fetchedAtMs) || fetchedAtMs <= 0 || nowMs - fetchedAtMs > 5 * 60 * 1000) {
     return null;
@@ -1124,7 +1136,8 @@ async function fetchCodexModelIdsForAccountToken(accessToken, accountId) {
     "Codex model catalog request timed out."
   );
   if (!resp.ok) return [];
-  const json = await resp.json().catch(() => null);
+  const raw = await readUpstreamTextOrThrow(resp).catch(() => "");
+  const json = parseJsonLoose(raw);
   const models = Array.isArray(json?.models) ? json.models : Array.isArray(json?.data) ? json.data : [];
   return normalizeScopedModelIds(models.map(extractCodexModelId));
 }
@@ -1288,7 +1301,7 @@ async function refreshOpenAICodexToken(refreshToken) {
     })
   });
 
-  const bodyText = await response.text();
+  const bodyText = await readUpstreamTextOrThrow(response);
   if (!response.ok) {
     throw new Error(
       `OpenAI Codex refresh failed: HTTP ${response.status} ${response.statusText}: ${truncate(bodyText, 500)}`
@@ -1325,9 +1338,76 @@ function getActiveOAuthRuntime() {
 }
 
 function parsePercentOrNull(value) {
-  const n = Number(value);
+  const n = parseFiniteNumber(value);
   if (!Number.isFinite(n)) return null;
   return Math.max(0, Math.min(100, n));
+}
+
+function parseFiniteNumber(value) {
+  try {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseIntegerValue(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : null;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const n = Number(value.trim());
+    return Number.isSafeInteger(n) ? n : null;
+  }
+  return null;
+}
+
+function parseNonNegativeIntegerValue(value) {
+  const n = parseIntegerValue(value);
+  return n !== null && n >= 0 ? n : null;
+}
+
+function incrementPreheatHistoryCount(value) {
+  return (parseNonNegativeIntegerValue(value) ?? 0) + 1;
+}
+
+function normalizeTokenRefreshResultExpiresAt(value) {
+  return parseNonNegativeIntegerValue(value) ?? 0;
+}
+
+function parseInteger(value, fallback = 0, min = 0, max = Number.MAX_SAFE_INTEGER) {
+  const n = parseIntegerValue(value) ?? parseIntegerValue(fallback) ?? min;
+  return Math.max(min, Math.min(max, n));
+}
+
+function parsePositiveInteger(value, fallback = 1, max = Number.MAX_SAFE_INTEGER) {
+  const n = parseIntegerValue(value);
+  if (n === null || n <= 0) return parseInteger(fallback, 1, 1, max);
+  return Math.min(max, n);
+}
+
+function parseStatusCode(value) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && (value === 0 || (value >= 100 && value <= 599)) ? value : 0;
+  }
+  if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+    return Number(value);
+  }
+  return 0;
+}
+
+function parseTokenCount(value) {
+  return parseInteger(value, 0, 0, Number.MAX_SAFE_INTEGER);
+}
+
+function stringifyTokenEstimateSegment(value) {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" ? serialized : "";
+  } catch {
+    return "";
+  }
 }
 
 function parseJsonLoose(rawText) {
@@ -1389,12 +1469,13 @@ async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
   codexOAuthStore = normalized.store;
   const target = findCodexPoolAccountByRef(codexOAuthStore.accounts || [], accountRef);
   if (!target) return;
-  target.failure_count = Number(target.failure_count || 0) + 1;
+  const normalizedStatusCode = parseStatusCode(statusCode);
+  target.failure_count = parseInteger(target.failure_count, 0) + 1;
   target.last_error = String(reason || "request_failed");
-  target.last_status_code = Number(statusCode || 0) || 0;
-  const cooldownSeconds = getCodexPoolCooldownSeconds(statusCode, target.failure_count);
+  target.last_status_code = normalizedStatusCode;
+  const cooldownSeconds = getCodexPoolCooldownSeconds(normalizedStatusCode, target.failure_count);
   const nowSec = Math.floor(Date.now() / 1000);
-  const tokenInvalidated = isCodexTokenInvalidatedError(statusCode, target.last_error);
+  const tokenInvalidated = isCodexTokenInvalidatedError(normalizedStatusCode, target.last_error);
   if (tokenInvalidated) {
     // Hard-disable invalidated identities to stop poisoning account rotation.
     applyCodexInvalidatedAccountState(codexOAuthStore, target, nowSec);
@@ -1402,7 +1483,7 @@ async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
     target.cooldown_until = nowSec + cooldownSeconds;
     target.token_invalidated_at = 0;
   }
-  if (Number(statusCode || 0) === 429) {
+  if (normalizedStatusCode === 429) {
     const fallbackSnapshot = extractCodexUsageSnapshotFromLimitError(
       target.last_error,
       target.usage_snapshot || null,
@@ -1410,7 +1491,7 @@ async function markCodexPoolAccountFailure(accountRef, reason, statusCode = 0) {
     );
     if (fallbackSnapshot) {
       target.usage_snapshot = fallbackSnapshot;
-      target.usage_updated_at = Number(fallbackSnapshot.fetched_at || nowSec) || nowSec;
+      target.usage_updated_at = parseInteger(fallbackSnapshot.fetched_at, nowSec);
     }
   }
   const targetEntryId = getCodexPoolEntryId(target);
@@ -1455,7 +1536,7 @@ async function maybeMarkCodexPoolFailure(authContext, reason, statusCode = 0) {
   if (!isCodexMultiAccountEnabled()) return false;
   const poolRef = authContext?.poolEntryId || authContext?.poolAccountId || null;
   if (!poolRef) return false;
-  const code = Number(statusCode || 0);
+  const code = parseStatusCode(statusCode);
   if (!shouldRotateCodexAccountForStatus(code)) return false;
   await markCodexPoolAccountFailure(poolRef, reason, code);
   return true;
@@ -1469,8 +1550,7 @@ async function maybeMarkCodexPoolSuccess(authContext) {
 }
 
 function parseCodexHeaderNumber(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+  return parseFiniteNumber(value);
 }
 
 function parseCodexHeaderBoolean(value) {
@@ -1547,7 +1627,7 @@ function applyCodexUsageSnapshotToStore(store, accountRef, snapshot) {
   const target = findCodexPoolAccountByRef(store.accounts, accountRef);
   if (!target) return false;
   target.usage_snapshot = snapshot;
-  target.usage_updated_at = Number(snapshot.fetched_at || Math.floor(Date.now() / 1000));
+  target.usage_updated_at = parseInteger(snapshot.fetched_at, Math.floor(Date.now() / 1000));
   return true;
 }
 
@@ -1632,7 +1712,7 @@ function extractCodexUsageSnapshotFromLimitError(rawText, previousSnapshot = nul
 }
 
 function shouldTryNextCodexUsageProbeModel(error) {
-  const statusCode = Number(error?.statusCode || 0) || 0;
+  const statusCode = parseStatusCode(error?.statusCode);
   if (![400, 403, 404].includes(statusCode)) return false;
   const message = String(error?.message || error || "").toLowerCase();
   return (
@@ -1684,6 +1764,7 @@ async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, 
   const storeTokenMatchedTarget =
     previousAccessToken.length > 0 && String(store?.token?.access_token || "") === previousAccessToken;
 
+  let modelAttempts = [];
   try {
     const requestedModelCandidates = Array.isArray(options.modelCandidates)
       ? options.modelCandidates
@@ -1702,7 +1783,7 @@ async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, 
     let probeModel = probeModelCandidates[0] || config.codex.defaultModel;
     let snapshot = null;
     let lastError = null;
-    const modelAttempts = [];
+    modelAttempts = [];
     for (const candidateModel of probeModelCandidates) {
       modelAttempts.push(candidateModel);
       probeModel = candidateModel;
@@ -1722,7 +1803,7 @@ async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, 
       throw lastError || new Error("usage_probe_failed");
     }
     target.usage_snapshot = snapshot;
-    target.usage_updated_at = Number(snapshot?.fetched_at || 0) || Math.floor(Date.now() / 1000);
+    target.usage_updated_at = parseInteger(snapshot?.fetched_at, Math.floor(Date.now() / 1000));
     const currentEntryId = getCodexPoolEntryId(target) || entryId || accountId;
     const currentAccountId = target.account_id || accountId;
     resetCodexAccountHealth(target, { enable: false });
@@ -1739,12 +1820,12 @@ async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, 
       applied: true,
       changed: true,
       planType: String(snapshot?.plan_type || "").trim().toLowerCase() || null,
-      usageUpdatedAt: Number(snapshot?.fetched_at || 0) || Math.floor(Date.now() / 1000),
-      modelAttempts: probeModelCandidates
+      usageUpdatedAt: parseInteger(snapshot?.fetched_at, Math.floor(Date.now() / 1000)),
+      modelAttempts
     };
   } catch (err) {
     const message = String(err?.message || err || "usage_probe_failed");
-    const statusCode = Number(err?.statusCode || 0) || 0;
+    const statusCode = parseStatusCode(err?.statusCode);
     const tokenInvalidated = isCodexTokenInvalidatedError(statusCode, message);
     target.last_error = message;
     target.last_status_code = statusCode;
@@ -1762,7 +1843,7 @@ async function refreshCodexUsageSnapshotInStore(store, accountRef, oauthConfig, 
       statusCode,
       tokenInvalidated,
       changed: true,
-      modelAttempts: Array.isArray(options.modelCandidates) ? options.modelCandidates : []
+      modelAttempts
     };
   }
 }
@@ -1853,11 +1934,11 @@ async function refreshCodexTokensInStore(store, oauthConfig, options = {}) {
         entryId: nextEntryId,
         accountId: nextAccountId,
         ok: true,
-        expiresAt: Number(nextToken?.expires_at || 0) || 0
+        expiresAt: normalizeTokenRefreshResultExpiresAt(nextToken?.expires_at)
       });
     } catch (err) {
       const message = String(err?.message || err || "token_refresh_failed");
-      const statusCode = Number(err?.statusCode || 0) || 0;
+      const statusCode = parseStatusCode(err?.statusCode);
       target.last_error = message;
       target.last_status_code = statusCode;
       if (isCodexTokenInvalidatedError(statusCode, message)) {
@@ -2019,12 +2100,12 @@ async function fetchCodexUsageSnapshotForAccount(account, oauthConfig, options =
   let response = await sendProbeRequest(probeBody);
   let snapshot = extractCodexUsageSnapshotFromHeaders(response.headers, "probe");
   if (!response.ok) {
-    let raw = await response.text().catch(() => "");
+    let raw = await readUpstreamTextOrThrow(response).catch(() => "");
     if (isUnsupportedMaxOutputTokensError(response.status, raw)) {
       probeBody = buildProbeBody(false);
       response = await sendProbeRequest(probeBody);
       snapshot = extractCodexUsageSnapshotFromHeaders(response.headers, "probe");
-      raw = response.ok ? raw : await response.text().catch(() => "");
+      raw = response.ok ? raw : await readUpstreamTextOrThrow(response).catch(() => "");
     }
     if (!response.ok) {
       const fallback = extractCodexUsageSnapshotFromLimitError(raw, account?.usage_snapshot || null, "probe_error");
@@ -2163,7 +2244,7 @@ async function runCodexPreheat(reason = "manual", options = {}) {
         const { account, entryId, accountId } = targets[accountIndex];
         const history = getCodexPreheatAccountHistory(entryId);
         if (history) {
-          history.run_count = Number(history.run_count || 0) + 1;
+          history.run_count = incrementPreheatHistoryCount(history.run_count);
           history.last_run_at = nowSec;
           saveHistory = true;
         }
@@ -2176,11 +2257,11 @@ async function runCodexPreheat(reason = "manual", options = {}) {
         if (result.changed) saveStore = true;
         if (history) {
           if (result.ok) {
-            history.success_count = Number(history.success_count || 0) + 1;
+            history.success_count = incrementPreheatHistoryCount(history.success_count);
             history.last_success_at = nowSec;
             history.last_error = "";
           } else {
-            history.failure_count = Number(history.failure_count || 0) + 1;
+            history.failure_count = incrementPreheatHistoryCount(history.failure_count);
             history.last_failure_at = nowSec;
             history.last_error = String(result.error || "preheat_failed");
           }
@@ -2294,7 +2375,7 @@ async function exchangeCodeForToken(code, codeVerifier, oauthConfig) {
     body: form
   });
 
-  const text = await resp.text();
+  const text = await readUpstreamTextOrThrow(resp);
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status} ${resp.statusText}: ${text}`);
   }
@@ -2302,7 +2383,7 @@ async function exchangeCodeForToken(code, codeVerifier, oauthConfig) {
 }
 
 function mapHttpStatusToGeminiStatus(httpStatus) {
-  const code = Number(httpStatus || 400);
+  const code = parseStatusCode(httpStatus) || 400;
   if (code === 401 || code === 403) return "UNAUTHENTICATED";
   if (code === 404) return "NOT_FOUND";
   if (code === 429) return "RESOURCE_EXHAUSTED";
@@ -2344,9 +2425,9 @@ function buildOpenAIChatCompletionFromGeminiPayload(payload, requestedModel) {
     .join("");
 
   const usage = {
-    prompt_tokens: Number(payload?.usageMetadata?.promptTokenCount || 0),
-    completion_tokens: Number(payload?.usageMetadata?.candidatesTokenCount || 0),
-    total_tokens: Number(payload?.usageMetadata?.totalTokenCount || 0)
+    prompt_tokens: parseTokenCount(payload?.usageMetadata?.promptTokenCount),
+    completion_tokens: parseTokenCount(payload?.usageMetadata?.candidatesTokenCount),
+    total_tokens: parseTokenCount(payload?.usageMetadata?.totalTokenCount)
   };
   const finishReason = mapGeminiFinishReasonToOpenAI(candidate?.finishReason);
   return buildOpenAIChatCompletion({
@@ -2358,7 +2439,7 @@ function buildOpenAIChatCompletionFromGeminiPayload(payload, requestedModel) {
 }
 
 function mapHttpStatusToAnthropicErrorType(httpStatus) {
-  const code = Number(httpStatus || 400);
+  const code = parseStatusCode(httpStatus) || 400;
   if (code === 401 || code === 403) return "authentication_error";
   if (code === 404) return "not_found_error";
   if (code === 429) return "rate_limit_error";
@@ -2367,15 +2448,16 @@ function mapHttpStatusToAnthropicErrorType(httpStatus) {
 }
 
 function resolveCompatErrorStatusCode(err, fallback = 502) {
-  const explicit = Number(err?.statusCode);
-  if (Number.isFinite(explicit) && explicit >= 100 && explicit <= 599) {
+  const explicit = parseStatusCode(err?.statusCode);
+  if (explicit >= 100) {
     return explicit;
   }
   const message = String(err?.message || "");
   if (/chatgpt_account_id|oauth token|access token|unauthorized|forbidden/i.test(message)) {
     return 401;
   }
-  return fallback;
+  const fallbackStatusCode = parseStatusCode(fallback);
+  return fallbackStatusCode >= 100 ? fallbackStatusCode : 502;
 }
 
 function parseAnthropicErrorMessage(rawText, fallbackMessage) {
@@ -2395,22 +2477,43 @@ function parseAnthropicErrorMessage(rawText, fallbackMessage) {
 }
 
 function sendAnthropicError(res, { httpStatus = 400, message, type }) {
-  res.status(httpStatus).json({
+  const statusCode = parseStatusCode(httpStatus) || 400;
+  res.status(statusCode).json({
     type: "error",
     error: {
-      type: type || mapHttpStatusToAnthropicErrorType(httpStatus),
+      type: type || mapHttpStatusToAnthropicErrorType(statusCode),
       message: String(message || "Anthropic request failed.")
     }
   });
 }
 
 function sendGeminiError(res, { httpStatus = 400, message, status }) {
-  res.status(httpStatus).json({
+  const statusCode = parseStatusCode(httpStatus) || 400;
+  res.status(statusCode).json({
     error: {
-      code: Number(httpStatus || 400),
+      code: statusCode,
       message: String(message || "Gemini request failed."),
-      status: status || mapHttpStatusToGeminiStatus(httpStatus)
+      status: status || mapHttpStatusToGeminiStatus(statusCode)
     }
+  });
+}
+
+function getProviderJsonBodyErrorMessage(err, providerName) {
+  if (err?.code === "invalid_json") return `Invalid JSON body for ${providerName} endpoint.`;
+  return err?.message || "Invalid request body.";
+}
+
+function sendGeminiRequestBodyError(res, err) {
+  sendGeminiError(res, {
+    httpStatus: getRequestBodyErrorStatus(err),
+    message: getProviderJsonBodyErrorMessage(err, "Gemini")
+  });
+}
+
+function sendAnthropicRequestBodyError(res, err) {
+  sendAnthropicError(res, {
+    httpStatus: getRequestBodyErrorStatus(err),
+    message: getProviderJsonBodyErrorMessage(err, "Anthropic")
   });
 }
 
@@ -2470,11 +2573,24 @@ async function handleGeminiNativeProxy(req, res) {
     if (parsedBody === undefined && String(contentType).toLowerCase().includes("json")) {
       try {
         parsedBody = await readJsonBody(req);
-      } catch {
-        parsedBody = undefined;
+      } catch (err) {
+        if (isRequestBodyError(err)) {
+          sendGeminiRequestBodyError(res, err);
+          return;
+        }
+        throw err;
       }
     }
-    const rawBody = await readRawBody(req);
+    let rawBody;
+    try {
+      rawBody = await readRawBody(req);
+    } catch (err) {
+      if (isRequestBodyError(err)) {
+        sendGeminiRequestBodyError(res, err);
+        return;
+      }
+      throw err;
+    }
     init.body = rawBody;
     noteUpstreamRequestAudit(
       res,
@@ -2497,7 +2613,7 @@ async function handleGeminiNativeProxy(req, res) {
   }
 
   if (!upstream.ok) {
-    const raw = await upstream.text().catch(() => "");
+    const raw = await readUpstreamTextOrThrow(upstream).catch(() => "");
     if (shouldFallbackGeminiUpstreamToCompat(req, upstream.status)) {
       await geminiLocalCompatHelpers.handleGeminiNativeCompat(req, res);
       return;
@@ -2561,7 +2677,16 @@ async function handleAnthropicNativeProxy(req, res) {
   };
   let anthropicStreamRequest = String(req.headers?.accept || "").toLowerCase().includes("text/event-stream");
   if (req.method !== "GET" && req.method !== "HEAD") {
-    const rawBody = await readRawBody(req);
+    let rawBody;
+    try {
+      rawBody = await readRawBody(req);
+    } catch (err) {
+      if (isRequestBodyError(err)) {
+        sendAnthropicRequestBodyError(res, err);
+        return;
+      }
+      throw err;
+    }
     let requestBody = rawBody;
     const incoming = new URL(req.originalUrl, "http://localhost");
     let auditRequestBody = getCachedJsonBody(req) ?? rawBody;
@@ -2581,8 +2706,12 @@ async function handleAnthropicNativeProxy(req, res) {
           requestBody = Buffer.from(JSON.stringify(mappedRequest), "utf8");
           auditRequestBody = mappedRequest;
         }
-      } catch {
-        // keep original body when parse fails
+      } catch (err) {
+        if (isRequestBodyError(err)) {
+          sendAnthropicRequestBodyError(res, err);
+          return;
+        }
+        throw err;
       }
     }
     init.body = requestBody;
@@ -2613,7 +2742,7 @@ async function handleAnthropicNativeProxy(req, res) {
   }
 
   if (!upstream.ok) {
-    const raw = await upstream.text().catch(() => "");
+    const raw = await readUpstreamTextOrThrow(upstream).catch(() => "");
     if (
       config.authMode === "codex-oauth" &&
       isCodexMultiAccountEnabled() &&
@@ -2697,6 +2826,10 @@ async function handleGeminiProtocol(req, res) {
     }
     chatReq = parseOpenAIChatCompletionsLikeRequest(rawBody, config.gemini.defaultModel, parsedBody);
   } catch (err) {
+    if (isRequestBodyError(err)) {
+      sendGeminiRequestBodyError(res, err);
+      return;
+    }
     sendGeminiError(res, {
       httpStatus: 400,
       message: err.message,
@@ -2919,6 +3052,10 @@ async function handleAnthropicProtocol(req, res) {
     }
     chatReq = parseOpenAIChatCompletionsLikeRequest(rawBody, config.anthropic.defaultModel, parsedBody);
   } catch (err) {
+    if (isRequestBodyError(err)) {
+      sendAnthropicRequestBodyError(res, err);
+      return;
+    }
     sendAnthropicError(res, {
       httpStatus: 400,
       message: err.message,
@@ -2942,7 +3079,7 @@ async function handleAnthropicProtocol(req, res) {
   res.locals.modelRoute = modelRoute;
   const body = {
     model: modelRoute.mappedModel,
-    max_tokens: Number(chatReq.max_tokens || 4096),
+    max_tokens: parsePositiveInteger(chatReq.max_tokens, 4096),
     messages: anthropicMessages,
     stream: chatReq.stream === true
   };
@@ -2976,7 +3113,7 @@ async function handleAnthropicProtocol(req, res) {
       message: details.message || err.message,
       code: details.code || details.name || null,
       detail: details.detail || null,
-      retry_count: Number(res.locals?.upstreamRetryCount || 0)
+      retry_count: parseInteger(res.locals?.upstreamRetryCount, 0)
     });
     return;
   }
@@ -3058,10 +3195,12 @@ async function handleAnthropicProtocol(req, res) {
         .map((x) => x.text)
         .join("")
     : "";
+  const promptTokens = parseTokenCount(parsed?.usage?.input_tokens);
+  const completionTokens = parseTokenCount(parsed?.usage?.output_tokens);
   const usage = {
-    prompt_tokens: Number(parsed?.usage?.input_tokens || 0),
-    completion_tokens: Number(parsed?.usage?.output_tokens || 0),
-    total_tokens: Number(parsed?.usage?.input_tokens || 0) + Number(parsed?.usage?.output_tokens || 0)
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens
   };
   const finishReason = mapAnthropicStopReasonToOpenAI(parsed?.stop_reason);
   const completion = buildOpenAIChatCompletion({
@@ -3214,7 +3353,7 @@ function mapOpenAIFinishReasonToAnthropic(reason) {
 }
 
 function isUnsupportedMaxOutputTokensError(statusCode, rawText) {
-  if (Number(statusCode || 0) !== 400) return false;
+  if (parseStatusCode(statusCode) !== 400) return false;
   const text = String(rawText || "").toLowerCase();
   if (!text) return false;
   return text.includes("unsupported parameter") && text.includes("max_output_tokens");
@@ -3242,19 +3381,19 @@ function estimateOpenAIChatCompletionTokens(rawBody, parsedBody = undefined) {
     segments.push(`${item.role || "user"}\n${String(item.text || "")}`.trim());
   }
   if (Array.isArray(parsed.tools) && parsed.tools.length > 0) {
-    segments.push(JSON.stringify(parsed.tools));
+    segments.push(stringifyTokenEstimateSegment(parsed.tools));
   }
   if (parsed.tool_choice !== undefined) {
-    segments.push(JSON.stringify(parsed.tool_choice));
+    segments.push(stringifyTokenEstimateSegment(parsed.tool_choice));
   }
   if (parsed.response_format && typeof parsed.response_format === "object") {
-    segments.push(JSON.stringify(parsed.response_format));
+    segments.push(stringifyTokenEstimateSegment(parsed.response_format));
   }
   if (parsed.metadata && typeof parsed.metadata === "object") {
-    segments.push(JSON.stringify(parsed.metadata));
+    segments.push(stringifyTokenEstimateSegment(parsed.metadata));
   }
 
-  const fallbackSerialized = JSON.stringify(parsed);
+  const fallbackSerialized = stringifyTokenEstimateSegment(parsed);
   const combined = segments.filter((part) => typeof part === "string" && part.length > 0).join("\n\n");
   let inputTokens = estimateTokenCountFromText(combined || fallbackSerialized);
 
@@ -3262,7 +3401,7 @@ function estimateOpenAIChatCompletionTokens(rawBody, parsedBody = undefined) {
   if (systemText.trim().length > 0) inputTokens += 4;
   if (Array.isArray(parsed.tools) && parsed.tools.length > 0) inputTokens += parsed.tools.length * 20;
 
-  return Math.max(1, Number(inputTokens || 0));
+  return Math.max(1, parseTokenCount(inputTokens));
 }
 
 async function runDirectChatCompletionTest(prompt) {
@@ -3317,7 +3456,7 @@ async function runCodexDirectSelfTest(prompt, reasoningEffort) {
   });
 
   await maybeCaptureCodexUsageFromHeaders(auth, response.headers, "self_test").catch(() => {});
-  const raw = await response.text();
+  const raw = await readUpstreamTextOrThrow(response).catch(() => "");
   if (!response.ok) {
     throw new Error(`Upstream test failed: HTTP ${response.status}: ${truncate(raw, 400)}`);
   }
@@ -3347,7 +3486,7 @@ async function runGeminiDirectSelfTest(prompt, reasoningEffort) {
         contents: [{ role: "user", parts: [{ text: prompt }] }]
       })
     });
-    const raw = await response.text();
+    const raw = await readUpstreamTextOrThrow(response).catch(() => "");
     if (!response.ok) {
       throw new Error(`Gemini test failed: HTTP ${response.status}: ${truncate(raw, 400)}`);
     }
@@ -3404,7 +3543,7 @@ async function runAnthropicDirectSelfTest(prompt, reasoningEffort) {
         stream: false
       })
     });
-    const raw = await response.text();
+    const raw = await readUpstreamTextOrThrow(response).catch(() => "");
     if (!response.ok) {
       throw new Error(`Anthropic test failed: HTTP ${response.status}: ${truncate(raw, 400)}`);
     }
@@ -3658,8 +3797,11 @@ export const __testing = createServerTestingExports({
   setCodexOAuthStore,
   ensureCodexOAuthStoreShape,
   buildOfficialCodexModelCandidateIds,
+  fetchCodexModelIdsForAccountToken,
   getExecutableModelCandidateIds,
   resolveCodexPreheatModelSelection,
+  incrementPreheatHistoryCount,
+  normalizeTokenRefreshResultExpiresAt,
   normalizeCodexServiceTier,
   refreshCodexUsageSnapshotInStore,
   normalizeCodexResponsesRequestBody,
@@ -3667,8 +3809,20 @@ export const __testing = createServerTestingExports({
   parseResponsesResultFromSse,
   estimateOpenAIChatCompletionTokens,
   runDirectChatCompletionTest,
+  refreshOpenAICodexToken,
+  exchangeCodeForToken,
+  parseInteger,
+  parsePositiveInteger,
   anthropicLocalCompatHelpers,
   buildCodexResponsesRequestBody,
-  handleAnthropicNativeProxy
+  handleGeminiNativeProxy,
+  handleAnthropicNativeProxy,
+  handleGeminiProtocol,
+  handleAnthropicProtocol,
+  mapHttpStatusToGeminiStatus,
+  mapHttpStatusToAnthropicErrorType,
+  resolveCompatErrorStatusCode,
+  isUnsupportedMaxOutputTokensError,
+  readCachedCodexModelIdsForAccount
 });
 

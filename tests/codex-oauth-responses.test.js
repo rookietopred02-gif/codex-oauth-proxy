@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { normalizeTokenUsage } from "../src/http/token-usage.js";
 import { createCodexOAuthResponsesHelpers } from "../src/protocols/codex/oauth-responses.js";
 import { applyAdditionalResponsesCreateFields } from "../src/protocols/openai/responses-create-compat.js";
 
@@ -103,14 +104,7 @@ function createHelpers(overrides = {}) {
         };
       }
     },
-    normalizeTokenUsage(usage) {
-      if (!usage) return null;
-      return {
-        inputTokens: Number(usage.input_tokens || 0),
-        outputTokens: Number(usage.output_tokens || 0),
-        totalTokens: Number(usage.total_tokens || 0)
-      };
-    },
+    normalizeTokenUsage,
     extractAssistantTextFromResponse(response) {
       const item = Array.isArray(response?.output) ? response.output[0] : null;
       const part = Array.isArray(item?.content) ? item.content[0] : null;
@@ -127,9 +121,6 @@ function createHelpers(overrides = {}) {
         requestedModel: model || "gpt-5.4",
         mappedModel: model || "gpt-5.4"
       };
-    },
-    isUnsupportedMaxOutputTokensError() {
-      return false;
     },
     isCodexPoolRetryEnabled() {
       return false;
@@ -187,6 +178,186 @@ test("runCodexConversationViaOAuth uses stream-first upstream requests with requ
     completion_tokens: 22,
     total_tokens: 33
   });
+});
+
+test("runCodexConversationViaOAuth ignores decimal-form request timeout config", async () => {
+  const { helpers, getCapturedRequest } = createHelpers({
+    config: {
+      upstreamBaseUrl: "https://example.test",
+      upstreamStreamIdleTimeoutMs: "1.0",
+      codex: {
+        defaultModel: "gpt-5.4",
+        defaultInstructions: "You are a helpful assistant."
+      }
+    }
+  });
+
+  const result = await helpers.runCodexConversationViaOAuth({
+    model: "gpt-5.4",
+    systemText: "system",
+    conversation: [{ role: "user", text: "hello" }]
+  });
+
+  const captured = getCapturedRequest();
+  assert.equal(captured?.options?.requestTimeoutMs, 0);
+  assert.equal(result.text, "done");
+});
+
+test("runCodexConversationViaOAuth normalizes malformed token usage", async () => {
+  const { helpers } = createHelpers({
+    parseResponsesResultFromSse() {
+      return {
+        completed: {
+          status: "completed",
+          usage: {
+            input_tokens: -1,
+            output_tokens: "2",
+            total_tokens: "1e3"
+          },
+          output: [
+            {
+              type: "message",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        }
+      };
+    }
+  });
+
+  const result = await helpers.runCodexConversationViaOAuth({
+    model: "gpt-5.4",
+    systemText: "system",
+    conversation: [{ role: "user", text: "hello" }]
+  });
+
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 0,
+    completion_tokens: 2,
+    total_tokens: 2
+  });
+});
+
+test("runCodexConversationViaOAuth tolerates malformed normalized token usage", async () => {
+  const { helpers } = createHelpers({
+    normalizeTokenUsage() {
+      return {
+        inputTokens: Symbol("input"),
+        outputTokens: "4",
+        totalTokens: Symbol("total")
+      };
+    }
+  });
+
+  const result = await helpers.runCodexConversationViaOAuth({
+    model: "gpt-5.4",
+    systemText: "system",
+    conversation: [{ role: "user", text: "hello" }]
+  });
+
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 0,
+    completion_tokens: 4,
+    total_tokens: 4
+  });
+});
+
+test("runCodexConversationViaOAuth does not retry without an explicit max output cap", async () => {
+  const requests = [];
+  const { helpers } = createHelpers({
+    async fetchWithUpstreamRetry(url, init, options) {
+      requests.push({
+        url,
+        options,
+        json: JSON.parse(String(init.body || "{}"))
+      });
+      return {
+        response: new Response("unsupported max_output_tokens", {
+          status: 400,
+          headers: { "content-type": "text/plain" }
+        }),
+        attempts: 1,
+        retryCount: 0,
+        lastTransportError: null
+      };
+    },
+    async readUpstreamTextOrThrow(response) {
+      return await response.text();
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      helpers.runCodexConversationViaOAuth({
+        model: "gpt-5.4",
+        systemText: "system",
+        conversation: [{ role: "user", text: "hello" }],
+        max_tokens: 777
+      }),
+    /HTTP 400: unsupported max_output_tokens/
+  );
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.json?.max_output_tokens, 777);
+});
+
+test("runCodexConversationViaOAuth forwards the resolved upstream model to auth selection", async () => {
+  const authOptions = [];
+  const { helpers, getCapturedRequest } = createHelpers({
+    async getValidAuthContext(options = {}) {
+      authOptions.push(options);
+      return {
+        accessToken: "token",
+        accountId: "acct_123",
+        poolAccountId: "pool_123",
+        releaseLease() {}
+      };
+    },
+    resolveCodexCompatibleRoute(model) {
+      return {
+        requestedModel: model || "gpt-5.4",
+        mappedModel: model === "gpt-alias" ? "gpt-5.5" : model || "gpt-5.4"
+      };
+    }
+  });
+
+  await helpers.runCodexConversationViaOAuth({
+    model: "gpt-alias",
+    systemText: "system",
+    conversation: [{ role: "user", text: "hello" }]
+  });
+
+  assert.equal(authOptions[0]?.requestedModel, "gpt-5.5");
+  assert.equal(getCapturedRequest()?.json?.model, "gpt-5.5");
+});
+
+test("openCodexResponsesStreamViaOAuth forwards the resolved upstream model to auth selection", async () => {
+  const authOptions = [];
+  const { helpers } = createHelpers({
+    async getValidAuthContext(options = {}) {
+      authOptions.push(options);
+      return {
+        accessToken: "token",
+        accountId: "acct_123",
+        poolAccountId: "pool_123",
+        releaseLease() {}
+      };
+    },
+    resolveCodexCompatibleRoute(model) {
+      return {
+        requestedModel: model || "gpt-5.4",
+        mappedModel: model === "gpt-alias" ? "gpt-5.5" : model || "gpt-5.4"
+      };
+    }
+  });
+
+  const stream = await helpers.openCodexResponsesStreamViaOAuth({
+    model: "gpt-alias",
+    input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+  });
+  stream.release();
+
+  assert.equal(authOptions[0]?.requestedModel, "gpt-5.5");
 });
 
 test("buildCodexResponsesRequestBody rejects explicit temperature for codex upstream", () => {
@@ -313,6 +484,45 @@ test("openCodexResponsesStreamViaOAuth streams upstream responses without conten
   assert.equal(opened.upstream, upstreamResponse);
   assert.equal(readBufferedBody, false);
   opened.release();
+  assert.equal(getReleaseCount(), 1);
+});
+
+test("openCodexResponsesStreamViaOAuth does not retry without an explicit max output cap", async () => {
+  const requests = [];
+  const { helpers, getReleaseCount } = createHelpers({
+    async fetchWithUpstreamRetry(url, init, options) {
+      requests.push({
+        url,
+        options,
+        json: JSON.parse(String(init.body || "{}"))
+      });
+      return {
+        response: new Response("unsupported max_output_tokens", {
+          status: 400,
+          headers: { "content-type": "text/plain" }
+        }),
+        attempts: 1,
+        retryCount: 0,
+        lastTransportError: null
+      };
+    },
+    async readUpstreamTextOrThrow(response) {
+      return await response.text();
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      helpers.openCodexResponsesStreamViaOAuth({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }],
+        max_tokens: 777
+      }),
+    /HTTP 400: unsupported max_output_tokens/
+  );
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.json?.max_output_tokens, 777);
   assert.equal(getReleaseCount(), 1);
 });
 
@@ -452,6 +662,135 @@ test("openCodexResponsesStreamViaOAuth marks the final pool failure before throw
     [429, 429]
   );
   assert.deepEqual(releaseOrder, ["pool_1", "pool_2"]);
+});
+
+test("openCodexResponsesStreamViaOAuth normalizes malformed transport failure statuses", async () => {
+  const rotationStatuses = [];
+  const failureMarks = [];
+  const { helpers, getReleaseCount } = createHelpers({
+    isCodexPoolRetryEnabled() {
+      return true;
+    },
+    shouldRotateCodexAccountForStatus(statusCode) {
+      rotationStatuses.push(statusCode);
+      return false;
+    },
+    async fetchWithUpstreamRetry() {
+      const err = new Error("transport status malformed");
+      err.statusCode = Symbol("status");
+      throw err;
+    },
+    async maybeMarkCodexPoolFailure(auth, message, statusCode) {
+      failureMarks.push({
+        poolAccountId: auth?.poolAccountId || null,
+        message,
+        statusCode
+      });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      helpers.openCodexResponsesStreamViaOAuth({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+      }),
+    /transport status malformed/
+  );
+
+  assert.deepEqual(rotationStatuses, [0]);
+  assert.deepEqual(
+    failureMarks.map((entry) => entry.statusCode),
+    [0]
+  );
+  assert.equal(failureMarks[0]?.poolAccountId, "pool_123");
+  assert.equal(getReleaseCount(), 1);
+});
+
+test("openCodexResponsesStreamViaOAuth rejects decimal-form transport failure statuses", async () => {
+  const rotationStatuses = [];
+  const failureMarks = [];
+  const { helpers, getReleaseCount } = createHelpers({
+    isCodexPoolRetryEnabled() {
+      return true;
+    },
+    shouldRotateCodexAccountForStatus(statusCode) {
+      rotationStatuses.push(statusCode);
+      return false;
+    },
+    async fetchWithUpstreamRetry() {
+      const err = new Error("transport status decimal");
+      err.statusCode = "429.0";
+      throw err;
+    },
+    async maybeMarkCodexPoolFailure(auth, message, statusCode) {
+      failureMarks.push({
+        poolAccountId: auth?.poolAccountId || null,
+        message,
+        statusCode
+      });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      helpers.openCodexResponsesStreamViaOAuth({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+      }),
+    /transport status decimal/
+  );
+
+  assert.deepEqual(rotationStatuses, [0]);
+  assert.deepEqual(
+    failureMarks.map((entry) => entry.statusCode),
+    [0]
+  );
+  assert.equal(failureMarks[0]?.poolAccountId, "pool_123");
+  assert.equal(getReleaseCount(), 1);
+});
+
+test("openCodexResponsesStreamViaOAuth drops out-of-range transport failure statuses", async () => {
+  const rotationStatuses = [];
+  const failureMarks = [];
+  const { helpers, getReleaseCount } = createHelpers({
+    isCodexPoolRetryEnabled() {
+      return true;
+    },
+    shouldRotateCodexAccountForStatus(statusCode) {
+      rotationStatuses.push(statusCode);
+      return false;
+    },
+    async fetchWithUpstreamRetry() {
+      const err = new Error("transport status out of range");
+      err.statusCode = 700;
+      throw err;
+    },
+    async maybeMarkCodexPoolFailure(auth, message, statusCode) {
+      failureMarks.push({
+        poolAccountId: auth?.poolAccountId || null,
+        message,
+        statusCode
+      });
+    }
+  });
+
+  await assert.rejects(
+    () =>
+      helpers.openCodexResponsesStreamViaOAuth({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+      }),
+    /transport status out of range/
+  );
+
+  assert.deepEqual(rotationStatuses, [0]);
+  assert.deepEqual(
+    failureMarks.map((entry) => entry.statusCode),
+    [0]
+  );
+  assert.equal(failureMarks[0]?.poolAccountId, "pool_123");
+  assert.equal(getReleaseCount(), 1);
 });
 
 test("buildCodexResponsesRequestBody preserves official additional create fields excluding unsupported sampling fields", () => {

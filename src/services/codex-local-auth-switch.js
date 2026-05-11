@@ -6,6 +6,17 @@ function ensurePlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function toNonNegativeIntegerNumber(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+  return null;
+}
+
 function escapeRegex(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -157,6 +168,7 @@ export function createCodexLocalAuthSwitchService(options = {}) {
     });
     const resolvedRefreshToken =
       String(existingMatchingTokens?.refresh_token || "").trim() || refreshToken;
+    const expiresAt = toNonNegativeIntegerNumber(token.expires_at);
 
     const nextAuth = {
       ...existingAuth,
@@ -169,7 +181,7 @@ export function createCodexLocalAuthSwitchService(options = {}) {
         account_id: accountId,
         ...(token.token_type ? { token_type: token.token_type } : {}),
         ...(token.scope ? { scope: token.scope } : {}),
-        ...(Number.isFinite(Number(token.expires_at)) ? { expires_at: Number(token.expires_at) } : {})
+        ...(expiresAt !== null ? { expires_at: expiresAt } : {})
       },
       last_refresh: nowIso
     };

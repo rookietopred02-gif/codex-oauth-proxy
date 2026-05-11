@@ -1,3 +1,5 @@
+import { normalizeUpstreamStreamIdleTimeoutMs } from "../../upstream-timeouts.js";
+
 export function createCodexOAuthResponsesHelpers(context) {
   const {
     config,
@@ -14,7 +16,6 @@ export function createCodexOAuthResponsesHelpers(context) {
     mapResponsesStatusToChatFinishReason,
     resolveReasoningEffort,
     resolveCodexCompatibleRoute,
-    isUnsupportedMaxOutputTokensError,
     isCodexPoolRetryEnabled,
     shouldRotateCodexAccountForStatus,
     maybeMarkCodexPoolFailure,
@@ -28,6 +29,41 @@ export function createCodexOAuthResponsesHelpers(context) {
       ? extractAssistantDisplayTextFromResponse
       : extractAssistantTextFromResponse;
 
+  function toFiniteNumber(value, fallback = 0) {
+    try {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function toStatusCode(value, fallback = 0) {
+    if (typeof value === "number") {
+      return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;
+    }
+    if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+      return Number(value);
+    }
+    return fallback;
+  }
+
+  function toNonNegativeTokenCount(value, fallback = 0) {
+    const parsed = toFiniteNumber(value, fallback);
+    return parsed >= 0 ? parsed : fallback;
+  }
+
+  function toChatUsageFromNormalizedUsage(usage) {
+    const promptTokens = toNonNegativeTokenCount(usage?.inputTokens, 0);
+    const completionTokens = toNonNegativeTokenCount(usage?.outputTokens, 0);
+    const totalTokens = toNonNegativeTokenCount(usage?.totalTokens, Number.NaN);
+    return {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: totalTokens >= 0 ? totalTokens : promptTokens + completionTokens
+    };
+  }
+
   function createMissingAccountIdError() {
     const err = new Error("Could not extract chatgpt_account_id from OAuth token.");
     err.statusCode = 401;
@@ -39,14 +75,15 @@ export function createCodexOAuthResponsesHelpers(context) {
   }
 
   function getCodexStreamRequestTimeoutMs() {
-    return Math.max(0, Number(config?.upstreamStreamIdleTimeoutMs || 0));
+    return normalizeUpstreamStreamIdleTimeoutMs(config?.upstreamStreamIdleTimeoutMs, 0);
   }
 
   function buildCodexRequestError(response, raw) {
+    const statusCode = toStatusCode(response?.status, 0);
     const err = new Error(
-      `Upstream request failed: HTTP ${response.status}: ${truncate(raw, 400)}`
+      `Upstream request failed: HTTP ${statusCode}: ${truncate(raw, 400)}`
     );
-    err.statusCode = response.status;
+    err.statusCode = statusCode;
     return err;
   }
 
@@ -56,7 +93,7 @@ export function createCodexOAuthResponsesHelpers(context) {
       const parsedSse = parseResponsesResultFromSse(raw);
       if (parsedSse.failed) {
         const upstreamErr = new Error(parsedSse.failed.message);
-        upstreamErr.statusCode = Number(parsedSse.failed.statusCode || 502) || 502;
+        upstreamErr.statusCode = toStatusCode(parsedSse.failed.statusCode, 502);
         throw upstreamErr;
       }
       return parsedSse.completed || null;
@@ -190,32 +227,34 @@ export function createCodexOAuthResponsesHelpers(context) {
     reasoningContext = null,
     additionalCreateFields = null
   }) {
-    let auth = await getValidAuthContext({ retainLease: true });
+    const { route, body: baseBody } = buildCodexResponsesRequestBody({
+      model,
+      requestedModel,
+      upstreamModel,
+      instructions,
+      input,
+      stop,
+      tools,
+      toolChoice,
+      include,
+      max_tokens,
+      temperature,
+      top_p,
+      reasoningSummary,
+      reasoningEffort,
+      reasoningContext,
+      additionalCreateFields
+    });
+    const resolvedRequestedModel = route.requestedModel;
+    const resolvedUpstreamModel = route.mappedModel;
+
+    let auth = await getValidAuthContext({ retainLease: true, requestedModel: resolvedUpstreamModel });
     let releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
     try {
       if (!auth.accountId) {
         throw createMissingAccountIdError();
       }
 
-      const { route, body: baseBody } = buildCodexResponsesRequestBody({
-        model,
-        requestedModel,
-        upstreamModel,
-        instructions,
-        input,
-        stop,
-        tools,
-        toolChoice,
-        include,
-        max_tokens,
-        temperature,
-        top_p,
-        reasoningSummary,
-        reasoningEffort,
-        reasoningContext,
-        additionalCreateFields
-      });
-      const resolvedRequestedModel = route.requestedModel;
       const url = getCodexResponsesUrl();
 
       const executeOnce = async (currentAuth) => {
@@ -241,16 +280,6 @@ export function createCodexOAuthResponsesHelpers(context) {
 
         let activeBody = { ...baseBody, stream: true };
         let requestResult = await sendCodexRequest(activeBody, "text/event-stream");
-
-        if (
-          !requestResult.response.ok &&
-          isUnsupportedMaxOutputTokensError(requestResult.response.status, requestResult.raw)
-        ) {
-          const fallbackBody = { ...activeBody };
-          delete fallbackBody.max_output_tokens;
-          activeBody = fallbackBody;
-          requestResult = await sendCodexRequest(activeBody, "text/event-stream");
-        }
 
         if (!requestResult.response.ok) {
           throw buildCodexRequestError(requestResult.response, requestResult.raw);
@@ -295,7 +324,7 @@ export function createCodexOAuthResponsesHelpers(context) {
           break;
         } catch (err) {
           lastError = err;
-          const statusCode = Number(err?.statusCode || 0);
+          const statusCode = toStatusCode(err?.statusCode, 0);
           const canRotateNow =
             canRetryWithPool &&
             attempt < maxAttempts &&
@@ -312,7 +341,7 @@ export function createCodexOAuthResponsesHelpers(context) {
           await maybeMarkCodexPoolFailure(auth, err.message, statusCode).catch(() => {});
           let nextAuth;
           try {
-            nextAuth = await getValidAuthContext({ retainLease: true });
+            nextAuth = await getValidAuthContext({ retainLease: true, requestedModel: resolvedUpstreamModel });
           } catch (leaseErr) {
             lastError = leaseErr;
             break;
@@ -360,7 +389,28 @@ export function createCodexOAuthResponsesHelpers(context) {
     reasoningContext = null,
     additionalCreateFields = null
   }) {
-    let auth = await getValidAuthContext({ retainLease: true });
+    const { route, body: baseBody } = buildCodexResponsesRequestBody({
+      model,
+      requestedModel,
+      upstreamModel,
+      instructions,
+      input,
+      stop,
+      tools,
+      toolChoice,
+      include,
+      max_tokens,
+      temperature,
+      top_p,
+      reasoningSummary,
+      reasoningEffort,
+      reasoningContext,
+      additionalCreateFields
+    });
+    const resolvedRequestedModel = route.requestedModel;
+    const resolvedUpstreamModel = route.mappedModel;
+
+    let auth = await getValidAuthContext({ retainLease: true, requestedModel: resolvedUpstreamModel });
     let releaseAuthLease = typeof auth?.releaseLease === "function" ? auth.releaseLease : () => {};
     let shouldReleaseLease = true;
 
@@ -375,25 +425,6 @@ export function createCodexOAuthResponsesHelpers(context) {
         throw createMissingAccountIdError();
       }
 
-      const { route, body: baseBody } = buildCodexResponsesRequestBody({
-        model,
-        requestedModel,
-        upstreamModel,
-        instructions,
-        input,
-        stop,
-        tools,
-        toolChoice,
-        include,
-        max_tokens,
-        temperature,
-        top_p,
-        reasoningSummary,
-        reasoningEffort,
-        reasoningContext,
-        additionalCreateFields
-      });
-      const resolvedRequestedModel = route.requestedModel;
       const url = getCodexResponsesUrl();
 
       const openOnce = async (currentAuth) => {
@@ -401,25 +432,13 @@ export function createCodexOAuthResponsesHelpers(context) {
           throw createMissingAccountIdError();
         }
 
-        let activeBody = { ...baseBody, stream: true };
+        const activeBody = { ...baseBody, stream: true };
         let requestResult = await sendCodexResponsesRequest(currentAuth, url, activeBody, "text/event-stream");
         let response = requestResult.response;
 
         if (!response.ok) {
-          let raw = await readUpstreamTextOrThrow(response);
-          if (isUnsupportedMaxOutputTokensError(response.status, raw)) {
-            const fallbackBody = { ...activeBody };
-            delete fallbackBody.max_output_tokens;
-            activeBody = fallbackBody;
-            requestResult = await sendCodexResponsesRequest(currentAuth, url, activeBody, "text/event-stream");
-            response = requestResult.response;
-            if (!response.ok) {
-              raw = await readUpstreamTextOrThrow(response);
-              throw buildCodexRequestError(response, raw);
-            }
-          } else {
-            throw buildCodexRequestError(response, raw);
-          }
+          const raw = await readUpstreamTextOrThrow(response);
+          throw buildCodexRequestError(response, raw);
         }
 
         await maybeCaptureCodexUsageFromHeaders(currentAuth, response.headers, "response").catch(() => {});
@@ -461,7 +480,7 @@ export function createCodexOAuthResponsesHelpers(context) {
           break;
         } catch (err) {
           lastError = err;
-          const statusCode = Number(err?.statusCode || 0);
+          const statusCode = toStatusCode(err?.statusCode, 0);
           const canRotateNow =
             canRetryWithPool &&
             attempt < maxAttempts &&
@@ -475,7 +494,7 @@ export function createCodexOAuthResponsesHelpers(context) {
           await maybeMarkCodexPoolFailure(auth, err.message, statusCode).catch(() => {});
           let nextAuth;
           try {
-            nextAuth = await getValidAuthContext({ retainLease: true });
+            nextAuth = await getValidAuthContext({ retainLease: true, requestedModel: resolvedUpstreamModel });
           } catch (leaseErr) {
             lastError = leaseErr;
             break;
@@ -495,7 +514,7 @@ export function createCodexOAuthResponsesHelpers(context) {
         await maybeMarkCodexPoolFailure(
           auth,
           lastError?.message || "Upstream request failed.",
-          Number(lastError?.statusCode || 0)
+          toStatusCode(lastError?.statusCode, 0)
         ).catch(() => {});
         throw lastError || new Error("Upstream request failed.");
       }
@@ -510,7 +529,7 @@ export function createCodexOAuthResponsesHelpers(context) {
           await maybeMarkCodexPoolSuccess(auth).catch(() => {});
         },
         async markFailure(message, statusCode = 0) {
-          await maybeMarkCodexPoolFailure(auth, message, statusCode).catch(() => {});
+          await maybeMarkCodexPoolFailure(auth, message, toStatusCode(statusCode, 0)).catch(() => {});
         },
         release
       };
@@ -568,15 +587,7 @@ export function createCodexOAuthResponsesHelpers(context) {
     });
 
     const usageNormalized = normalizeTokenUsage(result.completed?.usage);
-    const usage = {
-      prompt_tokens: Number(usageNormalized?.inputTokens || result.completed?.usage?.input_tokens || 0),
-      completion_tokens: Number(usageNormalized?.outputTokens || result.completed?.usage?.output_tokens || 0),
-      total_tokens: Number(
-        usageNormalized?.totalTokens ||
-          result.completed?.usage?.total_tokens ||
-          Number(usageNormalized?.inputTokens || 0) + Number(usageNormalized?.outputTokens || 0)
-      )
-    };
+    const usage = toChatUsageFromNormalizedUsage(usageNormalized);
     return {
       model: result.model,
       text: getAssistantDisplayTextFromResponse(result.completed),

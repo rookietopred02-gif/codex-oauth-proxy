@@ -208,7 +208,25 @@ export function registerServerApp({
   return { proxyRouteHandlers };
 }
 
-function createSyncResolvedRuntimeAddress({
+function readRuntimeSyncPort(value, fallback = 0) {
+  const parse = (candidate) => {
+    if (candidate === null || candidate === undefined || candidate === "") return null;
+    if (typeof candidate === "number") {
+      if (!Number.isSafeInteger(candidate)) return null;
+      if (candidate === 0) return 0;
+      return candidate >= 1 && candidate <= 65535 ? candidate : null;
+    }
+    if (typeof candidate !== "string" || !/^[+-]?\d+$/.test(candidate.trim())) return null;
+    const parsed = Number(candidate.trim());
+    if (!Number.isSafeInteger(parsed)) return null;
+    if (parsed === 0) return 0;
+    return parsed >= 1 && parsed <= 65535 ? parsed : null;
+  };
+
+  return parse(value) ?? parse(fallback) ?? 0;
+}
+
+export function createSyncResolvedRuntimeAddress({
   config,
   hasExplicitCustomOAuthRedirectUri,
   hasExplicitCloudflaredLocalPort,
@@ -219,7 +237,7 @@ function createSyncResolvedRuntimeAddress({
       config.customOAuth.redirectUri = `http://${config.host}:${config.port}/auth/callback`;
     }
 
-    const currentCloudflaredPort = Number(cloudflaredRuntime.localPort || 0) || 0;
+    const currentCloudflaredPort = readRuntimeSyncPort(cloudflaredRuntime.localPort, 0);
     if (!hasExplicitCloudflaredLocalPort || currentCloudflaredPort === 0 || currentCloudflaredPort === requestedPort) {
       config.publicAccess.localPort = port;
       cloudflaredRuntime.localPort = port;

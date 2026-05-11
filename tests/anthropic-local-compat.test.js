@@ -12,6 +12,14 @@ function createMockRequest(body) {
   };
 }
 
+function createRawMockRequest(rawBody, originalUrl = "/v1/messages") {
+  return {
+    method: "POST",
+    originalUrl,
+    rawBody: Buffer.from(rawBody, "utf8")
+  };
+}
+
 function createMockResponse() {
   const events = new EventEmitter();
   return {
@@ -85,6 +93,13 @@ function createControllableReadableStream() {
       controllerRef.error(err);
     }
   };
+}
+
+function createRequestBodyTooLargeError() {
+  const err = new Error("Request body exceeds the 64 byte limit.");
+  err.code = "request_body_too_large";
+  err.statusCode = 413;
+  return err;
 }
 
 function createHelpers(overrides = {}) {
@@ -161,6 +176,327 @@ function createHelpers(overrides = {}) {
   });
 }
 
+test("Anthropic native rejects malformed JSON before Codex execution", async () => {
+  let executeCalled = false;
+  let streamCalled = false;
+  const helpers = createHelpers({
+    async executeCodexResponsesViaOAuth() {
+      executeCalled = true;
+      throw new Error("executeCodexResponsesViaOAuth should not run");
+    },
+    async openCodexResponsesStreamViaOAuth() {
+      streamCalled = true;
+      throw new Error("openCodexResponsesStreamViaOAuth should not run");
+    }
+  });
+  const req = createRawMockRequest('{"messages":[');
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.jsonPayload, {
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message: "Invalid JSON body for Anthropic endpoint."
+    }
+  });
+  assert.equal(executeCalled, false);
+  assert.equal(streamCalled, false);
+  assert.equal(res.locals.authAccountId, undefined);
+  assert.equal(res.locals.tokenUsage, undefined);
+});
+
+test("Anthropic count_tokens rejects malformed JSON without token usage", async () => {
+  const helpers = createHelpers();
+  const req = createRawMockRequest('{"messages":[', "/v1/messages/count_tokens");
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.jsonPayload, {
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message: "Invalid JSON body for Anthropic endpoint."
+    }
+  });
+  assert.equal(res.locals.tokenUsage, undefined);
+});
+
+test("Anthropic count token estimation tolerates non-JSON-safe parsed fields", () => {
+  const helpers = createHelpers();
+
+  const tokenCount = helpers.estimateAnthropicCountTokens(Buffer.alloc(0), {
+    messages: [{ role: "user", content: "hello" }],
+    tools: [
+      {
+        type: "custom",
+        name: "lookup",
+        input_schema: { limit: 1n }
+      }
+    ],
+    tool_choice: { type: "tool", name: "lookup", extra: 1n },
+    metadata: { traceId: 1n },
+    documents: [
+      {
+        toJSON() {
+          throw new Error("documents should not break estimation");
+        }
+      }
+    ]
+  });
+
+  assert.equal(Number.isInteger(tokenCount), true);
+  assert.ok(tokenCount > 0);
+});
+
+test("Anthropic native body validation rejects malformed thinking budgets", () => {
+  const helpers = createHelpers();
+
+  assert.throws(
+    () =>
+      helpers.parseAnthropicNativeBody(Buffer.alloc(0), {
+        messages: [{ role: "user", content: "hello" }],
+        thinking: { budget_tokens: Symbol("budget") }
+      }),
+    {
+      message: "Anthropic thinking.budget_tokens must be a non-negative number."
+    }
+  );
+});
+
+test("Anthropic pending tool batch pruning tolerates malformed timestamps", () => {
+  const helpers = createHelpers();
+  const originalDateNow = Date.now;
+
+  try {
+    Date.now = () => Symbol("now");
+    assert.doesNotThrow(() => {
+      helpers.rememberAnthropicPendingToolBatch(
+        "call_trigger_1",
+        [{ type: "function_call", name: "tool_one", arguments: "{}" }],
+        "claude-sonnet-4.5"
+      );
+      helpers.rememberAnthropicPendingToolBatch(
+        "call_trigger_2",
+        [{ type: "function_call", name: "tool_two", arguments: "{}" }],
+        "claude-sonnet-4.5"
+      );
+    });
+  } finally {
+    Date.now = originalDateNow;
+  }
+
+  const queued = helpers.maybeBuildQueuedAnthropicToolMessage(
+    [
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call_trigger_2", content: "done" }]
+      }
+    ],
+    "claude-sonnet-4.5"
+  );
+  assert.equal(queued, null);
+});
+
+test("Anthropic pending tool batch pruning rejects decimal-form timestamps", () => {
+  const helpers = createHelpers();
+  const originalDateNow = Date.now;
+
+  try {
+    Date.now = () => `${originalDateNow()}.5`;
+    helpers.rememberAnthropicPendingToolBatch(
+      "call_trigger_decimal",
+      [{ type: "function_call", name: "tool_decimal", arguments: "{}" }],
+      "claude-sonnet-4.5"
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
+
+  const queued = helpers.maybeBuildQueuedAnthropicToolMessage(
+    [
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "call_trigger_decimal", content: "done" }]
+      }
+    ],
+    "claude-sonnet-4.5"
+  );
+  assert.equal(queued, null);
+});
+
+test("Anthropic native rejects oversized JSON before Codex execution", async () => {
+  let executeCalled = false;
+  let streamCalled = false;
+  const helpers = createHelpers({
+    async readRawBody() {
+      throw createRequestBodyTooLargeError();
+    },
+    async executeCodexResponsesViaOAuth() {
+      executeCalled = true;
+      throw new Error("executeCodexResponsesViaOAuth should not run");
+    },
+    async openCodexResponsesStreamViaOAuth() {
+      streamCalled = true;
+      throw new Error("openCodexResponsesStreamViaOAuth should not run");
+    }
+  });
+  const req = createRawMockRequest('{"messages":[]}');
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 413);
+  assert.deepEqual(res.jsonPayload, {
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message: "Request body exceeds the 64 byte limit."
+    }
+  });
+  assert.equal(executeCalled, false);
+  assert.equal(streamCalled, false);
+  assert.equal(res.locals.authAccountId, undefined);
+  assert.equal(res.locals.tokenUsage, undefined);
+});
+
+test("Anthropic count_tokens rejects oversized JSON without token usage", async () => {
+  const helpers = createHelpers({
+    async readRawBody() {
+      throw createRequestBodyTooLargeError();
+    }
+  });
+  const req = createRawMockRequest('{"messages":[]}', "/v1/messages/count_tokens");
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 413);
+  assert.deepEqual(res.jsonPayload, {
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message: "Request body exceeds the 64 byte limit."
+    }
+  });
+  assert.equal(res.locals.tokenUsage, undefined);
+});
+
+test("Anthropic native response conversion normalizes malformed token usage", () => {
+  const helpers = createHelpers();
+  const message = helpers.buildAnthropicMessageFromResponsesResponse({
+    status: "completed",
+    usage: {
+      input_tokens: -1,
+      output_tokens: "2",
+      total_tokens: "1e3"
+    },
+    output: [
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "done" }]
+      }
+    ]
+  });
+
+  assert.deepEqual(message.usage, {
+    input_tokens: 0,
+    output_tokens: 2
+  });
+
+  const frames = helpers.renderAnthropicMessageSseEvents(message);
+  assert.deepEqual(frames[0]?.data?.message?.usage, {
+    input_tokens: 0,
+    output_tokens: 0
+  });
+  assert.deepEqual(frames.find((frame) => frame.event === "message_delta")?.data?.usage, {
+    output_tokens: 2
+  });
+});
+
+test("Anthropic native non-stream normalizes malformed upstream error statuses", async () => {
+  const helpers = createHelpers({
+    async executeCodexResponsesViaOAuth() {
+      const err = new Error("transport status malformed");
+      err.statusCode = Symbol("status");
+      throw err;
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 502);
+  assert.deepEqual(res.jsonPayload, {
+    type: "error",
+    error: {
+      type: "api_error",
+      message: "transport status malformed"
+    }
+  });
+});
+
+test("Anthropic native non-stream rejects fractional upstream error statuses", async () => {
+  const helpers = createHelpers({
+    async executeCodexResponsesViaOAuth() {
+      const err = new Error("transport status fractional");
+      err.statusCode = "401.9";
+      throw err;
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 502);
+  assert.deepEqual(res.jsonPayload, {
+    type: "error",
+    error: {
+      type: "api_error",
+      message: "transport status fractional"
+    }
+  });
+});
+
+test("Anthropic native non-stream rejects decimal-form upstream error statuses", async () => {
+  const helpers = createHelpers({
+    async executeCodexResponsesViaOAuth() {
+      const err = new Error("transport status decimal");
+      err.statusCode = "401.0";
+      throw err;
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 502);
+  assert.deepEqual(res.jsonPayload, {
+    type: "error",
+    error: {
+      type: "api_error",
+      message: "transport status decimal"
+    }
+  });
+});
+
 test("Anthropic native stream sends message_start before awaiting Codex completion", async () => {
   const upstream = createControllableReadableStream();
   const helpers = createHelpers({
@@ -205,6 +541,130 @@ test("Anthropic native stream sends message_start before awaiting Codex completi
   assert.equal(res.writableEnded, true);
 });
 
+test("Anthropic native stream normalizes malformed terminal token usage", async () => {
+  const upstream = createControllableReadableStream();
+  const helpers = createHelpers({
+    async openCodexResponsesStreamViaOAuth() {
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        upstream: { body: upstream.stream },
+        bufferedCompletion: null,
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    stream: true,
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  const pending = helpers.handleAnthropicNativeCompat(req, res);
+  upstream.enqueue(
+    'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":-1,"output_tokens":"2","total_tokens":"1e3"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n'
+  );
+  upstream.close();
+  await pending;
+
+  const output = res.writes.join("");
+  assert.match(output, /event: message_delta/);
+  assert.match(output, /"output_tokens":2/);
+  assert.deepEqual(res.locals.tokenUsage, {
+    prompt_tokens: 0,
+    completion_tokens: 2,
+    total_tokens: 2
+  });
+});
+
+test("Anthropic native stream ignores malformed idle timeout config", async () => {
+  const upstream = createControllableReadableStream();
+  const helpers = createHelpers({
+    config: {
+      anthropic: {
+        defaultModel: "claude-sonnet-4.5"
+      },
+      codex: {
+        defaultInstructions: "You are a helpful assistant."
+      },
+      upstreamStreamIdleTimeoutMs: Symbol("timeout")
+    },
+    async openCodexResponsesStreamViaOAuth() {
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        upstream: { body: upstream.stream },
+        bufferedCompletion: null,
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    stream: true,
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  const pending = helpers.handleAnthropicNativeCompat(req, res);
+  upstream.enqueue(
+    'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n'
+  );
+  upstream.close();
+  await pending;
+
+  assert.equal(res.statusCode, 200);
+  assert.match(res.writes.join(""), /event: message_stop/);
+});
+
+test("Anthropic native stream ignores decimal-form idle timeout config", async () => {
+  const upstream = createControllableReadableStream();
+  const helpers = createHelpers({
+    config: {
+      anthropic: {
+        defaultModel: "claude-sonnet-4.5"
+      },
+      codex: {
+        defaultInstructions: "You are a helpful assistant."
+      },
+      upstreamStreamIdleTimeoutMs: "1.0"
+    },
+    async openCodexResponsesStreamViaOAuth() {
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        upstream: { body: upstream.stream },
+        bufferedCompletion: null,
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    stream: true,
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  const pending = helpers.handleAnthropicNativeCompat(req, res);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  upstream.enqueue(
+    'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}\n\n'
+  );
+  upstream.close();
+  await pending;
+
+  assert.equal(res.statusCode, 200);
+  assert.match(res.writes.join(""), /event: message_stop/);
+});
+
 test("Anthropic native stream falls back to JSON error when upstream fails before any delta", async () => {
   const upstream = createControllableReadableStream();
   const helpers = createHelpers({
@@ -238,6 +698,60 @@ test("Anthropic native stream falls back to JSON error when upstream fails befor
     error: {
       type: "api_error",
       message: "upstream failed"
+    }
+  });
+});
+
+test("Anthropic native stream normalizes malformed transport failure statuses", async () => {
+  let failureArgs = null;
+  const helpers = createHelpers({
+    async openCodexResponsesStreamViaOAuth() {
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        upstream: {
+          body: {
+            getReader() {
+              return {
+                async read() {
+                  const err = new Error("transport status malformed");
+                  err.statusCode = Symbol("status");
+                  throw err;
+                },
+                async cancel() {},
+                releaseLock() {}
+              };
+            }
+          }
+        },
+        bufferedCompletion: null,
+        async markSuccess() {},
+        async markFailure(message, statusCode) {
+          failureArgs = { message, statusCode };
+        },
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    stream: true,
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  assert.equal(res.statusCode, 502);
+  assert.deepEqual(failureArgs, {
+    message: "transport status malformed",
+    statusCode: 502
+  });
+  assert.deepEqual(res.jsonPayload, {
+    type: "error",
+    error: {
+      type: "api_error",
+      message: "transport status malformed"
     }
   });
 });
@@ -367,6 +881,54 @@ test("Anthropic native stream converts buffered JSON completion into SSE", async
     prompt_tokens: 4,
     completion_tokens: 5,
     total_tokens: 9
+  });
+});
+
+test("Anthropic native buffered stream normalizes malformed token usage", async () => {
+  const helpers = createHelpers({
+    async openCodexResponsesStreamViaOAuth() {
+      return {
+        model: "claude-sonnet-4.5",
+        authAccountId: "acct_123",
+        upstream: null,
+        bufferedCompletion: {
+          status: "completed",
+          usage: {
+            input_tokens: -1,
+            output_tokens: "2",
+            total_tokens: "1e3"
+          },
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        },
+        async markSuccess() {},
+        async markFailure() {},
+        release() {}
+      };
+    }
+  });
+  const req = createMockRequest({
+    model: "claude-sonnet-4.5",
+    stream: true,
+    messages: [{ role: "user", content: "hello" }]
+  });
+  const res = createMockResponse();
+
+  await helpers.handleAnthropicNativeCompat(req, res);
+
+  const output = res.writes.join("");
+  assert.equal(res.statusCode, 200);
+  assert.match(output, /"input_tokens":0/);
+  assert.match(output, /"output_tokens":2/);
+  assert.deepEqual(res.locals.tokenUsage, {
+    prompt_tokens: 0,
+    completion_tokens: 2,
+    total_tokens: 2
   });
 });
 

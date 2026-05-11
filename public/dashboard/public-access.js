@@ -1,5 +1,33 @@
 // @ts-check
 
+function toFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  try {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function toIntegerNumber(value) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return Number(value.trim());
+  }
+  return null;
+}
+
+function toRuntimePort(value, fallback = 8787) {
+  const fallbackPort = toIntegerNumber(fallback);
+  const safeFallback = fallbackPort !== null && fallbackPort > 0 && fallbackPort <= 65535 ? fallbackPort : 8787;
+  const port = toIntegerNumber(value);
+  if (port === null || port <= 0 || port > 65535) return safeFallback;
+  return port;
+}
+
 export function createPublicAccessFeature(deps) {
   const { $, api, t, tt, syncCustomSelect, copyTextToClipboard } = deps;
   let lastStatus = null;
@@ -13,8 +41,8 @@ export function createPublicAccessFeature(deps) {
   function renderLocalBinding() {
     const bindingEl = $("publicAccessLocalBinding");
     if (!bindingEl) return;
-    const active = Number(activeRuntimePort || 8787);
-    const configured = Number(configuredRuntimePort || active);
+    const active = toRuntimePort(activeRuntimePort, 8787);
+    const configured = toRuntimePort(configuredRuntimePort, active);
     bindingEl.textContent =
       configured !== active
         ? tt("public_access_binding_pending", { active, configured })
@@ -58,10 +86,11 @@ export function createPublicAccessFeature(deps) {
           : t("public_access_status_stopped")
         : t("public_access_status_not_installed");
     const mode = String(status.mode || "quick");
-    const localPort = Number(status.localPort || 0) || Number(activeRuntimePort || 8787);
+    const localPort = toRuntimePort(status.localPort, activeRuntimePort);
     const useHttp2 = status.useHttp2 === true ? "on" : "off";
     const version = String(status.version || "-");
-    const pid = Number(status.pid || 0) > 0 ? String(status.pid) : "-";
+    const pidNumber = toIntegerNumber(status.pid);
+    const pid = pidNumber !== null && pidNumber > 0 ? String(pidNumber) : "-";
     const url = String(status.url || "").trim();
     const err = String(status.error || "").trim();
     const segments = [
@@ -87,8 +116,8 @@ export function createPublicAccessFeature(deps) {
   function applyConfigFromState(state) {
     const cfg = state?.config?.publicAccess || {};
     const status = state?.publicAccess || {};
-    activeRuntimePort = Number(state?.config?.activeRuntimePort || 0) || 8787;
-    configuredRuntimePort = Number(state?.config?.runtimePort || activeRuntimePort || 8787);
+    activeRuntimePort = toRuntimePort(state?.config?.activeRuntimePort, 8787);
+    configuredRuntimePort = toRuntimePort(state?.config?.runtimePort, activeRuntimePort);
     const mode = String(status.mode || cfg.mode || "quick").trim().toLowerCase();
     const useHttp2 = status.useHttp2 !== false && cfg.useHttp2 !== false;
     $("publicAccessMode").value = mode === "auth" ? "auth" : "quick";

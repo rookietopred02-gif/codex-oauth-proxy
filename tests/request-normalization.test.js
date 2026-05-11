@@ -102,6 +102,90 @@ test("normalizeCodexResponsesRequestBody adds encrypted reasoning include for st
   assert.deepEqual(normalized.json.include, ["reasoning.encrypted_content"]);
 });
 
+test("normalizeCodexResponsesRequestBody adds web search sources include when omitted", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "Search the web for the latest docs.",
+      tools: [
+        {
+          type: "web_search",
+          search_context_size: "low"
+        }
+      ]
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.include, [
+    "reasoning.encrypted_content",
+    "web_search_call.action.sources"
+  ]);
+});
+
+test("normalizeCodexResponsesRequestBody preserves explicit web search include choices", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      store: true,
+      include: ["message.output_text.logprobs"],
+      input: "Search the web for the latest docs.",
+      tools: [
+        {
+          type: "web_search_preview"
+        }
+      ]
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.include, ["message.output_text.logprobs"]);
+});
+
+test("normalizeCodexResponsesRequestBody adds web search sources include for dated preview tools", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "Search the web for current docs.",
+      tools: [
+        {
+          type: "web_search_preview_2025_03_11"
+        }
+      ]
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.include, [
+    "reasoning.encrypted_content",
+    "web_search_call.action.sources"
+  ]);
+});
+
+test("normalizeCodexResponsesRequestBody adds web search sources include for dated web search tools", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "Search the web with the current stable tool.",
+      tools: [
+        {
+          type: "web_search_2025_08_26"
+        }
+      ]
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.include, [
+    "reasoning.encrypted_content",
+    "web_search_call.action.sources"
+  ]);
+});
+
 test("normalizeCodexResponsesRequestBody forces store false when client omits it", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
@@ -310,6 +394,29 @@ test("normalizeCodexResponsesRequestBody does not inject configured plan-mode re
   assert.equal(Object.hasOwn(normalized.json, "settings"), false);
 });
 
+test("normalizeCodexResponsesRequestBody accepts top-level snake-case collaboration mode", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      collaboration_mode: "plan",
+      input: "hello",
+      tools: [
+        { type: "function", name: "update_plan", parameters: { type: "object" } },
+        { type: "function", name: "request_user_input", parameters: { type: "object" } }
+      ]
+    }), "utf8")
+  );
+
+  assert.match(String(normalized.json.instructions || ""), /Plan Mode/i);
+  assert.deepEqual(normalized.json.tools, [
+    { type: "function", name: "request_user_input", parameters: { type: "object" } }
+  ]);
+  assert.equal(Object.hasOwn(normalized.json, "collaboration_mode"), false);
+  assert.equal(Object.hasOwn(normalized.json, "collaborationMode"), false);
+});
+
 test("normalizeCodexResponsesRequestBody uses built-in plan instructions when settings.developer_instructions is null", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
@@ -374,6 +481,86 @@ test("normalizeCodexResponsesRequestBody preserves developer and system semantic
       content: [{ type: "input_text", text: "hello" }]
     }
   ]);
+});
+
+test("normalizeCodexResponsesRequestBody ignores messages alias instructions when official input is present", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Use this official input." }]
+        }
+      ],
+      messages: [
+        { role: "developer", content: "Do not lift this stale prompt stack." },
+        { role: "user", content: "Ignore this alias input." }
+      ]
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.instructions, "Default instructions");
+  assert.deepEqual(normalized.json.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Use this official input." }]
+    }
+  ]);
+  assert.equal(Object.hasOwn(normalized.json, "messages"), false);
+});
+
+test("normalizeCodexResponsesRequestBody ignores messages alias when official prompt is present", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      prompt: {
+        id: "pmpt_current",
+        variables: {
+          topic: "official prompt"
+        }
+      },
+      messages: [
+        { role: "developer", content: "Do not lift this stale prompt stack." },
+        { role: "user", content: "Ignore this alias input." }
+      ]
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.prompt, {
+    id: "pmpt_current",
+    variables: {
+      topic: "official prompt"
+    }
+  });
+  assert.equal(Object.hasOwn(normalized.json, "instructions"), false);
+  assert.equal(normalized.json.input, undefined);
+  assert.equal(Object.hasOwn(normalized.json, "messages"), false);
+  assert.doesNotMatch(normalized.body.toString("utf8"), /stale prompt stack|Ignore this alias input/);
+});
+
+test("normalizeCodexResponsesRequestBody preserves explicit instructions with official prompt", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      prompt: {
+        id: "pmpt_current"
+      },
+      instructions: "Use these prompt-level instructions.",
+      input: "hello"
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.prompt, {
+    id: "pmpt_current"
+  });
+  assert.equal(normalized.json.instructions, "Use these prompt-level instructions.");
 });
 
 test("normalizeCodexResponsesRequestBody does not inject default reasoning effort", () => {
@@ -576,6 +763,36 @@ test("normalizeCodexResponsesRequestBody respects an explicit empty instructions
   );
 
   assert.equal(normalized.json.instructions, "");
+});
+
+test("normalizeCodexResponsesRequestBody preserves explicit null instructions", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      instructions: null,
+      input: "hello"
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.instructions, null);
+});
+
+test("normalizeCodexResponsesRequestBody keeps explicit null instructions on previous_response_id continuation", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      previous_response_id: "resp_prev_123",
+      instructions: null,
+      input: [{ role: "user", content: [{ type: "input_text", text: "next turn" }] }]
+    }), "utf8")
+  );
+
+  assert.equal(normalized.json.previous_response_id, "resp_prev_123");
+  assert.equal(normalized.json.instructions, null);
 });
 
 test("normalizeCodexResponsesRequestBody keeps explicit default-mode override instructions on previous_response_id continuation", () => {
@@ -971,6 +1188,36 @@ test("normalizeChatCompletionsRequestBody preserves the official built-in Respon
   for (let index = 0; index < builtInTools.length; index += 1) {
     assert.notEqual(normalized.json.tools[index], builtInTools[index]);
   }
+  assert.deepEqual(normalized.json.include, ["web_search_call.action.sources"]);
+});
+
+for (const toolType of ["web_search_preview_2025_03_11", "web_search_2025_08_26"]) {
+  test(`normalizeChatCompletionsRequestBody adds web search sources include for ${toolType}`, () => {
+    const helpers = createHelpers();
+    const normalized = helpers.normalizeChatCompletionsRequestBody(
+      Buffer.from(JSON.stringify({
+        model: "gpt-5.4",
+        messages: [{ role: "user", content: "search current docs" }],
+        tools: [{ type: toolType }]
+      }), "utf8")
+    );
+
+    assert.deepEqual(normalized.json.tools, [{ type: toolType }]);
+    assert.deepEqual(normalized.json.include, ["web_search_call.action.sources"]);
+  });
+}
+
+test("normalizeChatCompletionsRequestBody leaves include unset without web search tools", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeChatCompletionsRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      messages: [{ role: "user", content: "list files" }],
+      tools: [{ type: "file_search", vector_store_ids: ["vs_123"] }]
+    }), "utf8")
+  );
+
+  assert.equal(Object.prototype.hasOwnProperty.call(normalized.json, "include"), false);
 });
 
 test("normalizeChatCompletionsRequestBody does not inject the configured default temperature for codex upstream", () => {
@@ -1028,6 +1275,28 @@ test("normalizeChatCompletionsRequestBody uses explicit plan collaboration mode 
 
   assert.equal(Object.hasOwn(normalized.json, "reasoning"), false);
   assert.match(String(normalized.json.instructions || ""), /Plan Mode/i);
+});
+
+test("normalizeChatCompletionsRequestBody accepts top-level snake-case collaboration mode", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeChatCompletionsRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      collaboration_mode: "plan",
+      messages: [{ role: "user", content: "hello" }],
+      tool_choice: { type: "function", function: { name: "request_user_input" } },
+      tools: [
+        { type: "function", function: { name: "update_plan", parameters: { type: "object" } } },
+        { type: "function", function: { name: "request_user_input", parameters: { type: "object" } } }
+      ]
+    }), "utf8")
+  );
+
+  assert.match(String(normalized.json.instructions || ""), /Plan Mode/i);
+  assert.deepEqual(normalized.json.tools, [
+    { type: "function", name: "request_user_input", parameters: { type: "object" } }
+  ]);
+  assert.deepEqual(normalized.json.tool_choice, { type: "function", name: "request_user_input" });
 });
 
 test("normalizeChatCompletionsRequestBody lets settings.developer_instructions null override system and developer messages", () => {

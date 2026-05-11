@@ -3,6 +3,9 @@ import {
   createSseSession,
   parseSseJsonEventBlock
 } from "../../http/sse-runtime.js";
+import { getRequestBodyErrorStatus, isRequestBodyTooLargeError } from "../../http/request-body.js";
+import { mapResponsesUsageToChatUsage } from "../../http/token-usage.js";
+import { normalizeUpstreamStreamIdleTimeoutMs } from "../../upstream-timeouts.js";
 import {
   isResponsesFailureEventType,
   isResponsesSuccessTerminalEventType
@@ -24,6 +27,53 @@ export function createGeminiLocalCompatHelpers(context) {
     pipeCodexSseAsChatCompletions,
     getOpenAICompatibleModelIds
   } = context;
+
+  function sendGeminiRequestBodyError(res, err) {
+    const statusCode = getRequestBodyErrorStatus(err, 413);
+    res.status(statusCode).json({
+      error: {
+        code: statusCode,
+        message: err?.message || "Invalid request body.",
+        status: "INVALID_ARGUMENT"
+      }
+    });
+  }
+
+  function sendOpenAICompatRequestBodyError(res, err) {
+    res.status(getRequestBodyErrorStatus(err, 413)).json({
+      error: err?.code || "invalid_request",
+      message: err?.message || "Invalid request body."
+    });
+  }
+
+  function toFiniteNumber(value, fallback = 0) {
+    try {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function toStatusCode(value, fallback = 0) {
+    if (typeof value === "number") {
+      return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;
+    }
+    if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+      return Number(value);
+    }
+    return fallback;
+  }
+
+  function resolveGeminiErrorStatusCode(err, fallback = 502) {
+    const explicit = toStatusCode(err?.statusCode, 0);
+    if (explicit >= 100 && explicit <= 599) return explicit;
+    try {
+      return resolveCompatErrorStatusCode({ ...err, message: err?.message, statusCode: undefined }, fallback);
+    } catch {
+      return fallback;
+    }
+  }
 
   function collectGeminiTextParts(parts) {
     if (!Array.isArray(parts)) return "";
@@ -118,11 +168,7 @@ export function createGeminiLocalCompatHelpers(context) {
           index: 0
         }
       ],
-      usageMetadata: {
-        promptTokenCount: Number(usage?.prompt_tokens || 0),
-        candidatesTokenCount: Number(usage?.completion_tokens || 0),
-        totalTokenCount: Number(usage?.total_tokens || 0)
-      },
+      usageMetadata: toGeminiUsageMetadata(usage),
       modelVersion: model
     };
   }
@@ -148,11 +194,15 @@ export function createGeminiLocalCompatHelpers(context) {
   }
 
   function toOpenAIUsage(usage) {
-    if (!usage || typeof usage !== "object") return null;
+    return mapResponsesUsageToChatUsage(usage);
+  }
+
+  function toGeminiUsageMetadata(usage) {
+    const chatUsage = toOpenAIUsage(usage);
     return {
-      prompt_tokens: Number(usage.input_tokens || 0),
-      completion_tokens: Number(usage.output_tokens || 0),
-      total_tokens: Number(usage.total_tokens || 0)
+      promptTokenCount: chatUsage?.prompt_tokens ?? 0,
+      candidatesTokenCount: chatUsage?.completion_tokens ?? 0,
+      totalTokenCount: chatUsage?.total_tokens ?? 0
     };
   }
 
@@ -166,7 +216,7 @@ export function createGeminiLocalCompatHelpers(context) {
     }
 
     const reader = upstream.body.getReader();
-    const idleTimeoutMs = Math.max(0, Number(config?.upstreamStreamIdleTimeoutMs || 0));
+    const idleTimeoutMs = normalizeUpstreamStreamIdleTimeoutMs(config?.upstreamStreamIdleTimeoutMs, 0);
     const textStateByItemId = new Map();
     let emittedAnyPayload = false;
     let emittedTerminal = false;
@@ -247,11 +297,7 @@ export function createGeminiLocalCompatHelpers(context) {
         ],
         ...(usage
           ? {
-              usageMetadata: {
-                promptTokenCount: Number(usage.prompt_tokens || 0),
-                candidatesTokenCount: Number(usage.completion_tokens || 0),
-                totalTokenCount: Number(usage.total_tokens || 0)
-              }
+              usageMetadata: toGeminiUsageMetadata(usage)
             }
           : {}),
         modelVersion: model
@@ -265,7 +311,7 @@ export function createGeminiLocalCompatHelpers(context) {
 
       if (isResponsesFailureEventType(event.type)) {
         const err = new Error(event.response?.error?.message || "Codex response failed.");
-        err.statusCode = Number(event.response?.status_code || event.status_code || 502) || 502;
+        err.statusCode = toStatusCode(event.response?.status_code || event.status_code, 502);
         throw err;
       }
 
@@ -354,7 +400,11 @@ export function createGeminiLocalCompatHelpers(context) {
       let parsedBody;
       try {
         parsedBody = await readJsonBody(req);
-      } catch {
+      } catch (err) {
+        if (isRequestBodyTooLargeError(err)) {
+          sendGeminiRequestBodyError(res, err);
+          return;
+        }
         parsedBody = undefined;
       }
       parsedReq = parseGeminiNativeBody(req.rawBody, modelFromPath || config.gemini.defaultModel, parsedBody);
@@ -417,8 +467,8 @@ export function createGeminiLocalCompatHelpers(context) {
         missingSseErr.statusCode = 502;
         throw missingSseErr;
       } catch (err) {
-        await streamSession?.markFailure?.(err.message, err?.statusCode || 502);
-        const statusCode = resolveCompatErrorStatusCode(err, 502);
+        const statusCode = resolveGeminiErrorStatusCode(err, 502);
+        await streamSession?.markFailure?.(err.message, statusCode);
         if (!res.headersSent) {
           res.status(statusCode).json({
             error: {
@@ -445,7 +495,7 @@ export function createGeminiLocalCompatHelpers(context) {
         upstreamModel: codexRoute.mappedModel
       });
     } catch (err) {
-      const statusCode = resolveCompatErrorStatusCode(err, 502);
+      const statusCode = resolveGeminiErrorStatusCode(err, 502);
       res.status(statusCode).json({
         error: {
           code: statusCode,
@@ -478,7 +528,11 @@ export function createGeminiLocalCompatHelpers(context) {
       let parsedBody;
       try {
         parsedBody = await readJsonBody(req);
-      } catch {
+      } catch (err) {
+        if (isRequestBodyTooLargeError(err)) {
+          sendOpenAICompatRequestBodyError(res, err);
+          return;
+        }
         parsedBody = undefined;
       }
       chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.gemini.defaultModel, parsedBody);
@@ -537,8 +591,8 @@ export function createGeminiLocalCompatHelpers(context) {
         missingSseErr.statusCode = 502;
         throw missingSseErr;
       } catch (err) {
-        await streamSession?.markFailure?.(err.message, err?.statusCode || 502);
-        const statusCode = resolveCompatErrorStatusCode(err, 502);
+        const statusCode = resolveGeminiErrorStatusCode(err, 502);
+        await streamSession?.markFailure?.(err.message, statusCode);
         if (!res.headersSent) {
           res.status(statusCode).json({
             error: statusCode === 429 ? "usage_limit_reached" : "unauthorized",
@@ -573,7 +627,7 @@ export function createGeminiLocalCompatHelpers(context) {
         stop: chatReq.stop
       });
     } catch (err) {
-      const statusCode = resolveCompatErrorStatusCode(err, 502);
+      const statusCode = resolveGeminiErrorStatusCode(err, 502);
       res.status(statusCode).json({
         error: statusCode === 429 ? "usage_limit_reached" : "unauthorized",
         message: err.message,

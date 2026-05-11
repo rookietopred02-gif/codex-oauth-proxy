@@ -31,6 +31,21 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function withTimeout(promise, message, ms = 200) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function waitFor(predicate, { timeoutMs = 500, intervalMs = 5 } = {}) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -185,6 +200,40 @@ test("cloudflared service serializes concurrent tunnel starts", async () => {
   assert.equal(second.running, true);
 });
 
+test("cloudflared service does not carry stale auth tokens into quick tunnels", async () => {
+  const harness = createSpawnHarness();
+  const service = createHarnessedService(harness, {
+    config: {
+      publicAccess: {
+        defaultTunnelToken: "saved-token"
+      }
+    }
+  });
+  service.runtime.tunnelToken = "runtime-token";
+
+  const status = await service.startTunnel({ mode: "quick" });
+
+  assert.equal(status.mode, "quick");
+  assert.equal(service.runtime.tunnelToken, "");
+  assert.deepEqual(harness.tunnelChildren[0].args, [
+    "tunnel",
+    "--url",
+    "http://127.0.0.1:8787",
+    "--protocol",
+    "http2"
+  ]);
+  assert.equal(JSON.stringify(status).includes("runtime-token"), false);
+  assert.equal(JSON.stringify(status).includes("saved-token"), false);
+});
+
+test("cloudflared service rejects auth tunnels without a token source", async () => {
+  const harness = createSpawnHarness();
+  const service = createHarnessedService(harness);
+
+  await assert.rejects(service.startTunnel({ mode: "auth", token: "" }), /token is required/i);
+  assert.equal(harness.tunnelChildren.length, 0);
+});
+
 test("cloudflared service keeps stream errors from crashing the process", async () => {
   const harness = createSpawnHarness();
   const service = createHarnessedService(harness);
@@ -195,6 +244,89 @@ test("cloudflared service keeps stream errors from crashing the process", async 
     harness.tunnelChildren[0].stderr.emit("error", new Error("stderr boom"));
   });
   assert.match(service.getStatus().outputTail.join("\n"), /stderr boom/);
+});
+
+test("cloudflared service normalizes malformed numeric status fields", () => {
+  const harness = createSpawnHarness();
+  const service = createHarnessedService(harness, {
+    config: {
+      port: "not-a-port",
+      publicAccess: {
+        localPort: "also-not-a-port"
+      }
+    }
+  });
+
+  service.runtime.localPort = "bad-port";
+  service.runtime.installUpdatedAt = "bad-install-time";
+  service.runtime.startedAt = Symbol("bad-start-time");
+  service.runtime.restartCount = "many";
+  service.runtime.restartAttempt = Infinity;
+  service.runtime.restartScheduledAt = -10;
+  service.runtime.lastExitAt = Number.NaN;
+
+  const status = service.getStatus();
+
+  assert.equal(status.localPort, 8787);
+  assert.equal(status.installUpdatedAt, null);
+  assert.equal(status.startedAt, null);
+  assert.equal(status.restartCount, 0);
+  assert.equal(status.restartAttempt, 0);
+  assert.equal(status.restartScheduledAt, null);
+  assert.equal(status.lastExitAt, null);
+});
+
+test("cloudflared service ignores malformed install check cache timestamps", async () => {
+  const harness = createSpawnHarness();
+  const service = createHarnessedService(harness);
+  service.runtime.lastCheckedAt = Symbol("last-checked");
+  service.runtime.installed = true;
+  service.runtime.version = "cached-version";
+
+  const status = await service.checkInstalled();
+
+  assert.equal(harness.versionChildren.length, 1);
+  assert.equal(status.installed, true);
+  assert.equal(status.version, "cloudflared version test");
+});
+
+test("cloudflared service bounds malformed tunnel port inputs", async () => {
+  const harness = createSpawnHarness();
+  const service = createHarnessedService(harness, {
+    config: {
+      port: Symbol("runtime-port"),
+      publicAccess: {
+        localPort: Symbol("local-port")
+      }
+    }
+  });
+
+  const status = await service.startTunnel({ localPort: Symbol("requested-port") });
+
+  assert.equal(status.localPort, 8787);
+  assert.deepEqual(harness.tunnelChildren[0].args, [
+    "tunnel",
+    "--url",
+    "http://127.0.0.1:8787",
+    "--protocol",
+    "http2"
+  ]);
+});
+
+test("cloudflared service rejects decimal-form tunnel port inputs", async () => {
+  const harness = createSpawnHarness();
+  const service = createHarnessedService(harness);
+
+  const status = await service.startTunnel({ localPort: "8080.9" });
+
+  assert.equal(status.localPort, 8787);
+  assert.deepEqual(harness.tunnelChildren[0].args, [
+    "tunnel",
+    "--url",
+    "http://127.0.0.1:8787",
+    "--protocol",
+    "http2"
+  ]);
 });
 
 test("cloudflared service supervises unexpected tunnel exits with backoff restart", async () => {
@@ -239,4 +371,56 @@ test("cloudflared service bounds stopTunnel when the child never exits", async (
 
   assert.equal(status.running, false);
   assert.ok(elapsedMs < 1000, `stopTunnel should remain bounded, got ${elapsedMs}ms`);
+});
+
+test("cloudflared service bounds stalled install download bodies", async () => {
+  const rootDir = await createTempDir();
+  const originalFetch = globalThis.fetch;
+  let cancelReason = null;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    body: {
+      cancel(reason) {
+        cancelReason = reason;
+        return Promise.resolve();
+      }
+    },
+    async arrayBuffer() {
+      return await new Promise(() => {});
+    }
+  });
+
+  const service = createCloudflaredService({
+    config: createConfig(),
+    rootDir,
+    runtimeBinDir: path.join(rootDir, "bin"),
+    bundledCloudflaredResourcesDir: "",
+    defaultCloudflaredBin: "cloudflared",
+    resolveBundledCloudflaredBinaryName: () => "cloudflared",
+    resolveBundledCloudflaredTargetNames: () => [],
+    validCloudflaredModes: new Set(["quick", "auth"]),
+    parseNumberEnv: (value, fallback) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    },
+    spawnImpl: () => {
+      throw new Error("spawn should not run after a stalled download body");
+    },
+    downloadTimeoutMs: 7
+  });
+
+  try {
+    await assert.rejects(
+      withTimeout(service.installBinary(), "cloudflared install download body stalled"),
+      /cloudflared download timed out/i
+    );
+    assert.match(cancelReason?.message || "", /cloudflared download timed out/i);
+    assert.equal(service.runtime.installInProgress, false);
+    assert.match(service.runtime.installMessage, /cloudflared download timed out/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
 });

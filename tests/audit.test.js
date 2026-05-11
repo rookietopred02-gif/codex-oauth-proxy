@@ -39,6 +39,24 @@ test("formatPayloadForAudit recursively redacts common secret fields", () => {
   assert.match(formatted, /\[REDACTED\]/);
 });
 
+test("formatPayloadForAudit redacts OAuth authorization code fields without hiding generic code", () => {
+  const formatted = formatPayloadForAudit(
+    {
+      code: "non-secret-status-code",
+      authorization_code: "oauth-secret-code",
+      nested: {
+        auth_code: "auth-secret-code",
+        oauth_code: "oauth-alt-secret-code"
+      }
+    },
+    "application/json"
+  );
+
+  assert.match(formatted, /non-secret-status-code/);
+  assert.doesNotMatch(formatted, /oauth-secret-code|auth-secret-code|oauth-alt-secret-code/);
+  assert.match(formatted, /\[REDACTED\]/);
+});
+
 test("formatPayloadForAudit decodes typed response bytes as text", () => {
   const packet =
     'event: response.completed\n' +
@@ -49,6 +67,21 @@ test("formatPayloadForAudit decodes typed response bytes as text", () => {
 
   assert.equal(formatted, packet);
   assert.doesNotMatch(formatted, /"0"\s*:\s*101/);
+});
+
+test("formatPayloadForAudit ignores malformed truncation limits", () => {
+  const text = "abcdef";
+  const throwingLimit = {
+    valueOf() {
+      throw new Error("bad limit");
+    }
+  };
+
+  assert.equal(formatPayloadForAudit(text, "text/plain", Symbol("limit")), text);
+  assert.equal(formatPayloadForAudit(text, "text/plain", throwingLimit), text);
+  assert.equal(formatPayloadForAudit(text, "text/plain", "3.0"), text);
+  assert.equal(formatPayloadForAudit(text, "text/plain", 3.5), text);
+  assert.equal(formatPayloadForAudit(text, "text/plain", "3"), "abc\n\n... [truncated 3 chars]");
 });
 
 test("decodeIndexedByteAuditPayload recovers legacy typed-array JSON packets", () => {
@@ -79,9 +112,38 @@ test("sanitizeAuditPayload redacts bearer tokens and private key blocks in text"
   assert.match(sanitized, /\[REDACTED\]/);
 });
 
+test("sanitizeAuditPayload redacts prefixed secret key names in raw text", () => {
+  const sanitized = sanitizeAuditPayload(
+    'openai_api_key=sk-openai&prompt=ok\nanthropic-api-key=sk-anthropic\nauthorization_code=oauth-secret&auth_code=auth-secret&code=visible\n{"service_access_token":"access-secret","prompt_cache_key":"prompt-cache-key"}'
+  );
+
+  assert.doesNotMatch(sanitized, /sk-openai|sk-anthropic|access-secret|oauth-secret|auth-secret/);
+  assert.match(sanitized, /prompt=ok/);
+  assert.match(sanitized, /code=visible/);
+  assert.match(sanitized, /prompt-cache-key/);
+});
+
+test("sanitizeAuditPayload redacts secret-like raw header names", () => {
+  const sanitized = sanitizeAuditPayload(
+    "OpenAI-Api-Key: sk-openai\nProxy-Authorization: Bearer proxy-secret\nX-Session-Token: session-secret\ncontent-type: application/json"
+  );
+
+  assert.doesNotMatch(sanitized, /sk-openai|proxy-secret|session-secret/);
+  assert.match(sanitized, /content-type: application\/json/);
+  assert.match(sanitized, /\[REDACTED\]/);
+});
+
 test("sanitizeAuditPath strips secret-like query parameters from metadata paths", () => {
   const sanitized = sanitizeAuditPath(
     "/v1/responses?key=proxy-key&access_token=access&client_secret=secret&prompt=hello&x-goog-api-key=gemini"
+  );
+
+  assert.equal(sanitized, "/v1/responses?prompt=hello");
+});
+
+test("sanitizeAuditPath strips OAuth-style authorization code query parameters", () => {
+  const sanitized = sanitizeAuditPath(
+    "/v1/responses?code=oauth-code&authorization_code=auth-code&prompt=hello"
   );
 
   assert.equal(sanitized, "/v1/responses?prompt=hello");

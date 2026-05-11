@@ -1,7 +1,5 @@
-function setNoStoreHeaders(res) {
-  res.setHeader("Cache-Control", "no-store, max-age=0");
-  res.setHeader("Pragma", "no-cache");
-}
+import { setNoStoreHeaders } from "../http/cache-headers.js";
+import { getRequestBodyErrorStatus, isRequestBodyError } from "../http/request-body.js";
 
 function extractDashboardClientAddress(req) {
   return (
@@ -41,6 +39,13 @@ function writeDashboardAuthError(res, authResult) {
   res.status(401).json({
     error: authResult?.error || "dashboard_auth_required",
     message: authResult?.message || "Dashboard authentication required."
+  });
+}
+
+function writeDashboardBodyError(res, err) {
+  res.status(getRequestBodyErrorStatus(err)).json({
+    error: err?.code || "invalid_request",
+    message: err?.message || "Invalid request body."
   });
 }
 
@@ -94,6 +99,10 @@ export function registerDashboardAuthRoutes(app, context) {
         authenticated: true
       });
     } catch (err) {
+      if (isRequestBodyError(err)) {
+        writeDashboardBodyError(res, err);
+        return;
+      }
       if (err?.code === "dashboard_auth_rate_limited") {
         if (Number.isFinite(err.retryAfterSeconds) && err.retryAfterSeconds > 0) {
           res.setHeader("Retry-After", String(Math.floor(err.retryAfterSeconds)));
@@ -167,6 +176,10 @@ export function registerDashboardAuthRoutes(app, context) {
         authenticated: nextState.enabled
       });
     } catch (err) {
+      if (isRequestBodyError(err)) {
+        writeDashboardBodyError(res, err);
+        return;
+      }
       res.status(400).json({
         error: "dashboard_auth_config_invalid",
         message: err?.message || "Invalid dashboard authentication settings."

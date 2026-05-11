@@ -35,3 +35,39 @@ test("startConfiguredServer keeps request-side HTTP timeouts enabled", async () 
     await lifecycle.stop("TEST");
   }
 });
+
+test("startConfiguredServer rejects decimal-form explicit ports", async () => {
+  const app = createServer((req, res) => {
+    res.statusCode = 200;
+    res.end("ok");
+  });
+  const resolvedAddresses = [];
+
+  const config = {
+    host: "127.0.0.1",
+    port: 0,
+    authMode: "codex-oauth",
+    upstreamMode: "codex-chatgpt"
+  };
+
+  const lifecycle = startConfiguredServer({
+    app,
+    config,
+    shouldAutostart: false,
+    installSignalHandlers: false,
+    getActiveUpstreamBaseUrl: () => "https://example.test",
+    syncResolvedAddress(address) {
+      resolvedAddresses.push(address);
+    }
+  });
+
+  try {
+    await lifecycle.start({ port: "1234.5" });
+
+    assert.equal(resolvedAddresses[0]?.requestedPort, 0);
+    assert.equal(Number.isInteger(config.port), true);
+    assert.ok(config.port > 0);
+  } finally {
+    await lifecycle.stop("TEST");
+  }
+});

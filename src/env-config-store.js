@@ -11,12 +11,28 @@ function formatEnvValue(value) {
   return JSON.stringify(text);
 }
 
+function readEnvPort(value, fallback = 8787) {
+  const parse = (candidate) => {
+    if (candidate === null || candidate === undefined || candidate === "") return null;
+    if (typeof candidate === "number") {
+      if (!Number.isSafeInteger(candidate)) return null;
+      return Math.min(65535, Math.max(1, candidate));
+    }
+    if (typeof candidate !== "string" || !/^[+-]?\d+$/.test(candidate.trim())) return null;
+    const parsed = Number(candidate.trim());
+    if (!Number.isSafeInteger(parsed)) return null;
+    return Math.min(65535, Math.max(1, parsed));
+  };
+
+  return parse(value) ?? parse(fallback) ?? 8787;
+}
+
 export function buildProxyConfigEnvEntries(config) {
   const modelMappings =
     config?.modelRouter?.customMappings && typeof config.modelRouter.customMappings === "object"
       ? config.modelRouter.customMappings
       : {};
-  const runtimePort = Number(config?.runtimePort || config?.port || 8787);
+  const runtimePort = readEnvPort(config?.runtimePort, config?.port);
 
   return {
     PORT: runtimePort,

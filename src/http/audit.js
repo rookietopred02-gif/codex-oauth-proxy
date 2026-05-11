@@ -1,9 +1,6 @@
-const AUDIT_TOKEN_KEYS_PATTERN =
-  /("?(?:access_token|refresh_token|id_token|token|api_key|apikey|x-api-key|x-goog-api-key|authorization|cookie|set-cookie|password|passwd|pwd|secret|client_secret|private_key|session_secret)"?\s*:\s*")([^"]+)(")/gi;
-const AUDIT_TOKEN_ASSIGNMENT_PATTERN =
-  /\b(access_token|refresh_token|id_token|token|api_key|apikey|x-api-key|x-goog-api-key|authorization|cookie|set-cookie|password|passwd|pwd|secret|client_secret|private_key|session_secret)=([^&\s]+)/gi;
-const AUDIT_SECRET_HEADER_PATTERN =
-  /\b(authorization|cookie|set-cookie|x-api-key|x-goog-api-key)\s*:\s*([^\r\n]+)/gi;
+const AUDIT_TOKEN_KEYS_PATTERN = /("?)([A-Za-z0-9_.-]+)\1\s*:\s*"([^"]+)"/gi;
+const AUDIT_TOKEN_ASSIGNMENT_PATTERN = /\b([A-Za-z0-9_.-]+)=([^&\s]+)/gi;
+const AUDIT_HEADER_LINE_PATTERN = /(^|\n)([A-Za-z0-9_.-]+)\s*:\s*([^\r\n]+)/g;
 const REDACTED = "[REDACTED]";
 
 function normalizeAuditKeyName(value) {
@@ -35,12 +32,19 @@ function isSecretAuditKey(key) {
       "idtoken",
       "token",
       "sessionsecret",
-      "sessiontoken"
+      "sessiontoken",
+      "authorizationcode",
+      "authcode",
+      "oauthcode"
     ].includes(normalized)
   ) {
     return true;
   }
+  if (normalized.endsWith("authorizationcode")) return true;
+  if (normalized.endsWith("authcode")) return true;
+  if (normalized.endsWith("oauthcode")) return true;
   if (normalized.endsWith("secret")) return true;
+  if (normalized.endsWith("authorization")) return true;
   if (normalized.endsWith("password")) return true;
   if (normalized.endsWith("apikey")) return true;
   if (normalized.endsWith("privatekey")) return true;
@@ -92,9 +96,15 @@ export function sanitizeAuditPayload(text) {
     /(authorization"\s*:\s*"Bearer\s+)([^"]+)(")/gi,
     (_m, p1, _token, p3) => `${p1}${REDACTED}${p3}`
   );
-  out = out.replace(AUDIT_TOKEN_KEYS_PATTERN, (_m, p1, _token, p3) => `${p1}${REDACTED}${p3}`);
-  out = out.replace(AUDIT_TOKEN_ASSIGNMENT_PATTERN, (_m, key) => `${key}=${REDACTED}`);
-  out = out.replace(AUDIT_SECRET_HEADER_PATTERN, (_m, key) => `${key}: ${REDACTED}`);
+  out = out.replace(AUDIT_TOKEN_KEYS_PATTERN, (match, quote, key) =>
+    isSecretAuditKey(key) ? `${quote}${key}${quote}: "${REDACTED}"` : match
+  );
+  out = out.replace(AUDIT_TOKEN_ASSIGNMENT_PATTERN, (match, key) =>
+    isSecretAuditKey(key) ? `${key}=${REDACTED}` : match
+  );
+  out = out.replace(AUDIT_HEADER_LINE_PATTERN, (match, prefix, key) =>
+    isSecretAuditKey(key) ? `${prefix}${key}: ${REDACTED}` : match
+  );
   out = out.replace(/(Bearer\s+)[A-Za-z0-9._\-~+/=]+/gi, `$1${REDACTED}`);
   out = out.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi, REDACTED);
   return out;
@@ -154,6 +164,17 @@ function looksLikeDecodedAuditText(value, contentType) {
     return isMostlyText(text);
   }
   return /(^|\n)\s*(event:|data:)/.test(text) || /^[\s]*[\[{]/.test(text) || isMostlyText(text);
+}
+
+function toNonNegativeInteger(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : fallback;
+  }
+  return fallback;
 }
 
 export function decodeIndexedByteAuditPayload(text, contentType = "") {
@@ -224,7 +245,7 @@ export function formatPayloadForAudit(raw, contentType, maxChars = 0) {
   }
 
   text = sanitizeAuditPayload(text);
-  const limit = Number(maxChars || 0);
+  const limit = toNonNegativeInteger(maxChars, 0);
   if (limit > 0 && text.length > limit) {
     const hidden = text.length - limit;
     text = `${text.slice(0, limit)}\n\n... [truncated ${hidden} chars]`;
@@ -252,7 +273,12 @@ export function sanitizeAuditPath(urlLike) {
     const parsed = new URL(raw, "http://localhost");
     for (const key of [...parsed.searchParams.keys()]) {
       const normalized = normalizeAuditKeyName(key);
-      if (normalized === "key" || isSecretAuditKey(key)) {
+      if (
+        normalized === "key" ||
+        normalized === "code" ||
+        normalized === "authorizationcode" ||
+        isSecretAuditKey(key)
+      ) {
         parsed.searchParams.delete(key);
       }
     }

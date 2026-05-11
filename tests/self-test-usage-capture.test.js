@@ -1,6 +1,59 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+async function withTimeout(promise, message, ms = 200) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function createStalledResponse(status = 500) {
+  let cancelReason = null;
+  const body = new ReadableStream({
+    cancel(reason) {
+      cancelReason = reason;
+    }
+  });
+  return {
+    response: new Response(body, {
+      status,
+      headers: { "content-type": "text/event-stream; charset=utf-8" }
+    }),
+    get cancelReason() {
+      return cancelReason;
+    }
+  };
+}
+
+async function importServerWithEnv(label, envOverrides = {}) {
+  process.env.CODEX_PRO_MAX_DISABLE_AUTOSTART = "1";
+  const previousEnv = {};
+  for (const [key, value] of Object.entries(envOverrides)) {
+    previousEnv[key] = process.env[key];
+    process.env[key] = value;
+  }
+  try {
+    return await import(`../src/server.js?${label}=${Date.now()}`);
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 test("direct self-test captures codex usage headers back into the pooled account store", async () => {
   process.env.CODEX_PRO_MAX_DISABLE_AUTOSTART = "1";
   const originalFetch = globalThis.fetch;
@@ -84,6 +137,77 @@ test("direct self-test captures codex usage headers back into the pooled account
       assert.equal(account?.usage_snapshot?.secondary?.used_percent, 60);
       assert.equal(account?.usage_snapshot?.secondary?.remaining_percent, 40);
       assert.equal(account?.usage_snapshot?.secondary?.window_minutes, 10080);
+    } finally {
+      testing.config.authMode = previousConfig.authMode;
+      testing.config.upstreamMode = previousConfig.upstreamMode;
+      testing.config.codexOAuth.multiAccountEnabled = previousConfig.multiAccountEnabled;
+      testing.config.codexOAuth.multiAccountStrategy = previousConfig.multiAccountStrategy;
+      testing.config.codexOAuth.multiAccountPoolFilter = previousConfig.multiAccountPoolFilter;
+      testing.config.codex.defaultModel = previousConfig.defaultModel;
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("direct self-test bounds stalled upstream response bodies", async () => {
+  const originalFetch = globalThis.fetch;
+  let upstream = null;
+  globalThis.fetch = async () => {
+    upstream = createStalledResponse(500);
+    return upstream.response;
+  };
+
+  try {
+    const serverModule = await importServerWithEnv("self-test-stalled-body", {
+      UPSTREAM_STREAM_IDLE_TIMEOUT_MS: "7"
+    });
+    const testing = serverModule.__testing;
+    const previousConfig = {
+      authMode: testing.config.authMode,
+      upstreamMode: testing.config.upstreamMode,
+      multiAccountEnabled: testing.config.codexOAuth.multiAccountEnabled,
+      multiAccountStrategy: testing.config.codexOAuth.multiAccountStrategy,
+      multiAccountPoolFilter: testing.config.codexOAuth.multiAccountPoolFilter,
+      defaultModel: testing.config.codex.defaultModel
+    };
+
+    try {
+      testing.config.authMode = "codex-oauth";
+      testing.config.upstreamMode = "codex-chatgpt";
+      testing.config.codexOAuth.multiAccountEnabled = true;
+      testing.config.codexOAuth.multiAccountStrategy = "sticky";
+      testing.config.codexOAuth.multiAccountPoolFilter = "all";
+      testing.config.codex.defaultModel = "gpt-5.4";
+
+      testing.setCodexOAuthStore({
+        token: {
+          access_token: "token_a",
+          expires_at: Math.floor(Date.now() / 1000) + 3600
+        },
+        accounts: [
+          {
+            identity_id: "entry_a",
+            account_id: "acct_a",
+            enabled: true,
+            token: {
+              access_token: "token_a",
+              expires_at: Math.floor(Date.now() / 1000) + 3600
+            }
+          }
+        ],
+        active_account_id: "entry_a",
+        rotation: { next_index: 0 }
+      });
+
+      await assert.rejects(
+        withTimeout(
+          testing.runDirectChatCompletionTest("Say hi."),
+          "direct self-test stalled on upstream response body"
+        ),
+        /Upstream test failed: HTTP 500/
+      );
+      assert.equal(upstream.cancelReason?.code, "UPSTREAM_STREAM_IDLE_TIMEOUT");
     } finally {
       testing.config.authMode = previousConfig.authMode;
       testing.config.upstreamMode = previousConfig.upstreamMode;

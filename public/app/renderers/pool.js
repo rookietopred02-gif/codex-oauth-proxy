@@ -15,10 +15,49 @@ export function createPoolRenderer(deps) {
     return String(account?.entryId || account?.accountId || "");
   }
 
+  function toFiniteNumber(value, fallback = null) {
+    if (value === null || value === undefined || value === "") return fallback;
+    try {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function toIntegerNumber(value, fallback = null) {
+    if (value === null || value === undefined || value === "") return fallback;
+    if (typeof value === "number") return Number.isSafeInteger(value) ? value : fallback;
+    if (typeof value !== "string") return fallback;
+    const normalized = value.trim();
+    if (!/^-?\d+$/.test(normalized)) return fallback;
+    const parsed = Number(normalized);
+    return Number.isSafeInteger(parsed) ? parsed : fallback;
+  }
+
+  function firstPositiveInteger(...values) {
+    for (const value of values) {
+      const n = toIntegerNumber(value, null);
+      if (n !== null && n > 0) return n;
+    }
+    return null;
+  }
+
+  function toNonNegativeInteger(value, fallback = 0) {
+    const n = toIntegerNumber(value, null);
+    if (n === null || n < 0) return fallback;
+    return n;
+  }
+
+  function toPositiveInteger(value, fallback = null) {
+    const n = toIntegerNumber(value, null);
+    return n !== null && n > 0 ? n : fallback;
+  }
+
   function safePercent(value) {
     if (value === null || value === undefined || value === "") return null;
-    const n = Number(value);
-    if (!Number.isFinite(n)) return null;
+    const n = toFiniteNumber(value, null);
+    if (n === null) return null;
     return Math.max(0, Math.min(100, n));
   }
 
@@ -39,8 +78,8 @@ export function createPoolRenderer(deps) {
       if (serverStatus === "disabled") return { label: "disabled", tone: "bad", isActive };
     }
 
-    const cooldownUntil = Number(account?.cooldownUntil || 0);
-    const expiresAt = Number(account?.expiresAt || 0);
+    const cooldownUntil = toNonNegativeInteger(account?.cooldownUntil, 0);
+    const expiresAt = toNonNegativeInteger(account?.expiresAt, 0);
     const inCooldown = cooldownUntil > nowSec;
     const expired = expiresAt > 0 && expiresAt <= nowSec;
     const expiringSoon = expiresAt > nowSec && expiresAt - nowSec < 180;
@@ -66,15 +105,16 @@ export function createPoolRenderer(deps) {
   }
 
   function computeAccountScore(account, activeAccountId) {
-    if (Number.isFinite(Number(account?.healthScore))) {
-      return Math.max(0, Math.min(100, Math.round(Number(account.healthScore))));
+    const healthScore = toFiniteNumber(account?.healthScore, null);
+    if (healthScore !== null) {
+      return Math.max(0, Math.min(100, Math.round(healthScore)));
     }
 
     const nowSec = Math.floor(Date.now() / 1000);
     const health = resolveAccountHealth(account, activeAccountId);
-    const failureCount = Number(account?.failureCount || 0);
-    const cooldownUntil = Number(account?.cooldownUntil || 0);
-    const expiresAt = Number(account?.expiresAt || 0);
+    const failureCount = toNonNegativeInteger(account?.failureCount, 0);
+    const cooldownUntil = toNonNegativeInteger(account?.cooldownUntil, 0);
+    const expiresAt = toNonNegativeInteger(account?.expiresAt, 0);
     const primaryUsed = safePercent(account?.usageSnapshot?.primary?.used_percent);
     const secondaryUsed = safePercent(account?.usageSnapshot?.secondary?.used_percent);
 
@@ -113,18 +153,16 @@ export function createPoolRenderer(deps) {
   }
 
   function windowMinutesOrNull(windowObj) {
-    const n = Number(windowObj?.window_minutes);
-    if (!Number.isFinite(n) || n <= 0) return null;
-    return n;
+    return toPositiveInteger(windowObj?.window_minutes, null);
   }
 
   function hasUsageWindow(windowObj) {
     if (!windowObj || typeof windowObj !== "object") return false;
     if (windowMinutesOrNull(windowObj) !== null) return true;
-    const resetAt = Number(windowObj.reset_at);
-    if (Number.isFinite(resetAt) && resetAt > 0) return true;
-    const resetAfter = Number(windowObj.reset_after_seconds);
-    if (Number.isFinite(resetAfter) && resetAfter > 0) return true;
+    const resetAt = toPositiveInteger(windowObj.reset_at, null);
+    if (resetAt !== null && resetAt > 0) return true;
+    const resetAfter = toPositiveInteger(windowObj.reset_after_seconds, null);
+    if (resetAfter !== null && resetAfter > 0) return true;
     const used = safePercent(windowObj.used_percent);
     if (used !== null && used > 0) return true;
     const remaining = safePercent(windowObj.remaining_percent);
@@ -155,20 +193,18 @@ export function createPoolRenderer(deps) {
   }
 
   function resolveUsageWindowRefreshAt(windowObj, baseTimestampSec = 0) {
-    const resetAt = Number(windowObj?.reset_at);
-    if (Number.isFinite(resetAt) && resetAt > 0) return Math.floor(resetAt);
-    const resetAfter = Number(windowObj?.reset_after_seconds);
-    if (!Number.isFinite(resetAfter) || resetAfter < 0) return null;
-    const base =
-      Number.isFinite(Number(baseTimestampSec)) && Number(baseTimestampSec) > 0
-        ? Math.floor(Number(baseTimestampSec))
-        : Math.floor(Date.now() / 1000);
-    return base + Math.floor(resetAfter);
+    const resetAt = toPositiveInteger(windowObj?.reset_at, null);
+    if (resetAt !== null && resetAt > 0) return Math.floor(resetAt);
+    const resetAfter = toNonNegativeInteger(windowObj?.reset_after_seconds, null);
+    if (resetAfter === null || resetAfter < 0) return null;
+    const baseNumber = toPositiveInteger(baseTimestampSec, null);
+    const base = baseNumber !== null ? baseNumber : Math.floor(Date.now() / 1000);
+    return base + resetAfter;
   }
 
   function resolveUsageWindows(account) {
     const usage = account?.usageSnapshot || null;
-    const snapshotTimestampSec = Number(account?.usageUpdatedAt || usage?.fetched_at || 0);
+    const snapshotTimestampSec = firstPositiveInteger(account?.usageUpdatedAt, usage?.fetched_at, 0) || 0;
     const planType = String(usage?.plan_type || "").trim().toLowerCase();
 
     const primaryHasWindow = hasUsageWindow(usage?.primary) || Number.isFinite(safePercent(account?.primaryRemaining));
@@ -261,10 +297,11 @@ export function createPoolRenderer(deps) {
   }
 
   function getAccountSlotNumber(account, fallbackIndex = 0) {
-    const raw = Number(account?.slot || account?._slot || 0);
-    if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
-    const idx = Number(fallbackIndex);
-    return Number.isFinite(idx) && idx >= 0 ? idx + 1 : null;
+    const slot = toPositiveInteger(account?.slot, null);
+    const raw = slot !== null ? slot : toPositiveInteger(account?._slot, null);
+    if (raw !== null) return raw;
+    const idx = toNonNegativeInteger(fallbackIndex, null);
+    return idx !== null ? idx + 1 : null;
   }
 
   function buildAccountCardHtml(account, activeAccountId, compact = false) {
@@ -334,6 +371,11 @@ export function createPoolRenderer(deps) {
       typeof account.lastError === "string" && account.lastError.trim().length > 0
         ? `<div class="account-error">${escapeHtml(t("account_error_prefix"))}: ${escapeHtml(account.lastError)}</div>`
         : "";
+    const expiresAt = toNonNegativeInteger(account.expiresAt, 0);
+    const lastUsedAt = toNonNegativeInteger(account.lastUsedAt, 0);
+    const failureCount = toNonNegativeInteger(account.failureCount, 0);
+    const cooldownUntil = toNonNegativeInteger(account.cooldownUntil, 0);
+    const usageUpdatedAt = firstPositiveInteger(account.usageUpdatedAt, usage?.fetched_at, 0) || 0;
     const actionHtml = compact
       ? `<div class="account-card-actions">
           <button
@@ -385,12 +427,12 @@ export function createPoolRenderer(deps) {
       </div>
       <div class="account-meta">
         <div class="meta-item"><div class="k">${escapeHtml(t("account_slot"))}</div><div class="v">${slotNumber ? `#${slotNumber}` : "-"}</div></div>
-        <div class="meta-item"><div class="k">${escapeHtml(t("account_expires"))}</div><div class="v">${fmtUnixSec(Number(account.expiresAt || 0))}</div></div>
-        <div class="meta-item"><div class="k">${escapeHtml(t("account_last_used"))}</div><div class="v">${fmtUnixSec(Number(account.lastUsedAt || 0))}</div></div>
-        <div class="meta-item"><div class="k">${escapeHtml(t("account_failures"))}</div><div class="v">${Number(account.failureCount || 0)}</div></div>
-        <div class="meta-item"><div class="k">${escapeHtml(t("account_cooldown"))}</div><div class="v">${fmtCooldown(Number(account.cooldownUntil || 0))}</div></div>
+        <div class="meta-item"><div class="k">${escapeHtml(t("account_expires"))}</div><div class="v">${fmtUnixSec(expiresAt)}</div></div>
+        <div class="meta-item"><div class="k">${escapeHtml(t("account_last_used"))}</div><div class="v">${fmtUnixSec(lastUsedAt)}</div></div>
+        <div class="meta-item"><div class="k">${escapeHtml(t("account_failures"))}</div><div class="v">${failureCount}</div></div>
+        <div class="meta-item"><div class="k">${escapeHtml(t("account_cooldown"))}</div><div class="v">${fmtCooldown(cooldownUntil)}</div></div>
         <div class="meta-item"><div class="k">${escapeHtml(t("account_plan"))}</div><div class="v">${escapeHtml(String(usage?.plan_type || "-"))}</div></div>
-        <div class="meta-item"><div class="k">${escapeHtml(t("account_usage_updated"))}</div><div class="v">${fmtUnixSec(Number(account.usageUpdatedAt || usage?.fetched_at || 0))}</div></div>
+        <div class="meta-item"><div class="k">${escapeHtml(t("account_usage_updated"))}</div><div class="v">${fmtUnixSec(usageUpdatedAt)}</div></div>
       </div>
       ${usageHtml}
       ${errorHtml}

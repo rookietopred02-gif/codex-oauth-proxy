@@ -8,6 +8,44 @@ export function cloneJson(value) {
   return value === undefined ? undefined : structuredClone(value);
 }
 
+const WEB_SEARCH_CALL_STATUS_RANK = new Map([
+  ["in_progress", 1],
+  ["searching", 2],
+  ["incomplete", 3],
+  ["failed", 3],
+  ["completed", 4]
+]);
+
+export function chooseResponsesWebSearchCallStatus(existingStatus, nextStatus) {
+  if (!existingStatus) return nextStatus;
+  if (!nextStatus) return existingStatus;
+  const existingRank = WEB_SEARCH_CALL_STATUS_RANK.get(existingStatus) || 0;
+  const nextRank = WEB_SEARCH_CALL_STATUS_RANK.get(nextStatus) || 0;
+  if (existingRank > 0 || nextRank > 0) {
+    return nextRank >= existingRank ? nextStatus : existingStatus;
+  }
+  return nextStatus;
+}
+
+export function mergeResponsesWebSearchCallOutputItems(existing, next) {
+  if (existing?.type !== "web_search_call" || next?.type !== "web_search_call") {
+    return next;
+  }
+  const merged = {
+    ...cloneJson(existing),
+    ...cloneJson(next)
+  };
+  const status = chooseResponsesWebSearchCallStatus(existing.status, next.status);
+  if (status) merged.status = status;
+  if (isRecordObject(existing.action) || isRecordObject(next.action)) {
+    merged.action = {
+      ...(isRecordObject(existing.action) ? cloneJson(existing.action) : {}),
+      ...(isRecordObject(next.action) ? cloneJson(next.action) : {})
+    };
+  }
+  return merged;
+}
+
 export function normalizeResponsesReasoningItem(item) {
   if (!isRecordObject(item) || item.type !== "reasoning") return null;
   const summary = [];

@@ -1,3 +1,6 @@
+import { getRequestBodyErrorStatus, isRequestBodyTooLargeError } from "../../http/request-body.js";
+import { mapResponsesUsageToChatUsage } from "../../http/token-usage.js";
+
 export function createAnthropicOpenAICompatHelpers(context) {
   const {
     config,
@@ -13,13 +16,24 @@ export function createAnthropicOpenAICompatHelpers(context) {
     pipeCodexSseAsChatCompletions
   } = context;
 
+  function sendOpenAICompatRequestBodyError(res, err) {
+    res.status(getRequestBodyErrorStatus(err, 413)).json({
+      error: err?.code || "invalid_request",
+      message: err?.message || "Invalid request body."
+    });
+  }
+
   async function handleAnthropicOpenAICompatWithCodex(req, res) {
     let chatReq;
     try {
       let parsedBody;
       try {
         parsedBody = await readJsonBody(req);
-      } catch {
+      } catch (err) {
+        if (isRequestBodyTooLargeError(err)) {
+          sendOpenAICompatRequestBodyError(res, err);
+          return;
+        }
         parsedBody = undefined;
       }
       chatReq = parseOpenAIChatCompletionsLikeRequest(req.rawBody, config.anthropic.defaultModel, parsedBody);
@@ -55,17 +69,13 @@ export function createAnthropicOpenAICompatHelpers(context) {
                   streamSession.bufferedCompletion.output.find(
                     (item) => item?.type === "message" && item.role === "assistant"
                   )?.content || []
-                )
+            )
                   .filter((part) => part?.type === "output_text" && typeof part.text === "string")
                   .map((part) => part.text)
                   .join("")
               : "",
             finishReason: streamSession.bufferedCompletion?.status === "incomplete" ? "length" : "stop",
-            usage: {
-              prompt_tokens: Number(streamSession.bufferedCompletion?.usage?.input_tokens || 0),
-              completion_tokens: Number(streamSession.bufferedCompletion?.usage?.output_tokens || 0),
-              total_tokens: Number(streamSession.bufferedCompletion?.usage?.total_tokens || 0)
-            }
+            usage: mapResponsesUsageToChatUsage(streamSession.bufferedCompletion?.usage)
           });
           res.locals.tokenUsage = completion.usage;
           sendOpenAICompletionAsSse(res, completion, { heartbeatMs: 0 });
@@ -89,8 +99,8 @@ export function createAnthropicOpenAICompatHelpers(context) {
         missingSseErr.statusCode = 502;
         throw missingSseErr;
       } catch (err) {
-        await streamSession?.markFailure?.(err.message, err?.statusCode || 502);
         const statusCode = resolveCompatErrorStatusCode(err, 502);
+        await streamSession?.markFailure?.(err.message, statusCode);
         if (!res.headersSent) {
           res.status(statusCode).json({
             error: statusCode === 429 ? "usage_limit_reached" : "unauthorized",

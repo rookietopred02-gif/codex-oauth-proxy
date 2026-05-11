@@ -14,9 +14,32 @@ const REQUEST_PACKET_FIELDS = ["requestPacket", "upstreamRequestPacket", "respon
 const REQUEST_PACKET_FIELD_SET = new Set(REQUEST_PACKET_FIELDS);
 
 function clampMaxEntries(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_ENTRIES;
-  return Math.max(1, Math.floor(parsed));
+  const parsed = parseIntegerValue(value);
+  if (parsed === null || parsed <= 0) return DEFAULT_MAX_ENTRIES;
+  return Math.max(1, parsed);
+}
+
+function clampNonNegativeInteger(value, fallback) {
+  const parsed = parseIntegerValue(value);
+  if (parsed !== null && parsed >= 0) return parsed;
+  const fallbackParsed = parseIntegerValue(fallback);
+  return fallbackParsed !== null && fallbackParsed >= 0 ? fallbackParsed : 0;
+}
+
+function parseIntegerValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : null;
+  }
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function readUpdatedAt(value, fallback = Date.now()) {
+  return clampNonNegativeInteger(value || fallback, fallback);
 }
 
 function getPacketContentType(row, field) {
@@ -82,8 +105,38 @@ function extractTokenUsageFromResponsePacket(packet) {
 }
 
 function hasTokenMetric(value) {
-  if (value === null || value === undefined || value === "") return false;
-  return Number.isFinite(Number(value));
+  const normalized = normalizeTokenUsage({ totalTokens: value });
+  return normalized !== null && normalized.totalTokens !== null;
+}
+
+function parseStoredNonNegativeInteger(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function hasPacketPayloadSignal(value) {
+  const parsed = parseStoredNonNegativeInteger(value);
+  if (parsed !== null) return parsed > 0;
+  return value !== null && value !== undefined && value !== "";
+}
+
+function buildPacketInfoFromSummary(summary) {
+  if (!summary || typeof summary !== "object") return null;
+  const packetInfo = {};
+  for (const field of REQUEST_PACKET_FIELDS) {
+    const chars = parseStoredNonNegativeInteger(summary?.[`${field}Chars`]);
+    const bytes = parseStoredNonNegativeInteger(summary?.[`${field}Bytes`]);
+    if (chars === null || bytes === null) return null;
+    packetInfo[field] = { chars, bytes };
+  }
+  return packetInfo;
 }
 
 function backfillRowTokenUsage(row) {
@@ -136,6 +189,14 @@ function sanitizeRowFileSegment(value, fallback = "request") {
   const text = String(value || "").trim();
   const normalized = text.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
   return normalized || fallback;
+}
+
+function normalizeRowFileName(value) {
+  const fileName = String(value || "").trim();
+  if (!fileName || fileName === "." || fileName === "..") return "";
+  if (/[\\/]/.test(fileName)) return "";
+  if (sanitizeRowFileSegment(fileName, "") !== fileName) return "";
+  return fileName.endsWith(".json") ? fileName : "";
 }
 
 function getRowsDirectory(filePath) {
@@ -197,7 +258,7 @@ export function normalizeRecentRequestsStore(payload, maxEntries = DEFAULT_MAX_E
       : [];
   const entries = buildEntriesFromRows(sourceRows, limit);
   return {
-    updatedAt: Number(payload?.updatedAt || Date.now()),
+    updatedAt: readUpdatedAt(payload?.updatedAt),
     count: entries.length,
     recentRequests: entries.map((entry) => ({ ...entry.summary }))
   };
@@ -316,12 +377,12 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
       const parsed = JSON.parse(raw);
 
       if (
-        Number(parsed?.storageVersion || 0) === RECENT_REQUESTS_STORAGE_VERSION &&
+        parseIntegerValue(parsed?.storageVersion) === RECENT_REQUESTS_STORAGE_VERSION &&
         Array.isArray(parsed?.recentRequests)
       ) {
         entries = parsed.recentRequests
           .map((entry) => {
-            const file = typeof entry?.file === "string" ? entry.file.trim() : "";
+            const file = normalizeRowFileName(entry?.file);
             const summary = normalizeSummary(entry?.summary);
             if (!file || !summary?.id) return null;
             return {
@@ -333,7 +394,7 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
           })
           .filter(Boolean)
           .slice(0, limit);
-        updatedAt = Number(parsed?.updatedAt || Date.now());
+        updatedAt = readUpdatedAt(parsed?.updatedAt);
         shouldBackfillSplitSummaries = true;
       } else if (
         Array.isArray(parsed?.recentRequests) &&
@@ -341,7 +402,7 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
       ) {
         const loaded = [];
         for (const entry of parsed.recentRequests) {
-          const rowFile = typeof entry?.file === "string" ? entry.file.trim() : "";
+          const rowFile = normalizeRowFileName(entry?.file);
           if (!rowFile) continue;
           try {
             const rowRaw = await fs.readFile(path.join(rowsDirectory, rowFile), "utf8");
@@ -359,11 +420,11 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
           }
         }
         entries = loaded.slice(0, limit);
-        updatedAt = Number(parsed?.updatedAt || Date.now());
+        updatedAt = readUpdatedAt(parsed?.updatedAt);
         shouldRewrite = true;
       } else {
         entries = buildEntriesFromRows(parsed?.recentRequests || parsed, limit);
-        updatedAt = Number(parsed?.updatedAt || Date.now());
+        updatedAt = readUpdatedAt(parsed?.updatedAt);
         shouldRewrite = entries.length > 0;
       }
     } catch {
@@ -384,15 +445,17 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
   function shouldBackfillSummary(summary) {
     if (!summary || typeof summary !== "object") return false;
     if (hasTokenMetric(summary.cachedInputTokens)) return false;
-    return Number(summary.responsePacketChars || 0) > 0 || Number(summary.responsePacketBytes || 0) > 0;
+    return hasPacketPayloadSignal(summary.responsePacketChars) || hasPacketPayloadSignal(summary.responsePacketBytes);
   }
 
   async function backfillSplitEntrySummaries() {
     let changed = false;
     for (const entry of entries) {
       if (!shouldBackfillSummary(entry?.summary)) continue;
+      const rowFile = normalizeRowFileName(entry.file);
+      if (!rowFile) continue;
       try {
-        const rowRaw = await fs.readFile(path.join(rowsDirectory, entry.file), "utf8");
+        const rowRaw = await fs.readFile(path.join(rowsDirectory, rowFile), "utf8");
         const row = normalizeRow(JSON.parse(rowRaw));
         if (!row) continue;
         const nextSummary = summarizeRow(row);
@@ -411,8 +474,10 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
   async function readRowForEntry(entry) {
     if (!entry) return null;
     if (entry.row) return { ...entry.row };
+    const rowFile = normalizeRowFileName(entry.file);
+    if (!rowFile) return null;
     try {
-      const raw = await fs.readFile(path.join(rowsDirectory, entry.file), "utf8");
+      const raw = await fs.readFile(path.join(rowsDirectory, rowFile), "utf8");
       const row = normalizeRow(JSON.parse(raw));
       return row ? { ...row } : null;
     } catch {
@@ -436,23 +501,11 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
     const entry = findEntryById(requestId);
     if (!entry) return null;
     const summary = normalizeSummary(entry.summary);
-    const hasPacketMeta = REQUEST_PACKET_FIELDS.every(
-      (field) =>
-        Number.isFinite(Number(summary?.[`${field}Chars`])) &&
-        Number.isFinite(Number(summary?.[`${field}Bytes`]))
-    );
-    if (summary && hasPacketMeta) {
+    const packetInfo = buildPacketInfoFromSummary(summary);
+    if (summary && packetInfo) {
       return {
         ...summary,
-        packetInfo: Object.fromEntries(
-          REQUEST_PACKET_FIELDS.map((field) => [
-            field,
-            {
-              chars: Number(summary[`${field}Chars`] || 0),
-              bytes: Number(summary[`${field}Bytes`] || 0)
-            }
-          ])
-        )
+        packetInfo
       };
     }
 
@@ -461,17 +514,10 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
     const nextSummary = summarizeRow(row);
     if (!nextSummary?.id) return summary || null;
     entry.summary = nextSummary;
+    const nextPacketInfo = buildPacketInfoFromSummary(nextSummary);
     return {
       ...nextSummary,
-      packetInfo: Object.fromEntries(
-        REQUEST_PACKET_FIELDS.map((field) => [
-          field,
-          {
-            chars: Number(nextSummary[`${field}Chars`] || 0),
-            bytes: Number(nextSummary[`${field}Bytes`] || 0)
-          }
-        ])
-      )
+      packetInfo: nextPacketInfo || {}
     };
   }
 
@@ -485,8 +531,8 @@ export function createRecentRequestsStore({ filePath, maxEntries = DEFAULT_MAX_E
     if (!row) return null;
 
     const text = typeof row[packetField] === "string" ? row[packetField] : "";
-    const offset = Math.max(0, Math.floor(Number(options.offset || 0)));
-    const limit = Math.max(0, Math.floor(Number(options.limit || text.length)));
+    const offset = clampNonNegativeInteger(options.offset, 0);
+    const limit = clampNonNegativeInteger(options.limit, text.length);
     const sliced = text.slice(offset, offset + limit);
     const totalChars = text.length;
     const totalBytes = Buffer.byteLength(text, "utf8");

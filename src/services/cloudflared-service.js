@@ -22,6 +22,7 @@ import path from "node:path";
  *   startupStableMs?: number;
  *   startupTimeoutMs?: number;
  *   stopTimeoutMs?: number;
+ *   downloadTimeoutMs?: number;
  * }} options
  */
 export function createCloudflaredService({
@@ -39,7 +40,8 @@ export function createCloudflaredService({
   restartMaxDelayMs = 30000,
   startupStableMs = 1200,
   startupTimeoutMs = 8000,
-  stopTimeoutMs = 2500
+  stopTimeoutMs = 2500,
+  downloadTimeoutMs = 120000
 }) {
   let installPromise = null;
   let startPromise = null;
@@ -78,10 +80,46 @@ export function createCloudflaredService({
     outputTail: []
   };
 
+  function readFiniteNumber(value) {
+    try {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function readIntegerNumber(value) {
+    if (typeof value === "number") {
+      return Number.isInteger(value) && Number.isFinite(value) ? value : null;
+    }
+    if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+      return Number(value.trim());
+    }
+    return null;
+  }
+
+  function clampInteger(value, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
+    const parsed = readFiniteNumber(value);
+    const fallbackParsed = readFiniteNumber(fallback);
+    const source = parsed ?? fallbackParsed ?? min;
+    return Math.max(min, Math.min(max, Math.floor(source)));
+  }
+
   function clampDurationMs(value, fallback, min = 0, max = 120000) {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return fallback;
-    return Math.max(min, Math.min(max, Math.floor(parsed)));
+    return clampInteger(value, fallback, min, max);
+  }
+
+  function readNullableTimestampSec(value) {
+    const parsed = clampInteger(value, 0, 0, Number.MAX_SAFE_INTEGER);
+    return parsed || null;
+  }
+
+  function readStatusPort(value, fallback) {
+    const parsed = readIntegerNumber(value);
+    const fallbackParsed = readIntegerNumber(fallback) ?? 8787;
+    const source = parsed ?? fallbackParsed;
+    return Math.max(1, Math.min(65535, source));
   }
 
   const resolvedRestartBaseDelayMs = clampDurationMs(restartBaseDelayMs, 1000, 0, 120000);
@@ -89,9 +127,35 @@ export function createCloudflaredService({
   const resolvedStartupStableMs = clampDurationMs(startupStableMs, 1200, 0, 60000);
   const resolvedStartupTimeoutMs = clampDurationMs(startupTimeoutMs, 8000, resolvedStartupStableMs, 120000);
   const resolvedStopTimeoutMs = clampDurationMs(stopTimeoutMs, 2500, 100, 60000);
+  const resolvedDownloadTimeoutMs = clampDurationMs(downloadTimeoutMs, 120000, 1, 300000);
 
   function delay(ms) {
-    return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms || 0))));
+    return new Promise((resolve) => setTimeout(resolve, clampInteger(ms, 0, 0, 300000)));
+  }
+
+  function formatDurationForMessage(ms) {
+    const durationMs = clampDurationMs(ms, 120000, 1, 300000);
+    return durationMs % 1000 === 0 ? `${durationMs / 1000} seconds` : `${durationMs}ms`;
+  }
+
+  async function readDownloadArrayBuffer(response, timeoutMessage) {
+    let timer = null;
+    try {
+      return await Promise.race([
+        response.arrayBuffer(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            const err = new Error(timeoutMessage);
+            err.name = "AbortError";
+            response?.body?.cancel?.(err).catch(() => {});
+            reject(err);
+          }, resolvedDownloadTimeoutMs);
+          timer.unref?.();
+        })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   function resolveBin() {
@@ -273,7 +337,8 @@ export function createCloudflaredService({
 
   async function checkInstalled(force = false) {
     const now = Date.now();
-    if (!force && now - Number(runtime.lastCheckedAt || 0) < 30000) {
+    const lastCheckedAt = readFiniteNumber(runtime.lastCheckedAt) ?? 0;
+    if (!force && now - lastCheckedAt < 30000) {
       return {
         installed: runtime.installed,
         version: runtime.version
@@ -334,21 +399,21 @@ export function createCloudflaredService({
       version: runtime.version || null,
       installInProgress: Boolean(runtime.installInProgress),
       installMessage: runtime.installMessage || null,
-      installUpdatedAt: Number(runtime.installUpdatedAt || 0) || null,
+      installUpdatedAt: readNullableTimestampSec(runtime.installUpdatedAt),
       running: Boolean(runtime.running),
       url: runtime.url || null,
       error: runtime.error || null,
       mode: runtime.mode || "quick",
       useHttp2: runtime.useHttp2 !== false,
       autoInstall: config.publicAccess.autoInstall !== false,
-      localPort: Number(runtime.localPort || config.port),
+      localPort: readStatusPort(runtime.localPort, config.port),
       pid: runtime.pid || null,
-      startedAt: Number(runtime.startedAt || 0) || null,
+      startedAt: readNullableTimestampSec(runtime.startedAt),
       supervised: Boolean(runtime.supervised),
-      restartCount: Number(runtime.restartCount || 0),
-      restartAttempt: Number(runtime.restartAttempt || 0),
-      restartScheduledAt: Number(runtime.restartScheduledAt || 0) || null,
-      lastExitAt: Number(runtime.lastExitAt || 0) || null,
+      restartCount: clampInteger(runtime.restartCount, 0),
+      restartAttempt: clampInteger(runtime.restartAttempt, 0),
+      restartScheduledAt: readNullableTimestampSec(runtime.restartScheduledAt),
+      lastExitAt: readNullableTimestampSec(runtime.lastExitAt),
       lastExitCode: runtime.lastExitCode,
       lastExitSignal: runtime.lastExitSignal,
       binaryPath: resolveBin(),
@@ -373,7 +438,11 @@ export function createCloudflaredService({
         await fs.mkdir(installDir, { recursive: true });
 
         const downloadAbort = new AbortController();
-        const downloadTimeout = setTimeout(() => downloadAbort.abort(), 120000);
+        const downloadTimeoutMessage = `cloudflared download timed out after ${formatDurationForMessage(
+          resolvedDownloadTimeoutMs
+        )}.`;
+        const downloadTimeout = setTimeout(() => downloadAbort.abort(), resolvedDownloadTimeoutMs);
+        downloadTimeout.unref?.();
         let response;
         try {
           response = await fetch(assetMeta.downloadUrl, {
@@ -384,7 +453,7 @@ export function createCloudflaredService({
           });
         } catch (err) {
           if (err?.name === "AbortError") {
-            throw new Error("cloudflared download timed out after 120 seconds.");
+            throw new Error(downloadTimeoutMessage);
           }
           throw err;
         } finally {
@@ -395,7 +464,7 @@ export function createCloudflaredService({
           throw new Error(`cloudflared download failed: HTTP ${response.status} ${response.statusText}`);
         }
 
-        const bytes = Buffer.from(await response.arrayBuffer());
+        const bytes = Buffer.from(await readDownloadArrayBuffer(response, downloadTimeoutMessage));
         if (!Buffer.isBuffer(bytes) || bytes.length < 64 * 1024 || !isLikelyBinaryPayload(bytes)) {
           throw new Error("cloudflared download produced invalid payload.");
         }
@@ -458,13 +527,12 @@ export function createCloudflaredService({
       : config.publicAccess.defaultMode;
     const normalizedAutoInstall =
       autoInstall === undefined ? config.publicAccess.autoInstall !== false : Boolean(autoInstall);
-    const normalizedToken = String(token || runtime.tunnelToken || config.publicAccess.defaultTunnelToken || "").trim();
+    const requestedToken = String(token || "").trim();
+    const fallbackToken = String(runtime.tunnelToken || config.publicAccess.defaultTunnelToken || "").trim();
+    const normalizedToken = normalizedMode === "auth" ? requestedToken || fallbackToken : "";
     const normalizedUseHttp2 = useHttp2 === undefined ? runtime.useHttp2 !== false : Boolean(useHttp2);
-    const parsedPort = parseNumberEnv(localPort ?? runtime.localPort ?? config.port, Number(config.port), {
-      min: 1,
-      max: 65535,
-      integer: true
-    });
+    const fallbackPort = readStatusPort(config.port, 8787);
+    const parsedPort = readStatusPort(localPort ?? runtime.localPort ?? config.port, fallbackPort);
 
     if (normalizedMode === "auth" && !normalizedToken) {
       throw new Error("Cloudflared token is required when mode=auth.");
@@ -516,7 +584,7 @@ export function createCloudflaredService({
       };
       const onExit = () => finish(true);
       child.once("exit", onExit);
-      timer = setTimeout(() => finish(false), Math.max(100, Number(timeoutMs || 0)));
+      timer = setTimeout(() => finish(false), clampDurationMs(timeoutMs, resolvedStopTimeoutMs, 100, 60000));
       timer.unref?.();
     });
   }

@@ -1,4 +1,7 @@
+import { normalizeNonNegativeInteger, readNonNegativeInteger } from "./upstream-timeouts.js";
+
 const DEFAULT_UPSTREAM_TRANSPORT_RETRY_DELAYS_MS = [400, 1200, 2400];
+const DEFAULT_RETRY_BODY_PREVIEW_TIMEOUT_MS = 100;
 
 const RETRYABLE_TRANSPORT_ERROR_CODES = new Set([
   "ECONNRESET",
@@ -30,6 +33,25 @@ const RETRYABLE_TRANSPORT_MESSAGE_PATTERNS = [
 ];
 
 const RETRYABLE_UPSTREAM_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+function toFiniteNumber(value, fallback = 0) {
+  try {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function toHttpStatusCode(value, fallback = 0) {
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!/^[1-5]\d{2}$/.test(text)) return fallback;
+    return Number(text);
+  }
+  const parsed = toFiniteNumber(value, fallback);
+  return Number.isInteger(parsed) && parsed >= 100 && parsed <= 599 ? parsed : fallback;
+}
 
 function clip(text, maxLen = 400) {
   const value = typeof text === "string" ? text.trim() : String(text || "").trim();
@@ -125,32 +147,89 @@ async function fetchWithRequestTimeout(fetchImpl, targetUrl, init, timeoutMs) {
   }
 }
 
-async function discardResponseBody(response) {
-  if (!response) return;
-  try {
-    if (typeof response.arrayBuffer === "function") {
-      await response.arrayBuffer();
-      return;
-    }
-  } catch {}
+async function runBestEffortWithTimeout(action, timeoutMs) {
+  const parsedTimeoutMs = normalizeNonNegativeInteger(timeoutMs, DEFAULT_RETRY_BODY_PREVIEW_TIMEOUT_MS);
+  const boundedTimeoutMs = parsedTimeoutMs > 0 ? parsedTimeoutMs : DEFAULT_RETRY_BODY_PREVIEW_TIMEOUT_MS;
+  const actionPromise = Promise.resolve()
+    .then(action)
+    .catch(() => {});
 
+  let timer = null;
+  try {
+    await Promise.race([
+      actionPromise,
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, boundedTimeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function discardResponseBody(response, timeoutMs = DEFAULT_RETRY_BODY_PREVIEW_TIMEOUT_MS) {
+  if (!response) return;
+  const cancel = response?.body?.cancel;
+  if (typeof cancel === "function") {
+    await runBestEffortWithTimeout(() => cancel.call(response.body), timeoutMs);
+    return;
+  }
+
+  if (typeof response.arrayBuffer === "function") {
+    await runBestEffortWithTimeout(() => response.arrayBuffer(), timeoutMs);
+    return;
+  }
+}
+
+function cancelResponseBodyPreview(response) {
   try {
     const cancel = response?.body?.cancel;
     if (typeof cancel === "function") {
-      await cancel.call(response.body);
+      cancel.call(response.body).catch(() => {});
     }
   } catch {}
 }
 
-async function summarizeRetryableResponse(response) {
-  const status = Number(response?.status || 0);
-  const statusText = clip(response?.statusText || "");
-  let bodyPreview = "";
+async function readResponseBodyPreview(response, timeoutMs) {
+  const boundedTimeoutMs = normalizeNonNegativeInteger(timeoutMs, DEFAULT_RETRY_BODY_PREVIEW_TIMEOUT_MS);
+  if (!(boundedTimeoutMs > 0) || typeof response?.clone !== "function") return "";
+
+  let clone = null;
   try {
-    if (typeof response?.clone === "function") {
-      bodyPreview = clip(await response.clone().text(), 240);
-    }
-  } catch {}
+    clone = response.clone();
+  } catch {
+    return "";
+  }
+
+  const textPromise = Promise.resolve()
+    .then(() => clone.text())
+    .then((text) => clip(text, 240))
+    .catch(() => "");
+  let timer = null;
+  try {
+    return await Promise.race([
+      textPromise,
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          cancelResponseBodyPreview(clone);
+          resolve("");
+        }, boundedTimeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function summarizeRetryableResponse(response, options = {}) {
+  const status = toHttpStatusCode(response?.status || 0);
+  const statusText = clip(response?.statusText || "");
+  const bodyPreview = await readResponseBodyPreview(
+    response,
+    options.bodyPreviewTimeoutMs
+  );
 
   const message = clip(`HTTP ${status}${statusText ? ` ${statusText}` : ""}`.trim());
   const detail = bodyPreview ? clip(`${message} | ${bodyPreview}`) : message;
@@ -197,7 +276,7 @@ export function extractUpstreamTransportError(err) {
 }
 
 export function isPreviousResponseIdUnsupportedError(statusCode, reason) {
-  if (Number(statusCode || 0) !== 400) return false;
+  if (toHttpStatusCode(statusCode || 0) !== 400) return false;
   const text = String(reason || "").toLowerCase();
   return text.includes("previous_response_id") && (text.includes("unsupported") || text.includes("unknown parameter"));
 }
@@ -211,10 +290,14 @@ export async function fetchWithUpstreamRetry(targetUrl, init, options = {}) {
   const onRetry = typeof options.onRetry === "function" ? options.onRetry : null;
   const retryDelaysMs = Array.isArray(options.retryDelaysMs)
     ? options.retryDelaysMs
-        .filter((value) => Number.isFinite(Number(value)) && Number(value) >= 0)
-        .map((value) => Number(value))
+        .map((value) => readNonNegativeInteger(value))
+        .filter((value) => Number.isFinite(value) && value >= 0)
     : DEFAULT_UPSTREAM_TRANSPORT_RETRY_DELAYS_MS;
-  const requestTimeoutMs = Math.max(0, Number(options.requestTimeoutMs || 0));
+  const requestTimeoutMs = normalizeNonNegativeInteger(options.requestTimeoutMs || 0, 0);
+  const retryBodyPreviewTimeoutMs = normalizeNonNegativeInteger(
+    options.retryBodyPreviewTimeoutMs,
+    DEFAULT_RETRY_BODY_PREVIEW_TIMEOUT_MS
+  );
 
   let attempts = 0;
   let lastError = null;
@@ -225,8 +308,10 @@ export async function fetchWithUpstreamRetry(targetUrl, init, options = {}) {
       const response = await fetchWithRequestTimeout(fetchImpl, targetUrl, init, requestTimeoutMs);
       const retryCount = Math.max(0, attempts - 1);
       const nextDelayMs = retryDelaysMs[retryCount];
-      if (RETRYABLE_UPSTREAM_STATUS_CODES.has(Number(response?.status || 0))) {
-        const details = await summarizeRetryableResponse(response);
+      if (RETRYABLE_UPSTREAM_STATUS_CODES.has(toHttpStatusCode(response?.status || 0))) {
+        const details = await summarizeRetryableResponse(response, {
+          bodyPreviewTimeoutMs: retryBodyPreviewTimeoutMs
+        });
         lastError = details;
         if (!Number.isFinite(nextDelayMs)) {
           const wrapped = new Error(details.message || "upstream request failed");
@@ -244,7 +329,7 @@ export async function fetchWithUpstreamRetry(targetUrl, init, options = {}) {
             targetUrl: String(targetUrl || "")
           });
         }
-        await discardResponseBody(response);
+        await discardResponseBody(response, retryBodyPreviewTimeoutMs);
         await sleepImpl(nextDelayMs);
         continue;
       }

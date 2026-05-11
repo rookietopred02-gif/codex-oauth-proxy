@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+
+import { setNoStoreHeaders } from "../http/cache-headers.js";
+import { getRequestBodyErrorStatus, isRequestBodyError } from "../http/request-body.js";
 import { buildAdminConfigSnapshot } from "./admin-shared.js";
 
 export function registerAdminCoreRoutes(app, context) {
@@ -50,7 +53,79 @@ export function registerAdminCoreRoutes(app, context) {
     return summary;
   }
 
+  function getCloudflaredSecretValues(extraValues = []) {
+    return [
+      config?.publicAccess?.defaultTunnelToken,
+      cloudflaredRuntime?.tunnelToken,
+      ...(Array.isArray(extraValues) ? extraValues : [extraValues])
+    ]
+      .map((value) => String(value || "").trim())
+      .filter((value, index, values) => value && values.indexOf(value) === index);
+  }
+
+  function redactCloudflaredText(value, extraValues = []) {
+    if (typeof value !== "string") return value;
+    let redacted = value;
+    for (const secret of getCloudflaredSecretValues(extraValues)) {
+      redacted = redacted.split(secret).join("[redacted]");
+    }
+    return redacted.replace(/(--token(?:=|\s+))\S+/gi, "$1[redacted]");
+  }
+
+  function sanitizeCloudflaredStatus(status) {
+    if (!status || typeof status !== "object" || Array.isArray(status)) return status;
+    const { token, tunnelToken, defaultTunnelToken, ...safeStatus } = status;
+    const statusSecretValues = [token, tunnelToken, defaultTunnelToken];
+    if (typeof safeStatus.error === "string") safeStatus.error = redactCloudflaredText(safeStatus.error, statusSecretValues);
+    if (typeof safeStatus.installMessage === "string") {
+      safeStatus.installMessage = redactCloudflaredText(safeStatus.installMessage, statusSecretValues);
+    }
+    if (Array.isArray(safeStatus.outputTail)) {
+      safeStatus.outputTail = safeStatus.outputTail.map((value) => redactCloudflaredText(value, statusSecretValues));
+    }
+    return safeStatus;
+  }
+
+  function sanitizeCloudflaredErrorMessage(err, extraValues = []) {
+    return redactCloudflaredText(String(err?.message || err || "Cloudflared operation failed."), extraValues);
+  }
+
+  function writeRequestBodyError(res, err) {
+    if (!isRequestBodyError(err)) return false;
+    res.status(getRequestBodyErrorStatus(err)).json({
+      error: err?.code || "invalid_request",
+      message: err?.message || "Invalid request body."
+    });
+    return true;
+  }
+
+  function readBoundedInteger(value, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
+    const parse = (candidate) => {
+      if (candidate === null || candidate === undefined || candidate === "") return null;
+      if (typeof candidate === "number") {
+        if (!Number.isSafeInteger(candidate)) return null;
+        return Math.min(max, Math.max(min, candidate));
+      }
+      if (typeof candidate !== "string" || !/^[+-]?\d+$/.test(candidate.trim())) return null;
+      const parsed = Number(candidate.trim());
+      if (!Number.isSafeInteger(parsed)) return null;
+      return Math.min(max, Math.max(min, Math.floor(parsed)));
+    };
+    const parsed = parse(value);
+    if (parsed !== null) return parsed;
+    return parse(fallback) ?? min;
+  }
+
+  function readBoundedQueryInteger(value, fallback, max = Number.MAX_SAFE_INTEGER) {
+    return readBoundedInteger(value, fallback, 0, max);
+  }
+
+  function readBoundedPort(value, fallback) {
+    return readBoundedInteger(value, fallback, 1, 65535);
+  }
+
   app.get("/admin/state", async (_req, res) => {
+    setNoStoreHeaders(res);
     try {
       const authStatus = await getAuthStatus();
       void checkCloudflaredInstalled(false).catch(() => {});
@@ -68,7 +143,7 @@ export function registerAdminCoreRoutes(app, context) {
         }),
         auth: authStatus,
         apiKeys: apiKeySummary,
-        publicAccess: getCloudflaredStatus(),
+        publicAccess: sanitizeCloudflaredStatus(getCloudflaredStatus()),
         preheat: getCodexPreheatState(),
         expiredAccountCleanup: expiredAccountCleanupController.getState(),
         stats: {
@@ -87,6 +162,7 @@ export function registerAdminCoreRoutes(app, context) {
   });
 
   app.get("/admin/requests/:requestId", async (req, res) => {
+    setNoStoreHeaders(res);
     const requestId = String(req.params?.requestId || "").trim();
     if (!requestId) {
       res.status(400).json({
@@ -115,10 +191,11 @@ export function registerAdminCoreRoutes(app, context) {
   });
 
   app.get("/admin/requests/:requestId/packet", async (req, res) => {
+    setNoStoreHeaders(res);
     const requestId = String(req.params?.requestId || "").trim();
     const field = String(req.query?.field || "").trim();
-    const offset = Math.max(0, Math.floor(Number(req.query?.offset || 0)));
-    const limit = Math.max(0, Math.min(20_000_000, Math.floor(Number(req.query?.limit || 65536))));
+    const offset = readBoundedQueryInteger(req.query?.offset, 0);
+    const limit = readBoundedQueryInteger(req.query?.limit, 65536, 20_000_000);
     if (!requestId) {
       res.status(400).json({
         error: "request_id_required",
@@ -153,6 +230,7 @@ export function registerAdminCoreRoutes(app, context) {
   });
 
   app.get("/admin/api-keys", async (_req, res) => {
+    setNoStoreHeaders(res);
     const summary = buildApiKeySummary();
     res.json({
       ok: true,
@@ -161,14 +239,12 @@ export function registerAdminCoreRoutes(app, context) {
   });
 
   app.post("/admin/api-keys/generate", async (req, res) => {
+    setNoStoreHeaders(res);
     try {
       const body = await readJsonBody(req);
       const nowSec = Math.floor(Date.now() / 1000);
       const label = sanitizeProxyApiKeyLabel(body?.label);
-      const expiresInDaysRaw = Number(body?.expiresInDays);
-      const expiresInDays = Number.isFinite(expiresInDaysRaw)
-        ? Math.max(0, Math.min(3650, Math.floor(expiresInDaysRaw)))
-        : 0;
+      const expiresInDays = readBoundedInteger(body?.expiresInDays, 0, 0, 3650);
       const expiresAt = expiresInDays > 0 ? nowSec + expiresInDays * 86400 : 0;
       const apiKey = createProxyApiKey();
       const id = `key_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -203,6 +279,7 @@ export function registerAdminCoreRoutes(app, context) {
         summary: buildApiKeySummary()
       });
     } catch (err) {
+      if (writeRequestBodyError(res, err)) return;
       res.status(400).json({
         error: "api_key_generate_failed",
         message: err.message
@@ -211,6 +288,7 @@ export function registerAdminCoreRoutes(app, context) {
   });
 
   app.post("/admin/api-keys/revoke", async (req, res) => {
+    setNoStoreHeaders(res);
     try {
       const body = await readJsonBody(req);
       const id = String(body?.id || "").trim();
@@ -235,6 +313,7 @@ export function registerAdminCoreRoutes(app, context) {
         summary: buildApiKeySummary()
       });
     } catch (err) {
+      if (writeRequestBodyError(res, err)) return;
       res.status(400).json({
         error: "api_key_revoke_failed",
         message: err.message
@@ -243,31 +322,35 @@ export function registerAdminCoreRoutes(app, context) {
   });
 
   app.get("/admin/public-access/status", async (_req, res) => {
+    setNoStoreHeaders(res);
     await checkCloudflaredInstalled(false).catch(() => {});
     res.json({
       ok: true,
-      status: getCloudflaredStatus()
+      status: sanitizeCloudflaredStatus(getCloudflaredStatus())
     });
   });
 
   app.post("/admin/public-access/install", async (_req, res) => {
+    setNoStoreHeaders(res);
     try {
       const result = await context.installCloudflaredBinary();
       res.json({
         ok: true,
         result,
-        status: getCloudflaredStatus()
+        status: sanitizeCloudflaredStatus(getCloudflaredStatus())
       });
     } catch (err) {
       res.status(400).json({
         error: "public_access_install_failed",
-        message: err.message,
-        status: getCloudflaredStatus()
+        message: sanitizeCloudflaredErrorMessage(err),
+        status: sanitizeCloudflaredStatus(getCloudflaredStatus())
       });
     }
   });
 
   app.post("/admin/public-access/start", async (req, res) => {
+    setNoStoreHeaders(res);
+    let requestedTunnelToken = "";
     try {
       const body = await readJsonBody(req);
       const modeRaw = String(body?.mode || "").trim().toLowerCase();
@@ -275,6 +358,7 @@ export function registerAdminCoreRoutes(app, context) {
         ? modeRaw
         : cloudflaredRuntime.mode || config.publicAccess.defaultMode;
       const token = body?.token === undefined ? undefined : String(body.token || "").trim();
+      requestedTunnelToken = token || "";
       const useHttp2 = body?.useHttp2 === undefined ? undefined : Boolean(body.useHttp2);
       const autoInstall = body?.autoInstall === undefined ? undefined : Boolean(body.autoInstall);
 
@@ -287,37 +371,42 @@ export function registerAdminCoreRoutes(app, context) {
 
       config.publicAccess.defaultMode = status.mode;
       config.publicAccess.defaultUseHttp2 = status.useHttp2 !== false;
-      config.publicAccess.defaultTunnelToken = cloudflaredRuntime.tunnelToken || "";
-      config.publicAccess.localPort = Number(status.localPort || config.port);
+      if (status.mode === "auth") {
+        config.publicAccess.defaultTunnelToken = cloudflaredRuntime.tunnelToken || "";
+      }
+      config.publicAccess.localPort = readBoundedPort(status.localPort, config.port);
 
       res.json({
         ok: true,
-        status
+        status: sanitizeCloudflaredStatus(status)
       });
     } catch (err) {
+      if (writeRequestBodyError(res, err)) return;
       res.status(400).json({
         error: "public_access_start_failed",
-        message: err.message
+        message: sanitizeCloudflaredErrorMessage(err, [requestedTunnelToken])
       });
     }
   });
 
   app.post("/admin/public-access/stop", async (_req, res) => {
+    setNoStoreHeaders(res);
     try {
       const status = await stopCloudflaredTunnel();
       res.json({
         ok: true,
-        status
+        status: sanitizeCloudflaredStatus(status)
       });
     } catch (err) {
       res.status(400).json({
         error: "public_access_stop_failed",
-        message: err.message
+        message: sanitizeCloudflaredErrorMessage(err)
       });
     }
   });
 
   app.get("/admin/model-candidates", async (req, res) => {
+    setNoStoreHeaders(res);
     const forceRefresh = String(req.query.refresh || "").trim() === "1";
     const [models, codexModels] = await Promise.all([
       getOfficialModelCandidateIds({ forceRefresh }),

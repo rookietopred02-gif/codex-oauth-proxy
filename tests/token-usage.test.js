@@ -45,6 +45,47 @@ test("normalizes cached input tokens from chat-style camelCase details", () => {
   );
 });
 
+test("normalizes token usage by rejecting invalid numeric counts", () => {
+  assert.deepEqual(
+    normalizeTokenUsage({
+      input_tokens: -1,
+      output_tokens: "2",
+      total_tokens: -3,
+      input_tokens_details: {
+        cached_tokens: -4
+      }
+    }),
+    {
+      inputTokens: null,
+      outputTokens: 2,
+      totalTokens: 2,
+      cachedInputTokens: null
+    }
+  );
+
+  assert.equal(
+    normalizeTokenUsage({
+      input_tokens: 1.5,
+      total_tokens: Number.MAX_SAFE_INTEGER + 1,
+      cached_input_tokens: "1e3"
+    }),
+    null
+  );
+
+  assert.deepEqual(
+    normalizeTokenUsage({
+      input_tokens: Symbol("bad-input"),
+      output_tokens: 3
+    }),
+    {
+      inputTokens: null,
+      outputTokens: 3,
+      totalTokens: 3,
+      cachedInputTokens: null
+    }
+  );
+});
+
 test("merges cached input tokens without losing current usage fields", () => {
   assert.deepEqual(
     mergeNormalizedTokenUsage(

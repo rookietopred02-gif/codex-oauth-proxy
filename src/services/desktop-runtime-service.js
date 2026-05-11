@@ -9,10 +9,14 @@ import dotenv from "dotenv";
  * @returns {number | null}
  */
 export function normalizeEmbeddedServerPort(value) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return null;
-  const port = Math.floor(parsed);
-  if (port < 1 || port > 65535) return null;
+  let port = null;
+  if (typeof value === "number") {
+    port = Number.isSafeInteger(value) ? value : null;
+  } else if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    port = Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  if (port === null || port < 1 || port > 65535) return null;
   return port;
 }
 

@@ -1,3 +1,6 @@
+import { setNoStoreHeaders } from "../http/cache-headers.js";
+import { getRequestBodyErrorStatus } from "../http/request-body.js";
+
 export function registerAuthRoutes(app, context) {
   const {
     config,
@@ -19,6 +22,23 @@ export function registerAuthRoutes(app, context) {
     clearAuthContextCache,
     replaceActiveOAuthStore
   } = context;
+
+  app.use("/auth", (_req, res, next) => {
+    setNoStoreHeaders(res);
+    next();
+  });
+
+  async function readAuthJsonBody(req, res) {
+    try {
+      return { ok: true, body: (await readJsonBody(req)) || {} };
+    } catch (err) {
+      res.status(getRequestBodyErrorStatus(err)).json({
+        error: err?.code || "invalid_request",
+        message: err?.message || "Invalid request body."
+      });
+      return { ok: false, body: null };
+    }
+  }
 
   app.get("/auth/status", async (_req, res) => {
     try {
@@ -161,7 +181,9 @@ export function registerAuthRoutes(app, context) {
     }
 
     if (config.authMode === "codex-oauth") {
-      const body = await readJsonBody(req);
+      const bodyResult = await readAuthJsonBody(req, res);
+      if (!bodyResult.ok) return;
+      const body = bodyResult.body;
       const accountRef = String(body.entryId || body.accountId || "").trim();
       const removed = removeCodexPoolAccountFromStore(oauthRuntime.store, accountRef);
       if (!removed.removed) {

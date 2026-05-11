@@ -4,6 +4,7 @@ import test from "node:test";
 import { createOpenAIResponsesCompatHelpers } from "../src/protocols/openai/responses-compat.js";
 import {
   buildResponsesChainEntry,
+  createResponsesChainStore,
   expandResponsesRequestBodyFromChain
 } from "../src/responses-chain-store.js";
 
@@ -231,6 +232,40 @@ test("responses chain replay does not duplicate already-expanded history prefixe
       call_id: "call_edit",
       name: "apply_patch",
       arguments: "{\"patch\":\"*** Begin Patch\"}"
+    }
+  ]);
+});
+
+test("responses chain replay tolerates non-JSON-safe metadata while de-duplicating", () => {
+  const priorMessage = {
+    type: "message",
+    role: "user",
+    content: [{ type: "input_text", text: "Compare this payload." }],
+    metadata: { trace: 1n }
+  };
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_bigint_metadata",
+      input: [
+        structuredClone(priorMessage),
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Continue after the overlap." }]
+        }
+      ]
+    },
+    {
+      responseId: "resp_bigint_metadata",
+      inputHistory: [priorMessage]
+    }
+  );
+
+  assert.deepEqual(expanded.input, [
+    priorMessage,
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Continue after the overlap." }]
     }
   ]);
 });
@@ -840,6 +875,45 @@ test("responses chain replay drops prior assistant commentary items by phase", (
   ]);
 });
 
+test("responses chain replay drops chat-style assistant commentary before conversion", () => {
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_chat_commentary",
+      input: [
+        {
+          role: "user",
+          content: "Continue now."
+        }
+      ]
+    },
+    {
+      responseId: "resp_chat_commentary",
+      inputHistory: [
+        {
+          role: "user",
+          content: "Ship the release."
+        },
+        {
+          role: "assistant",
+          phase: "commentary",
+          content: "I am still thinking through the implementation details."
+        }
+      ]
+    }
+  );
+
+  assert.deepEqual(expanded.input, [
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Ship the release." }]
+    },
+    {
+      role: "user",
+      content: [{ type: "input_text", text: "Continue now." }]
+    }
+  ]);
+});
+
 test("responses chain replay drops streamed assistant commentary after SSE reconstruction", () => {
   const helpers = createResponsesHelpers();
   const completed = helpers.parseResponsesResultFromSse(
@@ -1211,5 +1285,160 @@ test("responses chain replay preserves the current turn when continuation uses m
       content: [{ type: "input_text", text: "你知道今天是幾號嗎？" }]
     }
   ]);
+});
+
+test("responses chain store expires stale continuation entries", () => {
+  const store = createResponsesChainStore({ ttlMs: 10, maxEntries: 4 });
+
+  assert.equal(store.remember(null, 1000), null);
+  assert.deepEqual(
+    store.remember(
+      {
+        responseId: " resp_chain ",
+        inputHistory: ["first turn"]
+      },
+      1000
+    ),
+    {
+      responseId: "resp_chain",
+      inputHistory: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "first turn" }]
+        }
+      ],
+      updatedAt: 1000
+    }
+  );
+
+  assert.equal(store.lookup("resp_chain", 1005)?.updatedAt, 1005);
+  assert.equal(store.lookup("resp_chain", 1016), null);
+  assert.equal(store.size(), 0);
+});
+
+test("responses chain store ignores malformed numeric options and timestamps", () => {
+  let store = null;
+  const throwingNumber = {
+    valueOf() {
+      throw new Error("bad number");
+    }
+  };
+
+  assert.doesNotThrow(() => {
+    store = createResponsesChainStore({
+      ttlMs: Symbol("ttl"),
+      maxEntries: throwingNumber
+    });
+  });
+
+  assert.deepEqual(
+    store.remember(
+      {
+        responseId: "resp_bad_timestamp",
+        inputHistory: ["turn"],
+        updatedAt: Symbol("updated-at")
+      },
+      1000
+    ),
+    {
+      responseId: "resp_bad_timestamp",
+      inputHistory: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "turn" }]
+        }
+      ],
+      updatedAt: 1000
+    }
+  );
+  assert.equal(store.lookup("resp_bad_timestamp", 1001)?.responseId, "resp_bad_timestamp");
+});
+
+test("responses chain store rejects decimal-form numeric options", () => {
+  const ttlStore = createResponsesChainStore({ ttlMs: "10.9", maxEntries: 4 });
+  ttlStore.remember({ responseId: "resp_ttl", inputHistory: ["ttl"] }, 1000);
+  assert.equal(ttlStore.lookup("resp_ttl", 1012)?.responseId, "resp_ttl");
+
+  const maxEntriesStore = createResponsesChainStore({ ttlMs: 1000, maxEntries: "1.9" });
+  maxEntriesStore.remember({ responseId: "resp_a", inputHistory: ["a"] }, 1000);
+  maxEntriesStore.remember({ responseId: "resp_b", inputHistory: ["b"] }, 1001);
+
+  assert.equal(maxEntriesStore.lookup("resp_a", 1002)?.responseId, "resp_a");
+  assert.equal(maxEntriesStore.lookup("resp_b", 1003)?.responseId, "resp_b");
+});
+
+test("responses chain store rejects decimal-form timestamps", (t) => {
+  let now = 2000;
+  t.mock.method(Date, "now", () => now);
+
+  assert.equal(
+    buildResponsesChainEntry(
+      {
+        input: "hello"
+      },
+      {
+        id: "resp_built",
+        output: []
+      },
+      "1000.9"
+    )?.updatedAt,
+    2000
+  );
+
+  const store = createResponsesChainStore({ ttlMs: 10, maxEntries: 4 });
+
+  assert.deepEqual(
+    store.remember(
+      {
+        responseId: "resp_decimal",
+        inputHistory: ["turn"]
+      },
+      "1000.9"
+    ),
+    {
+      responseId: "resp_decimal",
+      inputHistory: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "turn" }]
+        }
+      ],
+      updatedAt: 2000
+    }
+  );
+
+  now = 2005;
+  assert.equal(store.lookup("resp_decimal", "2005.9")?.updatedAt, 2005);
+
+  now = 2016;
+  assert.equal(store.lookup("resp_decimal", "2016.9"), null);
+});
+
+test("responses chain store evicts least recently used continuation entries over the limit", () => {
+  const store = createResponsesChainStore({ ttlMs: 1000, maxEntries: 2 });
+
+  store.remember({ responseId: "resp_a", inputHistory: ["a"] }, 1000);
+  store.remember({ responseId: "resp_b", inputHistory: ["b"] }, 1001);
+  assert.equal(store.lookup("resp_a", 1002)?.responseId, "resp_a");
+  store.remember({ responseId: "resp_c", inputHistory: ["c"] }, 1003);
+
+  assert.equal(store.lookup("resp_b", 1004), null);
+  assert.equal(store.lookup("resp_a", 1004)?.responseId, "resp_a");
+  assert.equal(store.lookup("resp_c", 1004)?.responseId, "resp_c");
+});
+
+test("responses chain store can forget and clear continuation entries", () => {
+  const store = createResponsesChainStore({ ttlMs: 1000, maxEntries: 4 });
+
+  store.remember({ responseId: "resp_a", inputHistory: ["a"] }, 1000);
+  store.remember({ responseId: "resp_b", inputHistory: ["b"] }, 1001);
+  assert.equal(store.forget("resp_a"), true);
+  assert.equal(store.forget("resp_missing"), false);
+  assert.equal(store.lookup("resp_a", 1002), null);
+  assert.equal(store.size(), 1);
+
+  store.clear();
+  assert.equal(store.size(), 0);
+  assert.equal(store.lookup("resp_b", 1003), null);
 });
 

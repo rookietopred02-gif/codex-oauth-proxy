@@ -2,6 +2,37 @@
 
 import { createPoolRenderer } from "../renderers/pool.js";
 
+function toFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  try {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function toNonNegativeNumber(value, fallback = 0) {
+  const n = toFiniteNumber(value, null);
+  if (n === null || n < 0) return fallback;
+  return n;
+}
+
+function toIntegerNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "number") return Number.isSafeInteger(value) ? value : fallback;
+  if (typeof value !== "string") return fallback;
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) return fallback;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+
+function toNonNegativeInteger(value, fallback = 0) {
+  const n = toIntegerNumber(value, null);
+  return n !== null && n >= 0 ? n : fallback;
+}
+
 export function createPoolFeature(deps) {
   const { $, api, t, tt, escapeHtml, fmtUnixSec, fmtCooldown, shortId, setTextAndPulse } = deps;
   const renderer = createPoolRenderer({ t, tt, escapeHtml, fmtUnixSec, fmtCooldown, shortId });
@@ -49,7 +80,7 @@ export function createPoolFeature(deps) {
       const slot = renderer.getAccountSlotNumber(lastAccounts[i], i);
       if (Number.isFinite(slot) && slot > 0) occupied.add(slot);
     }
-    let slot = Math.max(1, Number(minSlot) || 1);
+    let slot = Math.max(1, toNonNegativeInteger(minSlot, 1) || 1);
     while (occupied.has(slot)) slot += 1;
     return slot;
   }
@@ -64,7 +95,7 @@ export function createPoolFeature(deps) {
   function render(state) {
     const accounts = Array.isArray(state.auth?.accounts) ? state.auth.accounts : [];
     lastAccounts = accounts;
-    const enabledCount = Number(state.auth?.enabledAccountCount || 0);
+    const enabledCount = toNonNegativeInteger(state.auth?.enabledAccountCount, 0);
     const activeAccount = state.auth?.activeEntryId || state.auth?.activeAccountId || "";
     lastActiveEntryId = String(activeAccount || "");
     const poolEnabled = state.auth?.multiAccountEnabled === true;
@@ -85,14 +116,12 @@ export function createPoolFeature(deps) {
     const riskCount = decorated.filter((item) => ["disabled", "expired", "cooldown", "expiring"].includes(item._health.label)).length;
     const healthyRatio = enabledCount > 0 ? Math.round((healthyCount / enabledCount) * 100) : 0;
     const poolMetrics = state.auth?.poolMetrics || {};
-    const avgPrimaryRemaining =
-      Number.isFinite(Number(poolMetrics.avgPrimaryRemaining)) ? Math.round(Number(poolMetrics.avgPrimaryRemaining)) : null;
-    const avgSecondaryRemaining =
-      Number.isFinite(Number(poolMetrics.avgSecondaryRemaining)) ? Math.round(Number(poolMetrics.avgSecondaryRemaining)) : null;
-    const lowQuotaCount =
-      Number.isFinite(Number(poolMetrics.lowQuotaCount))
-        ? Number(poolMetrics.lowQuotaCount)
-        : decorated.filter((item) => item.lowQuota === true).length;
+    const avgPrimaryRemainingValue = toFiniteNumber(poolMetrics.avgPrimaryRemaining, null);
+    const avgSecondaryRemainingValue = toFiniteNumber(poolMetrics.avgSecondaryRemaining, null);
+    const avgPrimaryRemaining = avgPrimaryRemainingValue === null ? null : Math.round(avgPrimaryRemainingValue);
+    const avgSecondaryRemaining = avgSecondaryRemainingValue === null ? null : Math.round(avgSecondaryRemainingValue);
+    const lowQuotaFallback = decorated.filter((item) => item.lowQuota === true).length;
+    const lowQuotaCount = toNonNegativeInteger(poolMetrics.lowQuotaCount, lowQuotaFallback);
 
     setTextAndPulse("poolTotal", String(accounts.length));
     setTextAndPulse("poolHealthyRatio", `${healthyRatio}%`);
@@ -175,7 +204,7 @@ export function createPoolFeature(deps) {
   async function refreshUsage(force = false, options = {}) {
     if (typeof options.isLocked === "function" && options.isLocked()) return false;
     if (usageRefreshInFlight) return false;
-    const minIntervalMs = Number(options.minIntervalMs || 0);
+    const minIntervalMs = toNonNegativeNumber(options.minIntervalMs, 0);
     const now = Date.now();
     if (!force && minIntervalMs > 0 && now - lastUsageRefreshAtMs < minIntervalMs) {
       return false;
@@ -219,11 +248,13 @@ export function createPoolFeature(deps) {
       return;
     }
 
-    const ok = Number(summary.refreshed || 0) === Number(summary.total || 0);
+    const refreshed = toNonNegativeInteger(summary.refreshed, 0);
+    const total = toNonNegativeInteger(summary.total, 0);
+    const ok = refreshed === total;
     statusEl.className = `preheat-status ${ok ? "ok" : "bad"}`;
     statusEl.textContent = tt("token_refresh_status", {
-      refreshed: Number(summary.refreshed || 0),
-      total: Number(summary.total || 0),
+      refreshed,
+      total,
       mode: autoTokenRefreshEnabled ? t("token_refresh_mode_auto") : t("token_refresh_mode_manual")
     });
   }
@@ -231,7 +262,7 @@ export function createPoolFeature(deps) {
   async function refreshTokens(force = false, options = {}) {
     if (typeof options.isLocked === "function" && options.isLocked()) return null;
     if (tokenRefreshInFlight) return null;
-    const minIntervalMs = Number(options.minIntervalMs || 0);
+    const minIntervalMs = toNonNegativeNumber(options.minIntervalMs, 0);
     const now = Date.now();
     if (!force && minIntervalMs > 0 && now - lastTokenRefreshAtMs < minIntervalMs) {
       return null;
@@ -249,8 +280,8 @@ export function createPoolFeature(deps) {
       lastTokenRefreshAtMs = Date.now();
       renderTokenRefreshStatus({
         state: "done",
-        refreshed: Number(result?.refreshed || 0),
-        total: Number(result?.total || 0)
+        refreshed: toNonNegativeInteger(result?.refreshed, 0),
+        total: toNonNegativeInteger(result?.total, 0)
       });
       return result;
     } catch (err) {

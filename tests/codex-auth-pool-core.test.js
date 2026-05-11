@@ -22,8 +22,14 @@ function createHelpers({ strategy = "smart" } = {}) {
       };
     },
     parseSlotValue(value) {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+      if (typeof value === "number") {
+        return Number.isSafeInteger(value) && value > 0 ? value : null;
+      }
+      if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+        const parsed = Number(value.trim());
+        return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+      }
+      return null;
     },
     normalizePlanType: identity.normalizeOpenAICodexPlanType,
     extractAccountId: identity.extractOpenAICodexAccountId,
@@ -733,4 +739,252 @@ test("ensureCodexOAuthStoreShape remaps manual active selection when the stored 
 
   assert.equal(normalized.store.active_account_id, "principal_plan_shift::plan:team");
   assert.equal(normalized.changed, true);
+});
+
+test("ensureCodexOAuthStoreShape normalizes malformed numeric account fields", () => {
+  const helpers = createHelpers();
+  const accessToken = encodeJwt({
+    sub: "fallback_sub",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_malformed_numbers",
+      chatgpt_account_user_id: "principal_malformed_numbers",
+      chatgpt_plan_type: "Team"
+    },
+    "https://api.openai.com/profile": {
+      email: "malformed-numbers@example.com"
+    }
+  });
+
+  const normalized = helpers.ensureCodexOAuthStoreShape({
+    accounts: [
+      {
+        identity_id: "principal_malformed_numbers::plan:team",
+        account_id: "acct_malformed_numbers",
+        enabled: true,
+        token: {
+          access_token: accessToken
+        },
+        slot: Symbol("slot"),
+        created_at: Symbol("created"),
+        last_used_at: "NaN",
+        failure_count: Infinity,
+        cooldown_until: "Infinity",
+        last_status_code: Symbol("status"),
+        token_invalidated_at: -10,
+        usage_updated_at: "not-a-timestamp"
+      }
+    ],
+    active_account_id: "principal_malformed_numbers::plan:team",
+    rotation: { next_index: "Infinity" }
+  });
+
+  const account = normalized.store.accounts[0];
+  assert.equal(account.slot, 1);
+  assert.ok(Number.isFinite(account.created_at));
+  assert.ok(account.created_at > 0);
+  assert.equal(account.last_used_at, 0);
+  assert.equal(account.failure_count, 0);
+  assert.equal(account.cooldown_until, 0);
+  assert.equal(account.last_status_code, 0);
+  assert.equal(account.token_invalidated_at, 0);
+  assert.equal(account.usage_updated_at, 0);
+  assert.equal(normalized.store.rotation.next_index, 0);
+  assert.equal(normalized.changed, true);
+});
+
+test("ensureCodexOAuthStoreShape rejects decimal-form integer account fields", () => {
+  const helpers = createHelpers();
+  const beforeSec = Math.floor(Date.now() / 1000);
+  const accessToken = encodeJwt({
+    sub: "fallback_sub",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_decimal_numbers",
+      chatgpt_account_user_id: "principal_decimal_numbers",
+      chatgpt_plan_type: "Team"
+    },
+    "https://api.openai.com/profile": {
+      email: "decimal-numbers@example.com"
+    }
+  });
+
+  const normalized = helpers.ensureCodexOAuthStoreShape({
+    accounts: [
+      {
+        identity_id: "principal_decimal_numbers::plan:team",
+        account_id: "acct_decimal_numbers",
+        enabled: true,
+        token: {
+          access_token: accessToken
+        },
+        created_at: "12345.9",
+        last_used_at: "10.9",
+        failure_count: "2.9",
+        cooldown_until: "77.7",
+        token_invalidated_at: "88.8",
+        usage_snapshot: {
+          fetched_at: "99.9"
+        },
+        usage_updated_at: "66.6"
+      }
+    ],
+    active_account_id: "principal_decimal_numbers::plan:team",
+    rotation: { next_index: "1.9" }
+  });
+
+  const account = normalized.store.accounts[0];
+  assert.ok(account.created_at >= beforeSec);
+  assert.notEqual(account.created_at, 12345);
+  assert.equal(account.last_used_at, 0);
+  assert.equal(account.failure_count, 0);
+  assert.equal(account.cooldown_until, 0);
+  assert.equal(account.token_invalidated_at, 0);
+  assert.equal(account.usage_updated_at, 0);
+  assert.equal(normalized.store.rotation.next_index, 0);
+  assert.equal(normalized.changed, true);
+});
+
+test("ensureCodexOAuthStoreShape drops out-of-range account status codes", () => {
+  const helpers = createHelpers();
+  const accessToken = encodeJwt({
+    sub: "fallback_sub",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_bad_status",
+      chatgpt_account_user_id: "principal_bad_status",
+      chatgpt_plan_type: "Team"
+    },
+    "https://api.openai.com/profile": {
+      email: "bad-status@example.com"
+    }
+  });
+
+  const normalized = helpers.ensureCodexOAuthStoreShape({
+    accounts: [
+      {
+        identity_id: "principal_bad_status::plan:team",
+        account_id: "acct_bad_status",
+        enabled: true,
+        token: {
+          access_token: accessToken
+        },
+        last_status_code: 700
+      }
+    ],
+    active_account_id: "principal_bad_status::plan:team"
+  });
+
+  assert.equal(normalized.store.accounts[0]?.last_status_code, 0);
+  assert.equal(normalized.changed, true);
+});
+
+test("ensureCodexOAuthStoreShape drops decimal-form account status codes", () => {
+  const helpers = createHelpers();
+  const accessToken = encodeJwt({
+    sub: "fallback_sub",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_decimal_status",
+      chatgpt_account_user_id: "principal_decimal_status",
+      chatgpt_plan_type: "Team"
+    },
+    "https://api.openai.com/profile": {
+      email: "decimal-status@example.com"
+    }
+  });
+
+  const normalized = helpers.ensureCodexOAuthStoreShape({
+    accounts: [
+      {
+        identity_id: "principal_decimal_status::plan:team",
+        account_id: "acct_decimal_status",
+        enabled: true,
+        token: {
+          access_token: accessToken
+        },
+        last_status_code: "401.0"
+      }
+    ],
+    active_account_id: "principal_decimal_status::plan:team"
+  });
+
+  assert.equal(normalized.store.accounts[0]?.last_status_code, 0);
+  assert.equal(normalized.changed, true);
+});
+
+test("upsertCodexOAuthAccount normalizes malformed existing numeric fields", () => {
+  const helpers = createHelpers();
+  const accessToken = encodeJwt({
+    sub: "fallback_sub",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_upsert_numbers",
+      chatgpt_account_user_id: "principal_upsert_numbers",
+      chatgpt_plan_type: "Team"
+    },
+    "https://api.openai.com/profile": {
+      email: "upsert-numbers@example.com"
+    }
+  });
+  const store = {
+    accounts: [
+      {
+        identity_id: "principal_upsert_numbers::plan:team",
+        account_id: "acct_upsert_numbers",
+        enabled: true,
+        token: {
+          access_token: accessToken
+        },
+        slot: Symbol("slot"),
+        last_status_code: 700,
+        usage_updated_at: Symbol("usage")
+      }
+    ],
+    active_account_id: "principal_upsert_numbers::plan:team",
+    rotation: { next_index: Symbol("rotation") }
+  };
+
+  const upsert = helpers.upsertCodexOAuthAccount(store, { access_token: accessToken });
+  const account = store.accounts[0];
+
+  assert.equal(upsert.action, "updated_existing_account");
+  assert.equal(upsert.slot, 1);
+  assert.equal(account.slot, 1);
+  assert.equal(account.last_status_code, 0);
+  assert.equal(account.usage_updated_at, 0);
+  assert.equal(store.rotation.next_index, 0);
+});
+
+test("upsertCodexOAuthAccount rejects decimal-form usage timestamps", () => {
+  const helpers = createHelpers();
+  const accessToken = encodeJwt({
+    sub: "fallback_sub",
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: "acct_upsert_decimal_numbers",
+      chatgpt_account_user_id: "principal_upsert_decimal_numbers",
+      chatgpt_plan_type: "Team"
+    },
+    "https://api.openai.com/profile": {
+      email: "upsert-decimal-numbers@example.com"
+    }
+  });
+  const store = {
+    accounts: [],
+    rotation: { next_index: "1.9" }
+  };
+
+  const beforeSec = Math.floor(Date.now() / 1000);
+  const upsert = helpers.upsertCodexOAuthAccount(
+    store,
+    { access_token: accessToken },
+    {
+      usageSnapshot: {
+        fetched_at: "12345.9"
+      }
+    }
+  );
+  const afterSec = Math.floor(Date.now() / 1000);
+  const account = store.accounts[0];
+
+  assert.equal(upsert.action, "created");
+  assert.ok(account.usage_updated_at >= beforeSec);
+  assert.ok(account.usage_updated_at <= afterSec);
+  assert.notEqual(account.usage_updated_at, 12345);
+  assert.equal(store.rotation.next_index, 0);
 });

@@ -1,5 +1,11 @@
 // @ts-check
 
+function toErrorMessageText(value) {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
 export async function api(path, init = {}) {
   const res = await fetch(path, {
     credentials: "same-origin",
@@ -13,7 +19,11 @@ export async function api(path, init = {}) {
     data = { raw: text };
   }
   if (!res.ok) {
-    const msg = data?.message || data?.error || text || `HTTP ${res.status}`;
+    const msg =
+      toErrorMessageText(data?.message) ||
+      toErrorMessageText(data?.error) ||
+      text.trim() ||
+      `HTTP ${res.status}`;
     if (
       typeof window !== "undefined" &&
       res.status === 401 &&

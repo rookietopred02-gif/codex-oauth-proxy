@@ -7,6 +7,52 @@ function isExpiredOrNearExpirySec(expiresAtSec) {
   return expiresAtSec - nowSec < 60;
 }
 
+function createPinnedAccountUnavailableError() {
+  const error = new Error("The response_id is pinned to a pooled account that is not currently selectable.");
+  error.statusCode = 409;
+  error.error = "response_id_account_unavailable";
+  return error;
+}
+
+function createModelAccountUnavailableError(requestedModel) {
+  const model = String(requestedModel || "").trim();
+  const error = new Error(
+    model
+      ? `No selectable OAuth account is known to support the requested model "${model}".`
+      : "No selectable OAuth account is known to support the requested model."
+  );
+  error.statusCode = 409;
+  error.error = "model_account_unavailable";
+  error.requestedModel = model;
+  return error;
+}
+
+function toIntegerNumber(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : fallback;
+  }
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : fallback;
+  }
+  return fallback;
+}
+
+function toNonNegativeInteger(value, fallback = 0) {
+  const parsed = toIntegerNumber(value, fallback);
+  return parsed !== null && parsed >= 0 ? parsed : fallback;
+}
+
+function toHttpStatusCode(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;
+  }
+  if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+    return Number(value);
+  }
+  return fallback;
+}
+
 export function createAuthContextRuntime({
   config,
   logger = console,
@@ -85,12 +131,29 @@ export function createAuthContextRuntime({
 
     const preferredPoolEntryId =
       typeof options.preferredPoolEntryId === "string" ? options.preferredPoolEntryId.trim() : "";
+    const requestedModel = typeof options.requestedModel === "string" ? options.requestedModel.trim() : "";
     const strategy = String(config.codexOAuth.multiAccountStrategy || "").trim().toLowerCase();
-    const candidates = pickCodexAccountCandidates(store, {
+    let candidates = pickCodexAccountCandidates(store, {
       preferredPoolEntryId,
+      requestedModel,
       strategy
     });
+    if (preferredPoolEntryId) {
+      candidates = candidates.filter((account) => getCodexPoolEntryId(account) === preferredPoolEntryId);
+      if (candidates.length === 0) {
+        throw createPinnedAccountUnavailableError();
+      }
+    }
     if (candidates.length === 0) {
+      if (requestedModel) {
+        const modelAgnosticCandidates = pickCodexAccountCandidates(store, {
+          preferredPoolEntryId,
+          strategy
+        });
+        if (modelAgnosticCandidates.length > 0) {
+          throw createModelAccountUnavailableError(requestedModel);
+        }
+      }
       if (strategy === "manual") {
         const activeRef = String(store?.active_account_id || "").trim();
         if (!activeRef) {
@@ -104,7 +167,8 @@ export function createAuthContextRuntime({
     }
 
     const nowSec = Math.floor(Date.now() / 1000);
-    const selectedCandidates = shouldUseSingleCandidateForStrategy(strategy) ? candidates.slice(0, 1) : candidates;
+    const selectedCandidates =
+      preferredPoolEntryId || shouldUseSingleCandidateForStrategy(strategy) ? candidates.slice(0, 1) : candidates;
     const errors = [];
     let sawInvalidatedFailure = false;
     for (const account of selectedCandidates) {
@@ -159,15 +223,16 @@ export function createAuthContextRuntime({
           poolEntryId: entryIdFromToken
         };
       } catch (err) {
-        account.failure_count = Number(account.failure_count || 0) + 1;
+        const failureCount = toNonNegativeInteger(account.failure_count, 0) + 1;
+        account.failure_count = failureCount;
         account.last_error = String(err.message || err);
-        account.last_status_code = Number(err?.statusCode || 0) || 0;
+        account.last_status_code = toHttpStatusCode(err?.statusCode, 0);
         const tokenInvalidated = isCodexTokenInvalidatedError(account.last_status_code, account.last_error);
         if (tokenInvalidated) {
           applyCodexInvalidatedAccountState(store, account, nowSec);
           sawInvalidatedFailure = true;
         } else {
-          const cooldownSeconds = Math.min(120, 10 * account.failure_count);
+          const cooldownSeconds = Math.min(120, 10 * failureCount);
           account.cooldown_until = nowSec + cooldownSeconds;
           account.token_invalidated_at = 0;
         }
@@ -181,6 +246,9 @@ export function createAuthContextRuntime({
       await expiredAccountCleanupController.run("token_invalidated").catch((err) => {
         logger.warn?.(`[auth-pool] account auto-rm failed after refresh failure: ${err?.message || err}`);
       });
+    }
+    if (preferredPoolEntryId) {
+      throw createPinnedAccountUnavailableError();
     }
     if (shouldUseSingleCandidateForStrategy(strategy)) {
       throw new Error(`Selected pooled OAuth account failed. ${errors.join(" | ")}`);

@@ -29,10 +29,25 @@ export async function saveJsonStore(filePath, payload) {
   await fs.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
 }
 
+function toStrictPositiveInteger(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+function toPositiveInteger(value, fallback) {
+  return toStrictPositiveInteger(value) ?? toStrictPositiveInteger(fallback) ?? 0;
+}
+
 export function normalizeToken(tokenResponse, currentToken = null) {
   const nowSec = Math.floor(Date.now() / 1000);
-  const expiresIn = Number(tokenResponse.expires_in || 3600);
-  const expiresAt = Number(tokenResponse.expires_at || nowSec + expiresIn);
+  const expiresIn = toPositiveInteger(tokenResponse.expires_in, 3600);
+  const expiresAt = toPositiveInteger(tokenResponse.expires_at, nowSec + expiresIn);
   return {
     access_token: tokenResponse.access_token,
     refresh_token: tokenResponse.refresh_token || currentToken?.refresh_token || null,

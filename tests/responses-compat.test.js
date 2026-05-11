@@ -8,12 +8,29 @@ import {
   RESPONSES_FAILURE_TERMINAL_EVENT_TYPES,
   RESPONSES_SUCCESS_TERMINAL_EVENT_TYPES
 } from "../src/protocols/openai/responses-contract.js";
+import {
+  buildResponsesFailureResult,
+  normalizeResponsesUsageObject
+} from "../src/protocols/openai/responses-sse-state.js";
 
 const responsesEventContract = JSON.parse(
   readFileSync(new URL("./fixtures/openai-responses-events.json", import.meta.url), "utf8")
 );
 
-function createHelpers() {
+function getGroupedResponsesEventTypes() {
+  return new Set([
+    ...responsesEventContract.terminal_events.success.map((entry) => entry.type),
+    ...responsesEventContract.terminal_events.failure,
+    ...Object.values(responsesEventContract.text_events),
+    ...responsesEventContract.content_part_events,
+    ...responsesEventContract.annotation_events,
+    ...responsesEventContract.reasoning_events,
+    ...responsesEventContract.refusal_events,
+    ...responsesEventContract.function_events
+  ]);
+}
+
+function createHelpers(overrides = {}) {
   return createOpenAIResponsesCompatHelpers({
     config: {
       codex: {
@@ -26,7 +43,8 @@ function createHelpers() {
       } catch {
         return null;
       }
-    }
+    },
+    ...overrides
   });
 }
 
@@ -87,6 +105,36 @@ function createReadableStreamFromTextChunks(chunks) {
       controller.close();
     }
   });
+}
+
+function createDelayedReadableStreamFromTextChunks(chunks, delayMs = 30) {
+  const encoder = new TextEncoder();
+  let emittedCount = 0;
+  let timer = null;
+
+  return {
+    stream: new ReadableStream({
+      start(controller) {
+        const emitNext = () => {
+          if (emittedCount >= chunks.length) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(encoder.encode(chunks[emittedCount]));
+          emittedCount += 1;
+          timer = setTimeout(emitNext, delayMs);
+          timer.unref?.();
+        };
+        emitNext();
+      },
+      cancel() {
+        if (timer) clearTimeout(timer);
+      }
+    }),
+    get emittedCount() {
+      return emittedCount;
+    }
+  };
 }
 
 function createAbortingReadableStream(error) {
@@ -165,6 +213,15 @@ function collectChatDeltaContent(writes) {
   return { text, reasoning, toolArguments };
 }
 
+async function waitFor(predicate, { timeoutMs = 500, intervalMs = 5 } = {}) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  assert.equal(predicate(), true);
+}
+
 test("Responses event fixture matches the runtime terminal event contract", () => {
   assert.deepEqual(
     responsesEventContract.terminal_events.success.map((entry) => entry.type),
@@ -174,6 +231,48 @@ test("Responses event fixture matches the runtime terminal event contract", () =
     responsesEventContract.terminal_events.failure,
     RESPONSES_FAILURE_TERMINAL_EVENT_TYPES
   );
+});
+
+test("Responses event fixture keeps grouped events covered by official or local compatibility inventory", () => {
+  const officialStreamEvents = new Set(responsesEventContract.official_stream_events);
+  const localCompatibilityEvents = new Set(responsesEventContract.local_compatibility_events);
+
+  for (const eventType of getGroupedResponsesEventTypes()) {
+    assert.equal(
+      officialStreamEvents.has(eventType) || localCompatibilityEvents.has(eventType),
+      true,
+      `expected ${eventType} to be listed as an official or local compatibility Responses event`
+    );
+  }
+});
+
+test("Responses event fixture tracks current official stream event families", () => {
+  const officialStreamEvents = responsesEventContract.official_stream_events;
+
+  assert.deepEqual(officialStreamEvents, [...officialStreamEvents].sort());
+  assert.equal(new Set(officialStreamEvents).size, officialStreamEvents.length);
+
+  for (const eventType of [
+    "response.audio.delta",
+    "response.code_interpreter_call_code.delta",
+    "response.created",
+    "response.custom_tool_call_input.delta",
+    "response.file_search_call.searching",
+    "response.image_generation_call.partial_image",
+    "response.mcp_call_arguments.delta",
+    "response.output_item.done",
+    "response.queued",
+    "response.web_search_call.searching"
+  ]) {
+    assert.equal(
+      officialStreamEvents.includes(eventType),
+      true,
+      `expected current official Responses stream event inventory to include ${eventType}`
+    );
+  }
+
+  assert.equal(officialStreamEvents.includes("response.done"), false);
+  assert.deepEqual(responsesEventContract.local_compatibility_events, ["response.done"]);
 });
 
 test("pipeCodexSseAsChatCompletions leaves headers uncommitted on early upstream failure", async () => {
@@ -194,6 +293,107 @@ test("pipeCodexSseAsChatCompletions leaves headers uncommitted on early upstream
   assert.deepEqual(res.writes, []);
 });
 
+test("pipeCodexSseAsChatCompletions ignores malformed idle timeout config", async () => {
+  const helpers = createHelpers({
+    upstreamStreamIdleTimeoutMs: Symbol("timeout")
+  });
+  const res = createMockResponse();
+  const upstream = {
+    body: createReadableStreamFromTextChunks([
+      'data: {"type":"response.output_text.delta","delta":"hi"}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_timeout","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}}\n\n'
+    ])
+  };
+
+  const result = await helpers.pipeCodexSseAsChatCompletions(upstream, res, "gpt-5.4");
+
+  assert.match(res.writes.join(""), /"content":"hi"/);
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 1,
+    completion_tokens: 2,
+    total_tokens: 3
+  });
+});
+
+test("pipeCodexSseAsChatCompletions ignores decimal-form idle timeout config", async () => {
+  const helpers = createHelpers({
+    upstreamStreamIdleTimeoutMs: "1.0"
+  });
+  const res = createMockResponse();
+  const upstream = createDelayedReadableStreamFromTextChunks(
+    [
+      'data: {"type":"response.output_text.delta","delta":"hi"}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_timeout_decimal","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}}\n\n'
+    ],
+    10
+  );
+
+  const result = await helpers.pipeCodexSseAsChatCompletions({ body: upstream.stream }, res, "gpt-5.4");
+
+  assert.equal(collectChatDeltaContent(res.writes).text, "hi");
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 1,
+    completion_tokens: 2,
+    total_tokens: 3
+  });
+});
+
+for (const { label, methodName } of [
+  { label: "raw passthrough", methodName: "pipeSseAndCaptureTokenUsage" },
+  { label: "event bridge", methodName: "pipeCodexSse" }
+]) {
+  test(`${methodName} honors configured idle timeout for ${label} streams`, async () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const helpers = createHelpers({
+      upstreamStreamIdleTimeoutMs: 7
+    });
+    const res = createMockResponse();
+    const delays = [];
+    let cancelReason = null;
+    const reader = {
+      read() {
+        return new Promise(() => {});
+      },
+      async cancel(reason) {
+        cancelReason = reason;
+      },
+      releaseLock() {}
+    };
+    const upstream = {
+      body: {
+        getReader() {
+          return reader;
+        }
+      }
+    };
+
+    globalThis.setTimeout = (callback, delay) => {
+      delays.push(delay);
+      queueMicrotask(callback);
+      return { unref() {} };
+    };
+    globalThis.clearTimeout = () => {};
+
+    try {
+      await assert.rejects(
+        () => helpers[methodName](upstream, res),
+        (err) => {
+          assert.equal(err.code, "UPSTREAM_STREAM_IDLE_TIMEOUT");
+          assert.match(err.message, /7ms/);
+          return true;
+        }
+      );
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    }
+
+    assert.deepEqual(delays, [7]);
+    assert.equal(cancelReason?.code, "UPSTREAM_STREAM_IDLE_TIMEOUT");
+  });
+}
+
 test("parseResponsesResultFromSse treats error as a failure terminal event", () => {
   const helpers = createHelpers();
   const parsed = helpers.parseResponsesResultFromSse(
@@ -206,6 +406,77 @@ test("parseResponsesResultFromSse treats error as a failure terminal event", () 
     message: "upstream exploded",
     statusCode: 502
   });
+});
+
+test("Responses SSE failure results tolerate malformed status metadata", () => {
+  const throwingStatus = {
+    valueOf() {
+      throw new Error("status should not be coerced");
+    },
+    toString() {
+      throw new Error("status should not be stringified");
+    }
+  };
+
+  assert.deepEqual(
+    buildResponsesFailureResult({
+      response: {
+        error: {
+          code: "bad_status",
+          message: "upstream failed",
+          status_code: throwingStatus
+        }
+      }
+    }),
+    {
+      code: "bad_status",
+      message: "upstream failed",
+      statusCode: 502
+    }
+  );
+
+  assert.deepEqual(
+    buildResponsesFailureResult({
+      error: {
+        code: "rate_limited",
+        message: "slow down",
+        status_code: "429"
+      }
+    }),
+    {
+      code: "rate_limited",
+      message: "slow down",
+      statusCode: 429
+    }
+  );
+});
+
+test("Responses SSE usage normalization tolerates malformed normalized counts", () => {
+  const throwingTokenCount = {
+    valueOf() {
+      throw new Error("token count should not be coerced");
+    },
+    toString() {
+      throw new Error("token count should not be stringified");
+    }
+  };
+
+  assert.deepEqual(
+    normalizeResponsesUsageObject({}, () => ({
+      inputTokens: Symbol("input"),
+      outputTokens: "2",
+      totalTokens: throwingTokenCount,
+      cachedInputTokens: "3"
+    })),
+    {
+      input_tokens: 0,
+      output_tokens: 2,
+      total_tokens: 0,
+      input_tokens_details: {
+        cached_tokens: 3
+      }
+    }
+  );
 });
 
 test("parseResponsesResultFromSse preserves streamed function calls when response.completed output is empty", () => {
@@ -239,7 +510,7 @@ test("parseResponsesResultFromSse preserves streamed annotations and web_search_
       'data: {"type":"response.output_item.added","item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}',
       'data: {"type":"response.content_part.added","item_id":"msg_1","content_index":0,"part":{"type":"output_text","text":"Look"}}',
       'data: {"type":"response.output_text.annotation.added","item_id":"msg_1","content_index":0,"annotation":{"type":"url_citation","title":"Docs","url":"https://example.test/docs"}}',
-      'data: {"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"latest docs"}}}',
+      'data: {"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}',
       'data: {"type":"response.completed","response":{"id":"resp_stream_annotations","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}'
     ].join("\n\n") + "\n\n"
   );
@@ -270,11 +541,171 @@ test("parseResponsesResultFromSse preserves streamed annotations and web_search_
       type: "web_search_call",
       status: "completed",
       action: {
-        query: "latest docs"
+        query: "latest docs",
+        sources: [
+          {
+            type: "url",
+            title: "Docs",
+            url: "https://example.test/docs"
+          }
+        ]
       }
     }
   ]);
 });
+
+test("parseResponsesResultFromSse applies web_search_call status events to streamed output items", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"in_progress","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}',
+      'data: {"type":"response.web_search_call.searching","item_id":"ws_1","output_index":0}',
+      'data: {"type":"response.web_search_call.completed","item_id":"ws_1","output_index":0}',
+      'data: {"type":"response.completed","response":{"id":"resp_web_search_status","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "ws_1",
+      type: "web_search_call",
+      status: "completed",
+      action: {
+        query: "latest docs",
+        sources: [
+          {
+            type: "url",
+            title: "Docs",
+            url: "https://example.test/docs"
+          }
+        ]
+      }
+    }
+  ]);
+});
+
+test("parseResponsesResultFromSse keeps web_search_call terminal status when item details arrive later", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.web_search_call.searching","item_id":"ws_1","output_index":0}',
+      'data: {"type":"response.web_search_call.completed","item_id":"ws_1","output_index":0}',
+      'data: {"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"in_progress","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}',
+      'data: {"type":"response.completed","response":{"id":"resp_web_search_status_late_item","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "ws_1",
+      type: "web_search_call",
+      status: "completed",
+      action: {
+        query: "latest docs",
+        sources: [
+          {
+            type: "url",
+            title: "Docs",
+            url: "https://example.test/docs"
+          }
+        ]
+      }
+    }
+  ]);
+});
+
+test("parseResponsesResultFromSse preserves streamed web_search_call sources when terminal output is partial", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}',
+      'data: {"type":"response.completed","response":{"id":"resp_web_search_terminal_partial","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"id":"ws_1","type":"web_search_call","status":"in_progress","action":{"query":"latest docs"}}]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "ws_1",
+      type: "web_search_call",
+      status: "completed",
+      action: {
+        query: "latest docs",
+        sources: [
+          {
+            type: "url",
+            title: "Docs",
+            url: "https://example.test/docs"
+          }
+        ]
+      }
+    }
+  ]);
+});
+
+test("parseResponsesResultFromSse ignores stale web_search_call progress events after completion", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}',
+      'data: {"type":"response.web_search_call.searching","item_id":"ws_1","output_index":0}',
+      'data: {"type":"response.completed","response":{"id":"resp_web_search_stale_progress","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "ws_1",
+      type: "web_search_call",
+      status: "completed",
+      action: {
+        query: "latest docs",
+        sources: [
+          {
+            type: "url",
+            title: "Docs",
+            url: "https://example.test/docs"
+          }
+        ]
+      }
+    }
+  ]);
+});
+
+for (const status of ["failed", "incomplete"]) {
+  test(`parseResponsesResultFromSse keeps late web_search_call ${status} status after searching`, () => {
+    const helpers = createHelpers();
+    const parsed = helpers.parseResponsesResultFromSse(
+      [
+        'data: {"type":"response.web_search_call.searching","item_id":"ws_1","output_index":0}',
+        `data: {"type":"response.output_item.done","item":{"id":"ws_1","type":"web_search_call","status":"${status}","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}`,
+        `data: {"type":"response.completed","response":{"id":"resp_web_search_${status}","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}`
+      ].join("\n\n") + "\n\n"
+    );
+
+    assert.equal(parsed.failed, null);
+    assert.deepEqual(parsed.completed?.output, [
+      {
+        id: "ws_1",
+        type: "web_search_call",
+        status,
+        action: {
+          query: "latest docs",
+          sources: [
+            {
+              type: "url",
+              title: "Docs",
+              url: "https://example.test/docs"
+            }
+          ]
+        }
+      }
+    ]);
+  });
+}
 
 test("parseResponsesResultFromSse preserves assistant message phase from streamed output items", () => {
   const helpers = createHelpers();
@@ -457,6 +888,33 @@ test("pipeSseAndCaptureTokenUsage returns the completed response for raw respons
   assert.equal(res.writes.length > 0, true);
 });
 
+test("pipeSseAndCaptureTokenUsage flushes delayed raw response chunks before completion", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = createDelayedReadableStreamFromTextChunks(
+    [
+      'data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"hel"}\n\n',
+      'data: {"type":"response.completed","response":{"id":"resp_delayed_raw","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}\n\n'
+    ],
+    40
+  );
+
+  const pending = helpers.pipeSseAndCaptureTokenUsage({ body: upstream.stream }, res);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  assert.equal(upstream.emittedCount, 1);
+  assert.match(res.writes.join(""), /response\.output_text\.delta/);
+  assert.equal(res.writableEnded, false);
+
+  const result = await pending;
+  assert.equal(result.completed?.id, "resp_delayed_raw");
+  assert.deepEqual(result.usage, {
+    prompt_tokens: 1,
+    completion_tokens: 2,
+    total_tokens: 3
+  });
+});
+
 test("pipeSseAndCaptureTokenUsage ignores duplicated terminal SSE events", async () => {
   const helpers = createHelpers();
   const res = createMockResponse();
@@ -637,6 +1095,31 @@ test("pipeCodexSseAsChatCompletions streams text deltas before response.complete
     completion_tokens: 2,
     total_tokens: 3
   });
+});
+
+test("pipeCodexSseAsChatCompletions flushes delayed stream deltas before completion", async () => {
+  const helpers = createHelpers();
+  const res = createMockResponse();
+  const upstream = createDelayedReadableStreamFromTextChunks(
+    [
+      'data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"hel"}\n\n',
+      'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}\n\n'
+    ],
+    50
+  );
+
+  const pending = helpers.pipeCodexSseAsChatCompletions({ body: upstream.stream }, res, "gpt-5.4");
+
+  await waitFor(() => res.writes.join("").includes('"content":"hel"'));
+
+  assert.equal(upstream.emittedCount, 1);
+  assert.equal(res.writableEnded, false);
+  assert.doesNotMatch(res.writes.join(""), /\[DONE\]/);
+
+  await pending;
+
+  assert.equal(collectChatDeltaContent(res.writes).text, "hello");
+  assert.match(res.writes.join(""), /\[DONE\]/);
 });
 
 test("pipeCodexSseAsChatCompletions treats output_text.done as the final text value", async () => {
@@ -893,4 +1376,30 @@ test("convertResponsesToChatCompletion flattens refusal into content text", () =
   assert.deepEqual(converted.choices[0].message.annotations, [
     { type: "file_citation", file_id: "file_1", filename: "x.txt", index: 0 }
   ]);
+});
+
+test("convertResponsesToChatCompletion rejects malformed token usage counts", () => {
+  const helpers = createHelpers();
+  const converted = helpers.convertResponsesToChatCompletion({
+    id: "resp_bad_usage",
+    status: "completed",
+    output: [
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "done" }]
+      }
+    ],
+    usage: {
+      input_tokens: -1,
+      output_tokens: "2",
+      total_tokens: "1e3"
+    }
+  });
+
+  assert.deepEqual(converted.usage, {
+    prompt_tokens: 0,
+    completion_tokens: 2,
+    total_tokens: 2
+  });
 });

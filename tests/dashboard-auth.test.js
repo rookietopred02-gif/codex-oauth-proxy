@@ -6,20 +6,37 @@ import path from "node:path";
 import test from "node:test";
 
 import { startAppServer, stopAppServer } from "../src/app-server.js";
+import { createDashboardAuthController } from "../src/dashboard-auth.js";
+
+const FETCH_FORBIDDEN_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
+  101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161,
+  179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563,
+  587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061,
+  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080
+]);
+
+function isFetchAllowedPort(port) {
+  return Number.isInteger(port) && port > 0 && !FETCH_FORBIDDEN_PORTS.has(port);
+}
 
 async function reserveFreePort() {
-  return await new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? Number(address.port || 0) : 0;
-      server.close((err) => {
-        if (err) reject(err);
-        else resolve(port);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const port = await new Promise((resolve, reject) => {
+      const server = createServer();
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        const reservedPort = typeof address === "object" && address ? Number(address.port || 0) : 0;
+        server.close((err) => {
+          if (err) reject(err);
+          else resolve(reservedPort);
+        });
       });
     });
-  });
+    if (isFetchAllowedPort(port)) return port;
+  }
+  throw new Error("Could not reserve a fetch-compatible test port.");
 }
 
 async function createTempAppDataDir() {
@@ -42,6 +59,71 @@ function getCookieHeader(response) {
     .join("; ");
 }
 
+function createHeaderCaptureResponse() {
+  const headers = new Map();
+  return {
+    getHeader(name) {
+      return headers.get(String(name || "").toLowerCase());
+    },
+    setHeader(name, value) {
+      headers.set(String(name || "").toLowerCase(), value);
+    },
+    headers
+  };
+}
+
+test("dashboard auth bounds malformed session ttl values", async () => {
+  const appDataDir = await createTempAppDataDir();
+  try {
+    const controller = await createDashboardAuthController({
+      storePath: path.join(appDataDir, "data", "dashboard-auth.json"),
+      sessionTtlSeconds: Symbol("ttl")
+    });
+    await controller.configure({
+      enabled: true,
+      password: "supersecret123"
+    });
+
+    const res = createHeaderCaptureResponse();
+    controller.appendSessionCookie(res, { headers: {} });
+
+    const cookie = String(res.headers.get("set-cookie") || "");
+    assert.match(cookie, /Max-Age=300/);
+    assert.equal(
+      controller.authenticateRequest({
+        headers: {
+          cookie: cookie.split(";")[0]
+        }
+      }).ok,
+      true
+    );
+  } finally {
+    await fs.rm(appDataDir, { recursive: true, force: true });
+  }
+});
+
+test("dashboard auth rejects decimal-form session ttl values", async () => {
+  const appDataDir = await createTempAppDataDir();
+  try {
+    const controller = await createDashboardAuthController({
+      storePath: path.join(appDataDir, "data", "dashboard-auth.json"),
+      sessionTtlSeconds: "999.9"
+    });
+    await controller.configure({
+      enabled: true,
+      password: "supersecret123"
+    });
+
+    const res = createHeaderCaptureResponse();
+    controller.appendSessionCookie(res, { headers: {} });
+
+    const cookie = String(res.headers.get("set-cookie") || "");
+    assert.match(cookie, /Max-Age=300/);
+  } finally {
+    await fs.rm(appDataDir, { recursive: true, force: true });
+  }
+});
+
 test("dashboard password protection locks admin routes and stores only a local hash", async () => {
   const appDataDir = await createTempAppDataDir();
   const port = await reserveFreePort();
@@ -62,6 +144,30 @@ test("dashboard password protection locks admin routes and stores only a local h
     assert.equal(body.configured, false);
     assert.equal(body.authenticated, false);
 
+    response = await fetch(`${backend.url}/dashboard-auth/login`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: "{\"password\":"
+    });
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
+    body = await response.json();
+    assert.equal(body.error, "invalid_json");
+
+    response = await fetch(`${backend.url}/dashboard-auth/config`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: "{\"enabled\":"
+    });
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
+    body = await response.json();
+    assert.equal(body.error, "invalid_json");
+
     response = await fetch(`${backend.url}/admin/state`);
     assert.equal(response.status, 200);
 
@@ -72,6 +178,19 @@ test("dashboard password protection locks admin routes and stores only a local h
       }
     });
     assert.equal(response.status, 401);
+    body = await response.json();
+    assert.equal(body.error, "dashboard_auth_required");
+
+    response = await fetch(`${backend.url}/admin/auth-pool/export`, {
+      headers: {
+        "cf-visitor": "{\"scheme\":\"https\"}",
+        "x-forwarded-for": "203.0.113.10"
+      }
+    });
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
+    assert.equal(response.headers.get("pragma"), "no-cache");
+    assert.equal(response.headers.get("expires"), "0");
     body = await response.json();
     assert.equal(body.error, "dashboard_auth_required");
 

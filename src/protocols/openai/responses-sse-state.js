@@ -1,18 +1,48 @@
 import crypto from "node:crypto";
 
-import { cloneJson, isRecordObject } from "./responses-output-items.js";
+import {
+  cloneJson,
+  isRecordObject,
+  mergeResponsesWebSearchCallOutputItems
+} from "./responses-output-items.js";
+
+function toSafeTokenCount(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+  }
+  if (typeof value !== "string") return fallback;
+
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return fallback;
+
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+
+function toStatusCode(value, fallback = 502) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;
+  }
+  if (typeof value !== "string") return fallback;
+
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return fallback;
+
+  const parsed = Number(trimmed);
+  return Number.isInteger(parsed) && parsed >= 100 && parsed <= 599 ? parsed : fallback;
+}
 
 export function normalizeResponsesUsageObject(usage, normalizeTokenUsage) {
   const normalized = normalizeTokenUsage(usage);
   if (!normalized) return undefined;
   const normalizedUsage = {
-    input_tokens: Number(normalized.inputTokens || 0),
-    output_tokens: Number(normalized.outputTokens || 0),
-    total_tokens: Number(normalized.totalTokens || 0)
+    input_tokens: toSafeTokenCount(normalized.inputTokens),
+    output_tokens: toSafeTokenCount(normalized.outputTokens),
+    total_tokens: toSafeTokenCount(normalized.totalTokens)
   };
   if (normalized.cachedInputTokens !== null) {
     normalizedUsage.input_tokens_details = {
-      cached_tokens: Number(normalized.cachedInputTokens || 0)
+      cached_tokens: toSafeTokenCount(normalized.cachedInputTokens)
     };
   }
   return normalizedUsage;
@@ -26,15 +56,15 @@ export function buildResponsesFailureResult(event) {
     rootError?.message ||
     event?.message ||
     "Upstream response failed.";
+  const statusCode =
+    event?.response?.status_code ||
+    event?.status_code ||
+    responseError?.status_code ||
+    rootError?.status_code ||
+    502;
   return {
     message: String(message || "Upstream response failed."),
-    statusCode: Number(
-      event?.response?.status_code ||
-        event?.status_code ||
-        responseError?.status_code ||
-        rootError?.status_code ||
-        502
-    ) || 502,
+    statusCode: toStatusCode(statusCode, 502),
     code: String(responseError?.code || rootError?.code || event?.code || "")
   };
 }
@@ -134,6 +164,11 @@ function mergeResponsesOutputItems(accumulatedOutput, completedOutput) {
     const accumulatedItem = merged[existingIndex];
     if (!isRecordObject(accumulatedItem) || !isRecordObject(completedItem)) {
       merged[existingIndex] = cloneJson(completedItem);
+      continue;
+    }
+
+    if (accumulatedItem.type === "web_search_call" && completedItem.type === "web_search_call") {
+      merged[existingIndex] = mergeResponsesWebSearchCallOutputItems(accumulatedItem, completedItem);
       continue;
     }
 

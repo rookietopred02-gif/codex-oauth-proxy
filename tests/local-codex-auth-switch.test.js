@@ -122,6 +122,62 @@ test("switchLocalCodexToChatgptAccount can reuse the existing local id_token whe
   });
 });
 
+test("switchLocalCodexToChatgptAccount ignores malformed token expiry metadata", async () => {
+  await withTempDir(async (dir) => {
+    const service = createCodexLocalAuthSwitchService({
+      extractOpenAICodexAccountId() {
+        return "acct_switch";
+      }
+    });
+    const authJsonPath = path.join(dir, "auth.json");
+    const configTomlPath = path.join(dir, "config.toml");
+
+    const result = await service.switchLocalCodexToChatgptAccount({
+      token: {
+        access_token: "new_access",
+        refresh_token: "new_refresh",
+        id_token: "new_id",
+        expires_at: Symbol("expires")
+      },
+      accountId: "acct_switch",
+      paths: { authJsonPath, configTomlPath }
+    });
+
+    const savedAuth = JSON.parse(await fs.readFile(authJsonPath, "utf8"));
+    assert.equal(result.ok, true);
+    assert.equal(savedAuth.tokens.access_token, "new_access");
+    assert.equal("expires_at" in savedAuth.tokens, false);
+  });
+});
+
+test("switchLocalCodexToChatgptAccount ignores decimal-form token expiry metadata", async () => {
+  await withTempDir(async (dir) => {
+    const service = createCodexLocalAuthSwitchService({
+      extractOpenAICodexAccountId() {
+        return "acct_switch";
+      }
+    });
+    const authJsonPath = path.join(dir, "auth.json");
+    const configTomlPath = path.join(dir, "config.toml");
+
+    const result = await service.switchLocalCodexToChatgptAccount({
+      token: {
+        access_token: "new_access",
+        refresh_token: "new_refresh",
+        id_token: "new_id",
+        expires_at: "1770007200.0"
+      },
+      accountId: "acct_switch",
+      paths: { authJsonPath, configTomlPath }
+    });
+
+    const savedAuth = JSON.parse(await fs.readFile(authJsonPath, "utf8"));
+    assert.equal(result.ok, true);
+    assert.equal(savedAuth.tokens.access_token, "new_access");
+    assert.equal("expires_at" in savedAuth.tokens, false);
+  });
+});
+
 test("switchLocalCodexToChatgptAccount rejects accounts without any usable id_token", async () => {
   await withTempDir(async (dir) => {
     const service = createCodexLocalAuthSwitchService({
@@ -192,4 +248,45 @@ test("normalizeToken preserves id_token across stored pool tokens", () => {
     }
   );
   assert.equal(preserved.id_token, "id_old");
+});
+
+test("normalizeToken ignores malformed expiry metadata", () => {
+  const beforeSec = Math.floor(Date.now() / 1000);
+  const normalized = normalizeToken(
+    {
+      access_token: "access_next",
+      expires_in: Symbol("bad-expires-in"),
+      expires_at: "not-a-number"
+    },
+    {
+      refresh_token: "refresh_old"
+    }
+  );
+  const afterSec = Math.floor(Date.now() / 1000);
+
+  assert.equal(normalized.refresh_token, "refresh_old");
+  assert.ok(normalized.expires_at >= beforeSec + 3600);
+  assert.ok(normalized.expires_at <= afterSec + 3600);
+});
+
+test("normalizeToken ignores decimal-form expiry metadata", () => {
+  const originalNow = Date.now;
+  Date.now = () => 1770000000000;
+  try {
+    const normalized = normalizeToken(
+      {
+        access_token: "access_next",
+        expires_in: "1200.0",
+        expires_at: "1770007200.5"
+      },
+      {
+        refresh_token: "refresh_old"
+      }
+    );
+
+    assert.equal(normalized.refresh_token, "refresh_old");
+    assert.equal(normalized.expires_at, 1770003600);
+  } finally {
+    Date.now = originalNow;
+  }
 });

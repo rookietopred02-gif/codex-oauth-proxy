@@ -3,10 +3,31 @@ const RAW_BODY_PROMISE = Symbol("codexProMax.rawBodyPromise");
 const JSON_BODY_CACHE = Symbol("codexProMax.jsonBody");
 export const DEFAULT_MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 
+function parseIntegerValue(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : null;
+  }
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function toHttpStatusCode(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;
+  }
+  if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+    return Number(value);
+  }
+  return fallback;
+}
+
 function resolveMaxBodyBytes(options = {}) {
-  const configured = Number(options.maxBytes ?? options.maxBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES);
-  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_MAX_REQUEST_BODY_BYTES;
-  return Math.max(1, Math.floor(configured));
+  const configured = parseIntegerValue(options.maxBytes ?? options.maxBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES);
+  if (configured === null || configured <= 0) return DEFAULT_MAX_REQUEST_BODY_BYTES;
+  return configured;
 }
 
 function createBodyTooLargeError(maxBytes) {
@@ -14,6 +35,21 @@ function createBodyTooLargeError(maxBytes) {
   error.code = "request_body_too_large";
   error.statusCode = 413;
   return error;
+}
+
+export function isRequestBodyError(err) {
+  return err?.code === "invalid_json" || err?.code === "request_body_too_large";
+}
+
+export function isRequestBodyTooLargeError(err) {
+  return err?.code === "request_body_too_large";
+}
+
+export function getRequestBodyErrorStatus(err, fallbackStatus = 400) {
+  const statusCode = toHttpStatusCode(err?.statusCode ?? fallbackStatus, fallbackStatus);
+  return Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599
+    ? statusCode
+    : fallbackStatus;
 }
 
 function setRawBodyCache(req, rawBody) {
@@ -55,8 +91,8 @@ export async function readRawBody(req, options = {}) {
 
   req[RAW_BODY_PROMISE] = (async () => {
     const maxBytes = resolveMaxBodyBytes(options);
-    const contentLength = Number(req.headers?.["content-length"] || 0);
-    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    const contentLength = parseIntegerValue(req.headers?.["content-length"] || 0);
+    if (contentLength !== null && contentLength > maxBytes) {
       throw createBodyTooLargeError(maxBytes);
     }
     const chunks = [];
@@ -104,6 +140,8 @@ export async function readJsonBody(req, options = {}) {
     return parsed;
   } catch {
     const error = new Error("Body must be valid JSON.");
+    error.code = "invalid_json";
+    error.statusCode = 400;
     if (req && typeof req === "object") {
       req[JSON_BODY_CACHE] = { ok: false, error };
     }

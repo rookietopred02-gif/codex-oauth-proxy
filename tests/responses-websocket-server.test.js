@@ -55,6 +55,37 @@ function createControllableReadableStream() {
   };
 }
 
+function createDelayedCompletionResponsesStream({ firstEvent, terminalEvent, delayMs = 50 }) {
+  const encoder = new TextEncoder();
+  let completionTimer = null;
+  let upstreamClosed = false;
+  let completedEnqueued = false;
+
+  return {
+    stream: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(firstEvent));
+        completionTimer = setTimeout(() => {
+          if (upstreamClosed) return;
+          completedEnqueued = true;
+          try {
+            controller.enqueue(encoder.encode(terminalEvent));
+            controller.close();
+          } catch {}
+        }, delayMs);
+        completionTimer.unref?.();
+      },
+      cancel() {
+        upstreamClosed = true;
+        if (completionTimer) clearTimeout(completionTimer);
+      }
+    }),
+    get completedEnqueued() {
+      return completedEnqueued;
+    }
+  };
+}
+
 async function listen(server) {
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -140,6 +171,21 @@ function createJsonMessageQueue(ws) {
       ws.off("error", handleError);
     }
   };
+}
+
+async function withTimeout(promise, message, ms = 1000) {
+  let timeout = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), ms);
+        timeout.unref?.();
+      })
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function createAuthContext(sharedApiKey = "test-proxy-key") {
@@ -292,6 +338,164 @@ test("Responses WebSocket forwards upstream response events and remembers comple
     assert.equal(recordedRequest?.proxyApiKeyLabel, "legacy env LOCAL_API_KEY");
     assert.match(String(recordedRequest?.responseBody || ""), /response\.completed/);
   } finally {
+    ws?.close();
+    await runtime.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Responses WebSocket flushes official SSE events before upstream completion", async () => {
+  const server = createServer();
+  const helpers = createResponsesHelpers();
+  const upstream = createDelayedCompletionResponsesStream({
+    firstEvent:
+      'event: response.mcp_call_arguments.delta\n' +
+      'data: {"type":"response.mcp_call_arguments.delta","item_id":"mcp_1","output_index":0,"sequence_number":1,"delta":"{\\"city\\""}\n\n',
+    terminalEvent:
+      'event: response.completed\n' +
+      'data: {"type":"response.completed","response":{"id":"resp_ws_stream","status":"completed","usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}\n\n'
+  });
+  let successCount = 0;
+
+  const runtime = attachResponsesWebSocketServer(server, {
+    ...createAuthContext(),
+    async openResponsesCreateProxySession() {
+      return {
+        upstream: new Response(upstream.stream, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream"
+          }
+        }),
+        release() {},
+        async markFailure() {},
+        async markSuccess() {
+          successCount += 1;
+        },
+        rememberCompletion() {},
+        forgetPinnedAffinity() {}
+      };
+    },
+    parseResponsesResultFromSse: helpers.parseResponsesResultFromSse,
+    readUpstreamTextOrThrow: async (response) => await response.text(),
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+  });
+
+  let ws;
+  let queue;
+  try {
+    const baseUrl = await listen(server);
+    ws = await connectSocket(`${baseUrl}/v1/responses`, {
+      Authorization: "Bearer test-proxy-key"
+    });
+    queue = createJsonMessageQueue(ws);
+
+    ws.send(
+      JSON.stringify({
+        type: "response.create",
+        stream: true,
+        model: "gpt-5.4",
+        input: "hello"
+      })
+    );
+
+    const delta = await withTimeout(queue.next(), "Timed out waiting for WebSocket stream delta.");
+    assert.equal(delta.type, "response.mcp_call_arguments.delta");
+    assert.equal(delta.item_id, "mcp_1");
+    assert.equal(delta.delta, "{\"city\"");
+    assert.equal(upstream.completedEnqueued, false);
+    assert.equal(successCount, 0);
+
+    const completed = await withTimeout(queue.next(), "Timed out waiting for WebSocket stream completion.");
+    assert.equal(completed.type, "response.completed");
+    assert.equal(completed.response?.id, "resp_ws_stream");
+    assert.equal(successCount, 1);
+  } finally {
+    queue?.dispose();
+    ws?.close();
+    await runtime.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Responses WebSocket honors configured idle timeout for upstream SSE streams", async () => {
+  const server = createServer();
+  const helpers = createResponsesHelpers();
+  const authContext = createAuthContext();
+  authContext.config.upstreamStreamIdleTimeoutMs = 7;
+  let cancelReason = null;
+
+  const runtime = attachResponsesWebSocketServer(server, {
+    ...authContext,
+    async openResponsesCreateProxySession() {
+      return {
+        upstream: new Response(
+          new ReadableStream({
+            cancel(reason) {
+              cancelReason = reason;
+            }
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "text/event-stream"
+            }
+          }
+        ),
+        release() {},
+        async markFailure() {},
+        async markSuccess() {},
+        rememberCompletion() {},
+        forgetPinnedAffinity() {}
+      };
+    },
+    parseResponsesResultFromSse: helpers.parseResponsesResultFromSse,
+    readUpstreamTextOrThrow: async (response) => await response.text(),
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+  });
+
+  let ws;
+  let queue;
+  try {
+    const baseUrl = await listen(server);
+    ws = await connectSocket(`${baseUrl}/v1/responses`, {
+      Authorization: "Bearer test-proxy-key"
+    });
+    queue = createJsonMessageQueue(ws);
+
+    ws.send(
+      JSON.stringify({
+        type: "response.create",
+        stream: true,
+        model: "gpt-5.4",
+        input: "hello"
+      })
+    );
+
+    const failed = await withTimeout(
+      queue.next(),
+      "Timed out waiting for WebSocket upstream idle timeout.",
+      500
+    );
+    assert.equal(failed.type, "response.failed");
+    assert.equal(failed.response?.status, "failed");
+    assert.equal(failed.response?.status_code, 502);
+    assert.match(failed.response?.error?.message || "", /7ms/);
+    assert.equal(cancelReason?.code, "UPSTREAM_STREAM_IDLE_TIMEOUT");
+  } finally {
+    queue?.dispose();
     ws?.close();
     await runtime.close();
     await new Promise((resolve) => server.close(resolve));
@@ -539,6 +743,7 @@ test("Responses WebSocket rejects completed JSON instead of falling back to HTTP
         },
         authAccountId: "acct_ws_json",
         compatibilityHint: "",
+        retryCount: "1.9",
         rememberCompletion(completed) {
           rememberedCompletion = completed;
         },
@@ -590,12 +795,76 @@ test("Responses WebSocket rejects completed JSON instead of falling back to HTTP
     assert.equal(recordedRequest?.method, "WS");
     assert.equal(recordedRequest?.transportType, "websocket");
     assert.equal(recordedRequest?.statusCode, 502);
+    assert.equal(recordedRequest?.upstreamRetryCount, 0);
   } finally {
     ws?.close();
     await runtime.close();
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+for (const { label, statusCode } of [
+  { label: "symbol", statusCode: Symbol("status") },
+  { label: "decimal-form", statusCode: "500.0" },
+  { label: "out-of-range", statusCode: 700 }
+]) {
+  test(`Responses WebSocket coerces ${label} session error statuses to failure responses`, async () => {
+    const server = createServer();
+    const helpers = createResponsesHelpers();
+    let recordedRequest = null;
+
+    const runtime = attachResponsesWebSocketServer(server, {
+      ...createAuthContext(),
+      async openResponsesCreateProxySession() {
+        const err = new Error("Session setup failed.");
+        err.statusCode = statusCode;
+        err.failureCode = "session_setup_failed";
+        throw err;
+      },
+      parseResponsesResultFromSse: helpers.parseResponsesResultFromSse,
+      readUpstreamTextOrThrow: async (response) => await response.text(),
+      parseJsonLoose(value) {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return null;
+        }
+      },
+      recordRecentProxyRequest(row) {
+        recordedRequest = row;
+      }
+    });
+
+    let ws;
+    try {
+      const baseUrl = await listen(server);
+      ws = await connectSocket(`${baseUrl}/v1/responses`, {
+        Authorization: "Bearer test-proxy-key"
+      });
+      const queue = createJsonMessageQueue(ws);
+
+      ws.send(
+        JSON.stringify({
+          type: "response.create",
+          model: "gpt-5.4",
+          input: "hello"
+        })
+      );
+
+      const failed = await withTimeout(queue.next(), "Timed out waiting for WebSocket setup failure.");
+      assert.equal(failed.type, "response.failed");
+      assert.equal(failed.response?.status_code, 502);
+      assert.equal(failed.response?.error?.code, "session_setup_failed");
+      assert.equal(failed.response?.error?.message, "Session setup failed.");
+      assert.equal(recordedRequest?.statusCode, 502);
+      assert.equal(recordedRequest?.transportType, "websocket");
+    } finally {
+      ws?.close();
+      await runtime.close();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+}
 
 test("Responses WebSocket accepts upstream SSE without content-type header", async () => {
   const server = createServer();

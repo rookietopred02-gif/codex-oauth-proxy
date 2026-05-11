@@ -3164,7 +3164,9 @@
     <script type="module">
       import { api } from "./dashboard/api.js";
       import { createDashboardAuthFeature } from "./dashboard/auth.js";
+      import { formatDashboardDateTime } from "./dashboard/date-time.js";
       import { createPublicAccessFeature } from "./dashboard/public-access.js";
+      import { formatRecentRequestRate, formatTokenMetric, sumRecentRequestTotals } from "./dashboard/request-metrics.js";
       import { createRecentRequestsUi } from "./dashboard/requests.js";
       import { createDiagnosticsFeature } from "./app/features/diagnostics.js";
       import { createPoolFeature } from "./app/features/pool.js";
@@ -3193,7 +3195,6 @@
       let autoSaveReady = false;
       let autoSaveSnapshot = "";
       let lastApiKeySummary = { keys: [] };
-      let transientApiKeyValues = new Map();
       const customSelectRegistry = new Map();
       let customSelectSeq = 0;
       let activeCustomSelectKey = "";
@@ -3798,17 +3799,7 @@
       }
 
       function fmtToken(n) {
-        if (!Number.isFinite(n)) return "-";
-        if (Math.abs(n) < 1000) return String(n);
-        const v = n / 1000;
-        if (Math.abs(v) >= 100) return `${Math.round(v)}k`;
-        return `${v.toFixed(1).replace(/\\.0$/, "")}k`;
-      }
-
-      function parseTokenMetric(value) {
-        if (value === null || value === undefined || value === "") return null;
-        const parsed = Number(value);
-        return Number.isFinite(parsed) ? parsed : null;
+        return formatTokenMetric(n);
       }
 
       function fmtUnixSec(sec) {
@@ -3816,26 +3807,8 @@
         return formatDateTime(sec * 1000, { dateStyle: "medium", timeStyle: "medium" });
       }
 
-      function getUiDateLocale() {
-        if (uiLang === "zh-hans") return "zh-CN";
-        if (uiLang === "zh-hant") return "zh-TW";
-        return "en-US";
-      }
-
       function formatDateTime(value, options = {}) {
-        const date = value instanceof Date ? value : new Date(Number(value));
-        if (!Number.isFinite(date.getTime())) return "-";
-        return new Intl.DateTimeFormat(getUiDateLocale(), {
-          hour12: uiLang === "en",
-          ...options
-        }).format(date);
-      }
-
-      function fmtRate(value) {
-        const n = Number(value);
-        if (!Number.isFinite(n) || n <= 0) return "0";
-        if (n >= 100) return String(Math.round(n));
-        return n.toFixed(1).replace(/\.0$/, "");
+        return formatDashboardDateTime(value, uiLang, options);
       }
 
       function fmtCooldown(cooldownUntilSec) {
@@ -3847,65 +3820,6 @@
         const m = Math.floor(remain / 60);
         const s = remain % 60;
         return isZh ? `${m}分 ${s}秒` : `${m}m ${s}s`;
-      }
-
-      function sumRecentRequestTotals(rows) {
-        const sourceRows = Array.isArray(rows) ? rows : [];
-        const totals = sourceRows.reduce(
-          (acc, row) => {
-            const input = parseTokenMetric(row?.inputTokens);
-            const cachedInput = parseTokenMetric(row?.cachedInputTokens);
-            const output = parseTokenMetric(row?.outputTokens);
-            const total = parseTokenMetric(row?.totalTokens);
-            const hasInput = input !== null;
-            const hasCachedInput = cachedInput !== null;
-            const hasOutput = output !== null;
-            const hasTotal = total !== null;
-            acc.count += 1;
-            if (hasInput) {
-              acc.input += input;
-              acc.knownInput += 1;
-            }
-            if (hasCachedInput) {
-              acc.cachedInput += cachedInput;
-              acc.knownCachedInput += 1;
-            }
-            if (hasOutput) {
-              acc.output += output;
-              acc.knownOutput += 1;
-            }
-            if (hasTotal) {
-              acc.total += total;
-              acc.knownTotal += 1;
-            } else if (hasInput || hasOutput) {
-              acc.total += (hasInput ? input : 0) + (hasOutput ? output : 0);
-              acc.knownTotal += 1;
-            }
-            return acc;
-          },
-          {
-            count: 0,
-            input: 0,
-            cachedInput: 0,
-            output: 0,
-            total: 0,
-            rpm: 0,
-            knownInput: 0,
-            knownCachedInput: 0,
-            knownOutput: 0,
-            knownTotal: 0
-          }
-        );
-        const timestamps = sourceRows
-          .map((row) => Number(row?.ts || 0))
-          .filter((ts) => Number.isFinite(ts) && ts > 0);
-        if (timestamps.length > 0) {
-          const minTs = Math.min(...timestamps);
-          const maxTs = Math.max(...timestamps);
-          const windowMinutes = Math.max(1, (maxTs - minTs) / 60000);
-          totals.rpm = totals.count / windowMinutes;
-        }
-        return totals;
       }
 
       function getCustomSelectKey(select) {
@@ -4334,8 +4248,6 @@
 
       function getApiKeyDisplayName(key) {
         const id = String(key?.id || "").trim();
-        const fullKey = String(key?.value || transientApiKeyValues.get(id) || "").trim();
-        if (fullKey) return fullKey;
         const label = String(key?.label || "").trim();
         if (!isGeneratedApiKeyLabel(label)) return label;
         const prefix = String(key?.prefix || "").trim();
@@ -4430,7 +4342,7 @@
         const safeRows = filterRecentRequestsByApiKey(allRows);
         const requestTotals = sumRecentRequestTotals(safeRows);
         setTextAndPulse("recentReqCount", String(requestTotals.count), false);
-        setTextAndPulse("recentReqRpm", fmtRate(requestTotals.rpm), false);
+        setTextAndPulse("recentReqRpm", formatRecentRequestRate(requestTotals.rpm), false);
         setTextAndPulse("recentReqInputTotal", requestTotals.knownInput > 0 ? fmtToken(requestTotals.input) : "-", false);
         setTextAndPulse(
           "recentReqCachedInputTotal",
@@ -4593,10 +4505,6 @@
       function renderApiKeySummary(summary) {
         const container = $("apiKeyList");
         const keys = Array.isArray(summary?.keys) ? summary.keys : [];
-        const visibleIds = new Set(keys.map((k) => String(k?.id || "")));
-        for (const id of Array.from(transientApiKeyValues.keys())) {
-          if (!visibleIds.has(id)) transientApiKeyValues.delete(id);
-        }
         lastApiKeySummary = { ...(summary || {}), keys };
         if (keys.length === 0) {
           container.innerHTML = `<div class="account-empty account-empty--compact">${escapeHtml(t("api_keys_empty"))}</div>`;
@@ -4677,12 +4585,8 @@
           })
         });
         const keyValue = String(data?.apiKey || "").trim();
-        const keyId = String(data?.key?.id || "").trim();
         const wrap = $("apiKeyGeneratedWrap");
         const valueEl = $("apiKeyGeneratedValue");
-        if (keyId && keyValue) {
-          transientApiKeyValues.set(keyId, keyValue);
-        }
         wrap.hidden = !keyValue;
         valueEl.textContent = keyValue || "-";
         $("apiKeyLabel").value = "";

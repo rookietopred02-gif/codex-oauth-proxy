@@ -1,9 +1,30 @@
 import { isCodexTokenInvalidatedError } from "./codex-token-invalidated.js";
 
+function toIntegerNumber(value, fallback = null) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : fallback;
+  }
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : fallback;
+  }
+  return fallback;
+}
+
 function clampInteger(value, fallback, min, max) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.min(max, Math.floor(n)));
+  const n = toIntegerNumber(value, null);
+  if (n === null) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function toHttpStatusCode(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;
+  }
+  if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+    return Number(value);
+  }
+  return fallback;
 }
 
 export function normalizeExpiredAccountCleanupConfig(input = {}) {
@@ -21,9 +42,14 @@ function resolveAccountRef(account) {
 }
 
 export function shouldAutoRemoveInvalidatedAccount(account) {
-  const invalidatedAt = Number(account?.token_invalidated_at || account?.tokenInvalidatedAt || 0);
-  if (Number.isFinite(invalidatedAt) && invalidatedAt > 0) return true;
-  const statusCode = Number(account?.last_status_code || account?.lastStatusCode || 0);
+  const invalidatedAt = clampInteger(
+    account?.token_invalidated_at || account?.tokenInvalidatedAt || 0,
+    0,
+    0,
+    Number.MAX_SAFE_INTEGER
+  );
+  if (invalidatedAt > 0) return true;
+  const statusCode = toHttpStatusCode(account?.last_status_code || account?.lastStatusCode || 0, 0);
   const lastError = String(account?.last_error || account?.lastError || "");
   return isCodexTokenInvalidatedError(statusCode, lastError);
 }
@@ -38,7 +64,12 @@ export function findInvalidatedAccountCleanupCandidates(accounts) {
         String(account?.identity_id || account?.identityId || account?.entry_id || account?.entryId || "").trim() ||
         null,
       accountId: String(account?.account_id || account?.accountId || "").trim() || null,
-      invalidatedAt: Number(account?.token_invalidated_at || account?.tokenInvalidatedAt || 0) || 0
+      invalidatedAt: clampInteger(
+        account?.token_invalidated_at || account?.tokenInvalidatedAt || 0,
+        0,
+        0,
+        Number.MAX_SAFE_INTEGER
+      )
     }))
     .filter((candidate) => candidate.ref);
 }

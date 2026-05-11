@@ -20,6 +20,50 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
     return text.length > 0 ? text : "";
   }
 
+  function toIntegerNumber(value, fallback = 0) {
+    if (value === null || value === undefined || value === "") return fallback;
+    if (typeof value === "number") {
+      return Number.isSafeInteger(value) ? value : fallback;
+    }
+    if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+      const parsed = Number(value.trim());
+      return Number.isSafeInteger(parsed) ? parsed : fallback;
+    }
+    return fallback;
+  }
+
+  function toNonNegativeIntegerNumber(value, fallback = 0) {
+    const parsed = toIntegerNumber(value, null);
+    return parsed !== null && parsed >= 0 ? parsed : fallback;
+  }
+
+  function toPositiveIntegerNumber(value, fallback = 0) {
+    const parsed = toIntegerNumber(value, null);
+    return parsed !== null && parsed > 0 ? parsed : fallback;
+  }
+
+  function toNonNegativeInteger(value, fallback = 0) {
+    return toNonNegativeIntegerNumber(value, fallback);
+  }
+
+  function toHttpStatusCode(value, fallback = 0) {
+    if (typeof value === "number") {
+      return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;
+    }
+    if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+      return Number(value);
+    }
+    return fallback;
+  }
+
+  function readSlotValue(value) {
+    try {
+      return parseSlotValue(value);
+    } catch {
+      return null;
+    }
+  }
+
   function extractTokenAccountId(tokenLike) {
     const accessToken = tokenLike?.access_token || tokenLike?.access || "";
     return normalizeNonEmptyString(extractAccountId(accessToken));
@@ -245,8 +289,8 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
     );
     const identityId = choosePreferredCodexEntryId(existing, incoming, accountId);
     const createdAtCandidates = [existing?.created_at, incoming?.created_at]
-      .map((value) => Number(value || 0))
-      .filter((value) => Number.isFinite(value) && value > 0);
+      .map((value) => toPositiveIntegerNumber(value, null))
+      .filter((value) => value !== null);
     const createdAt =
       createdAtCandidates.length > 0
         ? Math.min(...createdAtCandidates)
@@ -266,22 +310,31 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
       }),
       enabled: existing?.enabled !== false || incoming?.enabled !== false,
       token,
-      slot: parseSlotValue(existing?.slot) ?? parseSlotValue(incoming?.slot),
+      slot: readSlotValue(existing?.slot) ?? readSlotValue(incoming?.slot),
       created_at: createdAt,
-      last_used_at: Math.max(Number(existing?.last_used_at || 0), Number(incoming?.last_used_at || 0)),
-      failure_count: Math.max(Number(existing?.failure_count || 0), Number(incoming?.failure_count || 0)),
-      cooldown_until: Math.max(Number(existing?.cooldown_until || 0), Number(incoming?.cooldown_until || 0)),
+      last_used_at: Math.max(
+        toNonNegativeIntegerNumber(existing?.last_used_at, 0),
+        toNonNegativeIntegerNumber(incoming?.last_used_at, 0)
+      ),
+      failure_count: Math.max(
+        toNonNegativeIntegerNumber(existing?.failure_count, 0),
+        toNonNegativeIntegerNumber(incoming?.failure_count, 0)
+      ),
+      cooldown_until: Math.max(
+        toNonNegativeIntegerNumber(existing?.cooldown_until, 0),
+        toNonNegativeIntegerNumber(incoming?.cooldown_until, 0)
+      ),
       last_error: normalizeNonEmptyString(incoming?.last_error) || normalizeNonEmptyString(existing?.last_error),
-      last_status_code: Number(incoming?.last_status_code || existing?.last_status_code || 0),
+      last_status_code: toHttpStatusCode(incoming?.last_status_code || existing?.last_status_code || 0, 0),
       token_invalidated_at: Math.max(
-        Number(existing?.token_invalidated_at || 0),
-        Number(incoming?.token_invalidated_at || 0)
+        toNonNegativeIntegerNumber(existing?.token_invalidated_at, 0),
+        toNonNegativeIntegerNumber(incoming?.token_invalidated_at, 0)
       ),
       usage_snapshot: usageSnapshot,
       usage_updated_at: Math.max(
-        Number(existing?.usage_updated_at || 0),
-        Number(incoming?.usage_updated_at || 0),
-        Number(usageSnapshot?.fetched_at || 0)
+        toNonNegativeIntegerNumber(existing?.usage_updated_at, 0),
+        toNonNegativeIntegerNumber(incoming?.usage_updated_at, 0),
+        toNonNegativeIntegerNumber(usageSnapshot?.fetched_at, 0)
       )
     };
   }
@@ -454,23 +507,24 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
       accountId,
       entryId
     });
+    const nowSec = Math.floor(Date.now() / 1000);
     return {
       identity_id: entryId,
       account_id: accountId,
       label,
-      slot: parseSlotValue(raw.slot),
+      slot: readSlotValue(raw.slot),
       enabled: raw.enabled !== false,
       token: normalizedToken,
-      created_at: Number(raw.created_at || raw.createdAt || Math.floor(Date.now() / 1000)),
-      last_used_at: Number(raw.last_used_at || raw.lastUsedAt || 0),
-      failure_count: Number(raw.failure_count || raw.failureCount || 0),
-      cooldown_until: Number(raw.cooldown_until || raw.cooldownUntil || 0),
+      created_at: toPositiveIntegerNumber(raw.created_at || raw.createdAt || nowSec, nowSec),
+      last_used_at: toNonNegativeIntegerNumber(raw.last_used_at || raw.lastUsedAt || 0, 0),
+      failure_count: toNonNegativeIntegerNumber(raw.failure_count || raw.failureCount || 0, 0),
+      cooldown_until: toNonNegativeIntegerNumber(raw.cooldown_until || raw.cooldownUntil || 0, 0),
       last_error: typeof raw.last_error === "string" ? raw.last_error : "",
-      last_status_code: Number(raw.last_status_code || raw.lastStatusCode || 0),
-      token_invalidated_at: Number(raw.token_invalidated_at || raw.tokenInvalidatedAt || 0),
+      last_status_code: toHttpStatusCode(raw.last_status_code || raw.lastStatusCode || 0, 0),
+      token_invalidated_at: toNonNegativeIntegerNumber(raw.token_invalidated_at || raw.tokenInvalidatedAt || 0, 0),
       usage_snapshot:
         raw.usage_snapshot && typeof raw.usage_snapshot === "object" ? raw.usage_snapshot : null,
-      usage_updated_at: Number(raw.usage_updated_at || raw.usageUpdatedAt || 0)
+      usage_updated_at: toNonNegativeIntegerNumber(raw.usage_updated_at || raw.usageUpdatedAt || 0, 0)
     };
   }
 
@@ -482,9 +536,9 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
     const needsAssignment = [];
 
     for (const account of accounts) {
-      const slot = parseSlotValue(account?.slot);
+      const slot = readSlotValue(account?.slot);
       if (slot && !used.has(slot)) {
-        if (Number(account.slot || 0) !== slot) {
+        if (toPositiveIntegerNumber(account.slot, null) !== slot) {
           account.slot = slot;
           changed = true;
         }
@@ -524,7 +578,7 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
       ...createDefaultCodexAccountPoolStore(),
       ...src,
       rotation: {
-        next_index: Number(src?.rotation?.next_index || src?.rotation?.nextIndex || 0)
+        next_index: toNonNegativeInteger(src?.rotation?.next_index || src?.rotation?.nextIndex || 0, 0)
       }
     };
 
@@ -742,7 +796,7 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
     const entryId = deriveCodexPoolEntryIdFromToken(normalizedToken, { planType, accountId });
     const tokenEmail = extractEmailFromTokenLike(normalizedToken);
     const label = typeof extra.label === "string" ? extra.label.trim() : "";
-    const slot = parseSlotValue(extra.slot);
+    const slot = readSlotValue(extra.slot);
     const forceReplaceSlot =
       extra.force === true || extra.force === 1 || String(extra.force || "").trim() === "1";
     const nowSec = Math.floor(Date.now() / 1000);
@@ -750,7 +804,7 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
     if (!Array.isArray(store.accounts)) store.accounts = [];
 
     const existingIdx = store.accounts.findIndex((account) => getCodexPoolEntryId(account) === entryId);
-    const slotIdx = slot ? store.accounts.findIndex((account) => Number(account.slot || 0) === slot) : -1;
+    const slotIdx = slot ? store.accounts.findIndex((account) => toPositiveIntegerNumber(account.slot, null) === slot) : -1;
 
     let targetIdx = existingIdx;
     if (targetIdx < 0 && slotIdx >= 0 && forceReplaceSlot) {
@@ -766,7 +820,7 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
     if (targetIdx >= 0) {
       const isSameAccountUpdate = existingIdx >= 0;
       if (isSameAccountUpdate) {
-        const currentSlot = Number(store.accounts[targetIdx].slot || 0) || null;
+        const currentSlot = toPositiveIntegerNumber(store.accounts[targetIdx].slot, null);
         const requestedDifferentSlot =
           resolvedIncomingSlot !== null && currentSlot !== null && resolvedIncomingSlot !== currentSlot;
         action =
@@ -781,7 +835,7 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
         typeof store.accounts[targetIdx].label === "string" && store.accounts[targetIdx].label.trim().length > 0
           ? store.accounts[targetIdx].label.trim()
           : "";
-      const currentSlot = Number(store.accounts[targetIdx].slot || 0) || null;
+      const currentSlot = toPositiveIntegerNumber(store.accounts[targetIdx].slot, null);
       const keepSlotBecauseSameAccount =
         isSameAccountUpdate &&
         resolvedIncomingSlot !== null &&
@@ -819,8 +873,8 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
         cooldown_until: 0,
         usage_snapshot: usageSnapshot || store.accounts[targetIdx].usage_snapshot || null,
         usage_updated_at: usageSnapshot
-          ? Number(usageSnapshot.fetched_at || nowSec) || nowSec
-          : Number(store.accounts[targetIdx].usage_updated_at || 0)
+          ? toPositiveIntegerNumber(usageSnapshot.fetched_at || nowSec, nowSec)
+          : toNonNegativeIntegerNumber(store.accounts[targetIdx].usage_updated_at, 0)
       };
     } else {
       store.accounts.push({
@@ -843,21 +897,21 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
         last_status_code: 0,
         token_invalidated_at: 0,
         usage_snapshot: usageSnapshot,
-        usage_updated_at: usageSnapshot ? Number(usageSnapshot.fetched_at || nowSec) || nowSec : 0
+        usage_updated_at: usageSnapshot ? toPositiveIntegerNumber(usageSnapshot.fetched_at || nowSec, nowSec) : 0
       });
     }
 
     store.active_account_id = entryId;
     store.token = normalizedToken;
     store.rotation = store.rotation || { next_index: 0 };
-    if (!Number.isFinite(store.rotation.next_index)) store.rotation.next_index = 0;
+    store.rotation.next_index = toNonNegativeInteger(store.rotation.next_index, 0);
 
     if (extra.skipSlotNormalization !== true) {
       normalizeCodexAccountSlots(store.accounts);
     }
 
     const resolvedAccount = store.accounts.find((account) => getCodexPoolEntryId(account) === entryId);
-    const resolvedSlot = Number(resolvedAccount?.slot || 0) || null;
+    const resolvedSlot = toPositiveIntegerNumber(resolvedAccount?.slot, null);
 
     return { accountId, entryId, slot: resolvedSlot, action, email: tokenEmail || null, planType, account: resolvedAccount || null };
   }
@@ -948,7 +1002,7 @@ export function createCodexAuthPoolCoreHelpers(options = {}) {
       store.active_account_id = nextActiveEntryId || null;
       store.token = nextActive?.token || null;
       store.rotation = store.rotation || { next_index: 0 };
-      if (!Number.isFinite(store.rotation.next_index)) store.rotation.next_index = 0;
+      store.rotation.next_index = toNonNegativeInteger(store.rotation.next_index, 0);
       if (nextAccounts.length > 0) {
         store.rotation.next_index = store.rotation.next_index % nextAccounts.length;
       }

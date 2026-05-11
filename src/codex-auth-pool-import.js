@@ -17,9 +17,14 @@ function normalizeBooleanLike(value) {
 
 function normalizeIntegerLike(value) {
   if (value === null || value === undefined || value === "") return null;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return null;
-  return Math.trunc(parsed);
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : null;
+  }
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function normalizeImportFieldName(value) {
@@ -240,9 +245,9 @@ function flattenTokenCandidates(items) {
 const DEFAULT_USAGE_PROBE_CONCURRENCY = 4;
 
 function clampConcurrency(value, fallback = DEFAULT_USAGE_PROBE_CONCURRENCY) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(1, Math.min(12, Math.floor(n)));
+  const n = normalizeIntegerLike(value);
+  if (n === null) return fallback;
+  return Math.max(1, Math.min(12, n));
 }
 
 async function runWithConcurrency(items, concurrency, worker) {

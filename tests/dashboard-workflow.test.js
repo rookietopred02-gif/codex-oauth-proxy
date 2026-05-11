@@ -116,6 +116,38 @@ function installFakeDashboardDom() {
   };
 }
 
+function createRecentRequestElements(dom) {
+  const elements = new Map();
+  for (const [id, element] of [
+    ["reqTable", dom.createElement()],
+    ["ignoreReqBtn", dom.createElement(true)],
+    ["ignoreReqBtnLabel", dom.createElement()],
+    ["reqDetailTitle", dom.createElement()],
+    ["reqDetailMetaGrid", dom.createElement()],
+    ["reqDetailBackdrop", dom.createElement()],
+    ["reqDetailReqMeta", dom.createElement()],
+    ["reqDetailReqCode", dom.createElement()],
+    ["reqDetailReqLoadBtn", dom.createElement(true)],
+    ["reqDetailReqCopyBtn", dom.createElement(true)],
+    ["reqDetailResMeta", dom.createElement()],
+    ["reqDetailResCode", dom.createElement()],
+    ["reqDetailResLoadBtn", dom.createElement(true)],
+    ["reqDetailResCopyBtn", dom.createElement(true)]
+  ]) {
+    elements.set(id, element);
+  }
+  return elements;
+}
+
+function escapeTestHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 test("dashboard fallback picker only resolves cancel after focus returns with no files", async () => {
   const html = await fs.readFile(dashboardHtmlPath, "utf8");
 
@@ -148,6 +180,9 @@ test("dashboard custom select changes force autosave for Account Pool Filter", a
   const html = await fs.readFile(dashboardHtmlPath, "utf8");
 
   assert.match(html, /multiAccountPoolFilter/);
+  for (const value of ["all", "exclude-free", "standard-only", "team-only", "free-only"]) {
+    assert.match(html, new RegExp(`<option value="${value}"`));
+  }
   assert.match(html, /select\.dispatchEvent\(new Event\("input", \{ bubbles: true \}\)\);/);
   assert.match(html, /select\.dispatchEvent\(new Event\("change", \{ bubbles: true \}\)\);/);
   assert.match(html, /if \(CONFIG_FIELD_IDS\.includes\(select\.id\)\) \{\s*triggerAutoSaveNow\(\);\s*\}/);
@@ -173,6 +208,19 @@ test("dashboard copy buttons reuse clipboard fallback helper", async () => {
   assert.match(publicAccessFeature, /async function copyCurrentUrl\(\)[\s\S]*await copyTextToClipboard\(url\)/);
   assert.doesNotMatch(html, /\$\("apiKeyCopyBtn"\)[\s\S]*navigator\.clipboard\.writeText/);
   assert.doesNotMatch(publicAccessFeature, /navigator\.clipboard\.writeText/);
+});
+
+test("dashboard keeps one-time API key values out of reusable display names", async () => {
+  const html = await fs.readFile(dashboardHtmlPath, "utf8");
+
+  assert.match(html, /valueEl\.textContent = keyValue \|\| "-";/);
+  assert.doesNotMatch(html, /transientApiKeyValues/);
+  assert.doesNotMatch(html, /key\?\.value/);
+  assert.match(html, /function getApiKeyDisplayName\(key\) {[\s\S]*const label = String\(key\?\.label/);
+  assert.match(
+    html,
+    /function getApiKeyDisplayName\(key\) {[\s\S]*const id = String\(key\?\.id \|\| ""\)\.trim\(\);[\s\S]*return prefix \|\| id;/
+  );
 });
 
 test("dashboard auth boot renders state before slow secondary hydration", async () => {
@@ -245,6 +293,8 @@ test("dashboard request detail modal uses load-full controls for packet-heavy pa
   assert.match(html, /id="recentReqApiKeyTabs"/);
   assert.match(html, /data-i18n="recent_requests_rpm"/);
   assert.match(html, /data-i18n="recent_requests_cached_input"/);
+  assert.match(html, /import \{ formatRecentRequestRate, formatTokenMetric, sumRecentRequestTotals \}/);
+  assert.match(html, /function fmtToken\(n\) \{\s*return formatTokenMetric\(n\);\s*\}/);
   assert.match(html, /id="reqDetailReqLoadBtn"/);
   assert.match(html, /id="reqDetailResLoadBtn"/);
   assert.match(html, /recentRequestsUi\.loadRequestDetailFullPacket\("requestPacket"\)/);
@@ -276,7 +326,7 @@ test("dashboard self-test preserves the result text and only refreshes dashboard
 test("recent requests UI keeps the split module API and preview/full detail flow intact", { concurrency: false }, async () => {
   const { createRecentRequestsUi } = await import(recentRequestsUiPath);
   const dom = installFakeDashboardDom();
-  const elements = new Map();
+  const elements = createRecentRequestElements(dom);
   const clipboardWrites = [];
   const storage = new Map([["recording", "1"]]);
   const apiCalls = [];
@@ -302,25 +352,6 @@ test("recent requests UI keeps the split module API and preview/full detail flow
     id: "row-2",
     path: "/responses/v1/other"
   };
-
-  for (const [id, element] of [
-    ["reqTable", dom.createElement()],
-    ["ignoreReqBtn", dom.createElement(true)],
-    ["ignoreReqBtnLabel", dom.createElement()],
-    ["reqDetailTitle", dom.createElement()],
-    ["reqDetailMetaGrid", dom.createElement()],
-    ["reqDetailBackdrop", dom.createElement()],
-    ["reqDetailReqMeta", dom.createElement()],
-    ["reqDetailReqCode", dom.createElement()],
-    ["reqDetailReqLoadBtn", dom.createElement(true)],
-    ["reqDetailReqCopyBtn", dom.createElement(true)],
-    ["reqDetailResMeta", dom.createElement()],
-    ["reqDetailResCode", dom.createElement()],
-    ["reqDetailResLoadBtn", dom.createElement(true)],
-    ["reqDetailResCopyBtn", dom.createElement(true)]
-  ]) {
-    elements.set(id, element);
-  }
 
   const ui = createRecentRequestsUi({
     $(id) {
@@ -480,6 +511,377 @@ test("recent requests UI keeps the split module API and preview/full detail flow
   }
 });
 
+test("recent requests table escapes rendered row values", { concurrency: false }, async () => {
+  const { createRecentRequestsUi } = await import(recentRequestsUiPath);
+  const dom = installFakeDashboardDom();
+  const elements = createRecentRequestElements(dom);
+
+  const ui = createRecentRequestsUi({
+    $(id) {
+      const element = elements.get(id);
+      if (!element) throw new Error(`Missing element: ${id}`);
+      return element;
+    },
+    api: async () => {
+      throw new Error("Detail API should not be called while rendering rows.");
+    },
+    t: (key) => key,
+    tt: (key) => key,
+    escapeHtml: escapeTestHtml,
+    fmtToken: (value) => `<token-${value}>`,
+    formatDateTime: () => '<time data-xss="1">',
+    copyTextToClipboard: async () => {},
+    showCopyError(err) {
+      throw err;
+    },
+    readStoredBool: () => true,
+    writeStoredString: () => {},
+    recordingStorageKey: "recording",
+    resolveProtocolLabel: () => "Responses",
+    resolveModelDisplay: () => "gpt-5.4",
+    resolveAccountDisplay: () => "Account A",
+    resolveCompatibilityHint: () => "-"
+  });
+
+  try {
+    ui.renderRows([
+      {
+        id: 'row-"xss"',
+        ts: Date.UTC(2026, 3, 11, 10, 0, 0),
+        method: "POST",
+        transportType: "http",
+        path: '<img src=x onerror="alert(1)">',
+        inputTokens: 1,
+        cachedInputTokens: 2,
+        outputTokens: 3,
+        totalTokens: 4,
+        status: "<script>alert(1)</script>",
+        durationMs: '<svg onload="alert(1)">'
+      }
+    ]);
+
+    const html = elements.get("reqTable").innerHTML;
+    assert.doesNotMatch(html, /<img/i);
+    assert.doesNotMatch(html, /<script/i);
+    assert.doesNotMatch(html, /<svg/i);
+    assert.doesNotMatch(html, /<token-/i);
+    assert.doesNotMatch(html, /<time/i);
+    assert.match(html, /&lt;img/);
+    assert.doesNotMatch(html, /&lt;script/);
+    assert.doesNotMatch(html, /&lt;svg/);
+    assert.match(html, /&lt;token-1&gt;/);
+    assert.match(html, /&lt;time data-xss=&quot;1&quot;&gt;/);
+    assert.match(html, /<td class="req-status-ok">-<\/td>/);
+    assert.match(html, /<td>-<\/td>/);
+  } finally {
+    dom.restore();
+  }
+});
+
+test("request detail modal escapes rendered metadata values", { concurrency: false }, async () => {
+  const { createRecentRequestsUi } = await import(recentRequestsUiPath);
+  const dom = installFakeDashboardDom();
+  const elements = createRecentRequestElements(dom);
+
+  const ui = createRecentRequestsUi({
+    $(id) {
+      const element = elements.get(id);
+      if (!element) throw new Error(`Missing element: ${id}`);
+      return element;
+    },
+    api: async (apiPath) => {
+      if (apiPath === "/admin/requests/row-meta-xss") {
+        return {
+          request: {
+            requestContentType: "application/json",
+            responseContentType: "application/json",
+            packetInfo: {
+              requestPacket: { chars: 0, bytes: 0 },
+              responsePacket: { chars: 0, bytes: 0 }
+            }
+          }
+        };
+      }
+      if (apiPath.includes("/admin/requests/row-meta-xss/packet?")) {
+        return {
+          packet: {
+            text: "",
+            totalChars: 0,
+            totalBytes: 0,
+            truncated: false
+          }
+        };
+      }
+      throw new Error(`Unexpected API call: ${apiPath}`);
+    },
+    t: (key) => key,
+    tt: (key, vars = {}) => {
+      if (key === "request_detail_title_fmt") return `${vars.method} ${vars.path}`;
+      if (key === "request_detail_packet_meta") return `${vars.type}|${vars.size}|${vars.mode}`;
+      if (key === "token_usage_format") return `${vars.input}/${vars.output}/${vars.cachedInput}`;
+      if (key === "request_detail_content_type") return String(vars.type || "-");
+      return key;
+    },
+    escapeHtml: escapeTestHtml,
+    fmtToken: (value) => String(value ?? 0),
+    formatDateTime: () => '<time data-xss="1">',
+    copyTextToClipboard: async () => {},
+    showCopyError(err) {
+      throw err;
+    },
+    readStoredBool: () => true,
+    writeStoredString: () => {},
+    recordingStorageKey: "recording",
+    resolveProtocolLabel: () => '<protocol data-xss="1">',
+    resolveModelDisplay: () => '<model data-xss="1">',
+    resolveAccountDisplay: () => '<account data-xss="1">',
+    resolveCompatibilityHint: () => '<compat data-xss="1">'
+  });
+
+  try {
+    ui.renderRows([
+      {
+        id: "row-meta-xss",
+        ts: Date.UTC(2026, 3, 11, 10, 0, 0),
+        method: '<img src=x onerror="alert(1)">',
+        transportType: "http",
+        path: '<svg onload="alert(1)">',
+        inputTokens: 1,
+        cachedInputTokens: 2,
+        outputTokens: 3,
+        totalTokens: 4,
+        status: "<script>alert(1)</script>",
+        durationMs: '<iframe src="javascript:alert(1)">',
+        upstreamRetryCount: 1,
+        upstreamErrorCode: '<error-code data-xss="1">',
+        upstreamErrorDetail: '<error-detail data-xss="1">'
+      }
+    ]);
+
+    await ui.openRequestDetailModal("row-meta-xss");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const html = elements.get("reqDetailMetaGrid").innerHTML;
+    assert.doesNotMatch(html, /<img/i);
+    assert.doesNotMatch(html, /<svg/i);
+    assert.doesNotMatch(html, /<script/i);
+    assert.doesNotMatch(html, /<iframe/i);
+    assert.doesNotMatch(html, /<protocol/i);
+    assert.doesNotMatch(html, /<model/i);
+    assert.doesNotMatch(html, /<account/i);
+    assert.doesNotMatch(html, /<compat/i);
+    assert.match(html, /&lt;img/);
+    assert.match(html, /&lt;svg/);
+    assert.match(html, /&lt;time/);
+    assert.match(html, /&lt;protocol/);
+    assert.match(html, /&lt;model/);
+    assert.match(html, /&lt;account/);
+    assert.match(html, /&lt;compat/);
+    assert.match(html, /&lt;error-detail/);
+  } finally {
+    dom.restore();
+  }
+});
+
+test("request detail copy resets the button when the packet is empty", { concurrency: false }, async () => {
+  const { createRecentRequestsUi } = await import(recentRequestsUiPath);
+  const dom = installFakeDashboardDom();
+  const elements = createRecentRequestElements(dom);
+  const clipboardWrites = [];
+
+  const ui = createRecentRequestsUi({
+    $(id) {
+      const element = elements.get(id);
+      if (!element) throw new Error(`Missing element: ${id}`);
+      return element;
+    },
+    api: async (apiPath) => {
+      if (apiPath === "/admin/requests/row-empty") {
+        return {
+          request: {
+            requestContentType: "application/json",
+            responseContentType: "application/json",
+            packetInfo: {
+              requestPacket: { chars: 0, bytes: 0 },
+              responsePacket: { chars: 0, bytes: 0 }
+            }
+          }
+        };
+      }
+      if (apiPath.includes("/admin/requests/row-empty/packet?")) {
+        return {
+          packet: {
+            text: "",
+            totalChars: 0,
+            totalBytes: 0,
+            truncated: false
+          }
+        };
+      }
+      throw new Error(`Unexpected API call: ${apiPath}`);
+    },
+    t: (key) => key,
+    tt: (key, vars = {}) => {
+      if (key === "request_detail_title_fmt") return `${vars.method} ${vars.path}`;
+      if (key === "request_detail_packet_meta") return `${vars.type}|${vars.size}|${vars.mode}`;
+      if (key === "token_usage_format") return `${vars.input}/${vars.output}/${vars.cachedInput}`;
+      if (key === "request_detail_load_failed") return `failed:${vars.message}`;
+      if (key === "request_detail_content_type") return String(vars.type || "-");
+      return key;
+    },
+    escapeHtml: (value) => String(value),
+    fmtToken: (value) => String(value ?? 0),
+    formatDateTime: (value, options = {}) =>
+      new Intl.DateTimeFormat("en-US", {
+        hour12: true,
+        ...options
+      }).format(new Date(Number(value))),
+    copyTextToClipboard: async (text) => {
+      clipboardWrites.push(String(text));
+    },
+    showCopyError(err) {
+      throw err;
+    },
+    readStoredBool: () => true,
+    writeStoredString: () => {},
+    recordingStorageKey: "recording",
+    resolveProtocolLabel: () => "Responses",
+    resolveModelDisplay: () => "gpt-5.4",
+    resolveAccountDisplay: () => "Account A",
+    resolveCompatibilityHint: () => "-"
+  });
+
+  try {
+    ui.renderRows([
+      {
+        id: "row-empty",
+        ts: Date.UTC(2026, 3, 11, 10, 0, 0),
+        method: "POST",
+        transportType: "http",
+        path: "/v1/responses",
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        status: 200,
+        durationMs: 1
+      }
+    ]);
+
+    await ui.openRequestDetailModal("row-empty");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await ui.copyRequestDetailLog("responsePacket", "reqDetailResCopyBtn");
+
+    assert.deepEqual(clipboardWrites, []);
+    assert.equal(elements.get("reqDetailResCopyBtn").textContent, "request_detail_copy");
+  } finally {
+    dom.restore();
+  }
+});
+
+test("request detail modal cancels chunked packet rendering after close", { concurrency: false }, async () => {
+  const { createRecentRequestsUi } = await import(recentRequestsUiPath);
+  const dom = installFakeDashboardDom();
+  const elements = createRecentRequestElements(dom);
+  const largeResponse = "x".repeat(50_000);
+
+  const ui = createRecentRequestsUi({
+    $(id) {
+      const element = elements.get(id);
+      if (!element) throw new Error(`Missing element: ${id}`);
+      return element;
+    },
+    api: async (apiPath) => {
+      if (apiPath === "/admin/requests/row-large") {
+        return {
+          request: {
+            requestContentType: "application/json",
+            responseContentType: "text/event-stream",
+            packetInfo: {
+              requestPacket: { chars: 0, bytes: 0 },
+              responsePacket: { chars: largeResponse.length, bytes: largeResponse.length }
+            }
+          }
+        };
+      }
+      if (apiPath.includes("/admin/requests/row-large/packet?")) {
+        const url = new URL(`https://example.test${apiPath}`);
+        if (url.searchParams.get("field") === "responsePacket") {
+          return {
+            packet: {
+              text: largeResponse,
+              totalChars: largeResponse.length,
+              totalBytes: largeResponse.length,
+              truncated: false
+            }
+          };
+        }
+        return {
+          packet: {
+            text: "",
+            totalChars: 0,
+            totalBytes: 0,
+            truncated: false
+          }
+        };
+      }
+      throw new Error(`Unexpected API call: ${apiPath}`);
+    },
+    t: (key) => key,
+    tt: (key, vars = {}) => {
+      if (key === "request_detail_title_fmt") return `${vars.method} ${vars.path}`;
+      if (key === "request_detail_packet_meta") return `${vars.type}|${vars.size}|${vars.mode}`;
+      if (key === "token_usage_format") return `${vars.input}/${vars.output}/${vars.cachedInput}`;
+      if (key === "request_detail_content_type") return String(vars.type || "-");
+      return key;
+    },
+    escapeHtml: (value) => String(value),
+    fmtToken: (value) => String(value ?? 0),
+    formatDateTime: (value, options = {}) =>
+      new Intl.DateTimeFormat("en-US", {
+        hour12: true,
+        ...options
+      }).format(new Date(Number(value))),
+    copyTextToClipboard: async () => {},
+    showCopyError(err) {
+      throw err;
+    },
+    readStoredBool: () => true,
+    writeStoredString: () => {},
+    recordingStorageKey: "recording",
+    resolveProtocolLabel: () => "Responses",
+    resolveModelDisplay: () => "gpt-5.4",
+    resolveAccountDisplay: () => "Account A",
+    resolveCompatibilityHint: () => "-"
+  });
+
+  try {
+    ui.renderRows([
+      {
+        id: "row-large",
+        ts: Date.UTC(2026, 3, 11, 10, 0, 0),
+        method: "POST",
+        transportType: "http",
+        path: "/v1/responses",
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        status: 200,
+        durationMs: 1
+      }
+    ]);
+
+    await ui.openRequestDetailModal("row-large");
+    assert.equal(elements.get("reqDetailResCode").textContent.length, 16 * 1024);
+    ui.closeRequestDetailModal();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(elements.get("reqDetailResCode").textContent.length, 16 * 1024);
+  } finally {
+    dom.restore();
+  }
+});
+
 test("public access start reuses persisted auto-install setting", async () => {
   const { createPublicAccessFeature } = await import(publicAccessFeaturePath);
   const elements = new Map([
@@ -548,5 +950,18 @@ test("package.json release gate is wired to existing repo validation commands", 
 
   for (const scriptName of ["lint", "format:check", "typecheck", "test:smoke", "test", "check", "release:gate"]) {
     assert.equal(typeof pkg.scripts[scriptName], "string", `expected npm script ${scriptName} to exist`);
+  }
+});
+
+test("package.json smoke gate covers streaming and account routing suites", async () => {
+  const pkg = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
+  const smokeScript = String(pkg.scripts["test:smoke"] || "");
+
+  for (const suite of [
+    "tests/proxy-handlers.test.js",
+    "tests/responses-websocket-server.test.js",
+    "tests/account-lease-selection.test.js"
+  ]) {
+    assert.ok(smokeScript.includes(suite), `expected smoke script to include ${suite}`);
   }
 });

@@ -7,18 +7,36 @@ import express from "express";
 import { readJsonBody } from "../src/http/request-body.js";
 import { registerAdminPoolRoutes } from "../src/routes/admin-pool.js";
 
+const FETCH_FORBIDDEN_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95,
+  101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161,
+  179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563,
+  587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061,
+  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080
+]);
+
+function isFetchAllowedPort(port) {
+  return Number.isInteger(port) && port > 0 && !FETCH_FORBIDDEN_PORTS.has(port);
+}
+
 async function listen(app) {
-  const server = createServer(app);
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  const port = typeof address === "object" && address ? Number(address.port || 0) : 0;
-  return {
-    server,
-    url: `http://127.0.0.1:${port}`
-  };
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const server = createServer(app);
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    const port = typeof address === "object" && address ? Number(address.port || 0) : 0;
+    if (isFetchAllowedPort(port)) {
+      return {
+        server,
+        url: `http://127.0.0.1:${port}`
+      };
+    }
+    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+  throw new Error("Could not reserve a fetch-compatible test port.");
 }
 
 async function waitFor(predicate, { timeoutMs = 300, intervalMs = 5 } = {}) {
@@ -29,6 +47,290 @@ async function waitFor(predicate, { timeoutMs = 300, intervalMs = 5 } = {}) {
   }
   throw new Error("Timed out waiting for condition.");
 }
+
+function assertNoStoreHeaders(response) {
+  assert.equal(response.headers.get("cache-control"), "no-store, max-age=0");
+  assert.equal(response.headers.get("pragma"), "no-cache");
+  assert.equal(response.headers.get("expires"), "0");
+}
+
+test("admin pool overview/control/preheat responses use no-store headers", async () => {
+  const app = express();
+  let store = {
+    active_account_id: "entry_a",
+    token: {
+      access_token: "token_a"
+    },
+    accounts: [
+      {
+        entry_id: "entry_a",
+        account_id: "acct_a",
+        enabled: true,
+        token: {
+          access_token: "token_a"
+        }
+      }
+    ],
+    rotation: { next_index: 0 }
+  };
+
+  registerAdminPoolRoutes(app, {
+    config: {
+      authMode: "codex-oauth",
+      codexOAuth: {
+        tokenStorePath: "store.json",
+        multiAccountEnabled: true,
+        multiAccountStrategy: "smart",
+        multiAccountPoolFilter: "all",
+        sharedApiKey: ""
+      }
+    },
+    async readJsonBody(req) {
+      if (req.headers["x-malformed-status"]) {
+        const err = new Error("malformed status");
+        err.code = "invalid_request";
+        err.statusCode = Symbol("status");
+        throw err;
+      }
+      if (req.headers["x-fractional-status"]) {
+        const err = new Error("fractional status");
+        err.code = "invalid_request";
+        err.statusCode = "401.9";
+        throw err;
+      }
+      if (req.headers["x-decimal-status"]) {
+        const err = new Error("decimal status");
+        err.code = "invalid_request";
+        err.statusCode = "401.0";
+        throw err;
+      }
+      return readJsonBody(req);
+    },
+    getCodexOAuthStore: () => store,
+    setCodexOAuthStore: (nextStore) => {
+      store = nextStore;
+    },
+    ensureCodexOAuthStoreShape: (nextStore) => ({ store: nextStore, changed: false }),
+    saveTokenStore: async () => {},
+    clearAuthContextCache: () => {},
+    buildCodexPoolMetrics: (accounts) => ({
+      summary: { total: accounts.length },
+      decorated: accounts.map((account) => ({
+        account,
+        entryId: String(account?.entry_id || account?.account_id || ""),
+        healthScore: 1,
+        healthStatus: "ok",
+        primaryRemaining: null,
+        secondaryRemaining: null,
+        lowQuota: false,
+        hardLimited: false
+      }))
+    }),
+    isCodexMultiAccountEnabled: () => true,
+    getCodexPoolEntryId: (account) => String(account?.entry_id || account?.account_id || ""),
+    findCodexPoolAccountByRef: (accounts, ref) =>
+      (Array.isArray(accounts) ? accounts : []).find(
+        (account) => String(account?.entry_id || account?.account_id || "") === String(ref || "").trim()
+      ) || null,
+    removeCodexPoolAccountFromStore: () => ({ removed: false }),
+    importIntoCodexAuthPool: async () => ({ imported: 0, accountPoolSize: store.accounts.length, usageProbe: null }),
+    extractCodexOAuthImportItems: () => [],
+    normalizeOpenAICodexPlanType: () => "",
+    getOfficialCodexModelCandidateIds: async () => ["gpt-5.4"],
+    refreshCodexUsageSnapshotInStore: async () => ({ ok: true }),
+    refreshCodexTokensInStore: async () => ({ ok: true, refreshed: 0, total: 0, results: [] }),
+    runCodexPreheat: async () => ({ started: true }),
+    getCodexPreheatState: () => ({ running: false })
+  });
+
+  const backend = await listen(app);
+  try {
+    const requests = [
+      fetch(`${backend.url}/admin/auth-pool`),
+      fetch(`${backend.url}/admin/auth-pool/toggle`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({})
+      }),
+      fetch(`${backend.url}/admin/auth-pool/remove`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({})
+      }),
+      fetch(`${backend.url}/admin/auth-pool/import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tokens: [] })
+      }),
+      fetch(`${backend.url}/admin/preheat/state`),
+      fetch(`${backend.url}/admin/preheat/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({})
+      })
+    ];
+
+    for (const response of await Promise.all(requests)) {
+      assertNoStoreHeaders(response);
+      await response.text();
+    }
+
+    const invalidBodyResponse = await fetch(`${backend.url}/admin/auth-pool/toggle`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{\"entryId\":"
+    });
+    const invalidBody = await invalidBodyResponse.json();
+    assert.equal(invalidBodyResponse.status, 400);
+    assertNoStoreHeaders(invalidBodyResponse);
+    assert.equal(invalidBody.error, "invalid_json");
+
+    const malformedStatusResponse = await fetch(`${backend.url}/admin/auth-pool/toggle`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-malformed-status": "1" },
+      body: JSON.stringify({})
+    });
+    const malformedStatusBody = await malformedStatusResponse.json();
+    assert.equal(malformedStatusResponse.status, 400);
+    assertNoStoreHeaders(malformedStatusResponse);
+    assert.equal(malformedStatusBody.error, "invalid_request");
+
+    const fractionalStatusResponse = await fetch(`${backend.url}/admin/auth-pool/toggle`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-fractional-status": "1" },
+      body: JSON.stringify({})
+    });
+    const fractionalStatusBody = await fractionalStatusResponse.json();
+    assert.equal(fractionalStatusResponse.status, 400);
+    assertNoStoreHeaders(fractionalStatusResponse);
+    assert.equal(fractionalStatusBody.error, "invalid_request");
+
+    const decimalStatusResponse = await fetch(`${backend.url}/admin/auth-pool/toggle`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-decimal-status": "1" },
+      body: JSON.stringify({})
+    });
+    const decimalStatusBody = await decimalStatusResponse.json();
+    assert.equal(decimalStatusResponse.status, 400);
+    assertNoStoreHeaders(decimalStatusResponse);
+    assert.equal(decimalStatusBody.error, "invalid_request");
+  } finally {
+    await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test("GET /admin/auth-pool normalizes malformed numeric account metadata", async () => {
+  const app = express();
+  const throwingNumber = {
+    valueOf() {
+      throw new Error("bad number");
+    }
+  };
+  const store = {
+    active_account_id: "entry_a",
+    token: {
+      access_token: "token_a"
+    },
+    accounts: [
+      {
+        entry_id: "entry_a",
+        account_id: "acct_a",
+        enabled: true,
+        slot: Symbol("slot"),
+        token: {
+          access_token: "token_a",
+          expires_at: Symbol("expires")
+        },
+        last_used_at: throwingNumber,
+        failure_count: "not-a-number",
+        cooldown_until: Infinity,
+        usage_updated_at: -5
+      },
+      {
+        entry_id: "entry_b",
+        account_id: "acct_b",
+        enabled: true,
+        slot: "9.9",
+        token: {
+          access_token: "token_b",
+          expires_at: "1777777777.0"
+        },
+        last_used_at: "12.0",
+        failure_count: "3.9",
+        cooldown_until: "999.0",
+        usage_updated_at: "456.0"
+      }
+    ],
+    rotation: { next_index: 0 }
+  };
+
+  registerAdminPoolRoutes(app, {
+    config: {
+      authMode: "codex-oauth",
+      codexOAuth: {
+        tokenStorePath: "store.json",
+        multiAccountEnabled: true,
+        multiAccountStrategy: "smart",
+        multiAccountPoolFilter: "all",
+        sharedApiKey: ""
+      }
+    },
+    readJsonBody,
+    getCodexOAuthStore: () => store,
+    setCodexOAuthStore: () => {},
+    ensureCodexOAuthStoreShape: (nextStore) => ({ store: nextStore, changed: false }),
+    saveTokenStore: async () => {},
+    clearAuthContextCache: () => {},
+    buildCodexPoolMetrics: (accounts) => ({
+      summary: { total: accounts.length },
+      decorated: accounts.map((account) => ({
+        account,
+        entryId: String(account?.entry_id || account?.account_id || ""),
+        healthScore: 1,
+        healthStatus: "ok",
+        primaryRemaining: null,
+        secondaryRemaining: null,
+        lowQuota: false,
+        hardLimited: false
+      }))
+    }),
+    isCodexMultiAccountEnabled: () => true,
+    getCodexPoolEntryId: (account) => String(account?.entry_id || account?.account_id || ""),
+    findCodexPoolAccountByRef: () => null,
+    removeCodexPoolAccountFromStore: () => ({ removed: false }),
+    importIntoCodexAuthPool: async () => ({ imported: 0, accountPoolSize: 0, usageProbe: null }),
+    extractCodexOAuthImportItems: () => [],
+    normalizeOpenAICodexPlanType: () => "",
+    getOfficialCodexModelCandidateIds: async () => ["gpt-5.4"],
+    refreshCodexUsageSnapshotInStore: async () => ({ ok: true }),
+    refreshCodexTokensInStore: async () => ({ ok: true, refreshed: 0, total: 0, results: [] }),
+    runCodexPreheat: async () => ({}),
+    getCodexPreheatState: () => ({ running: false })
+  });
+
+  const backend = await listen(app);
+  try {
+    const response = await fetch(`${backend.url}/admin/auth-pool`);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assertNoStoreHeaders(response);
+    assert.equal(body.accounts[0].slot, 1);
+    assert.equal(body.accounts[0].expiresAt, null);
+    assert.equal(body.accounts[0].lastUsedAt, 0);
+    assert.equal(body.accounts[0].failureCount, 0);
+    assert.equal(body.accounts[0].cooldownUntil, 0);
+    assert.equal(body.accounts[0].usageUpdatedAt, 0);
+    assert.equal(body.accounts[1].slot, 2);
+    assert.equal(body.accounts[1].expiresAt, null);
+    assert.equal(body.accounts[1].lastUsedAt, 0);
+    assert.equal(body.accounts[1].failureCount, 0);
+    assert.equal(body.accounts[1].cooldownUntil, 0);
+    assert.equal(body.accounts[1].usageUpdatedAt, 0);
+  } finally {
+    await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
 
 test("POST /admin/auth-pool/activate force-switches a disabled account back to active health", async () => {
   const app = express();
@@ -115,6 +417,7 @@ test("POST /admin/auth-pool/activate force-switches a disabled account back to a
     const body = await response.json();
 
     assert.equal(response.status, 200);
+    assertNoStoreHeaders(response);
     assert.equal(body.ok, true);
     assert.equal(body.entryId, "entry_b");
     assert.equal(store.active_account_id, "entry_b");
@@ -128,6 +431,96 @@ test("POST /admin/auth-pool/activate force-switches a disabled account back to a
     assert.equal(savedStore?.active_account_id, "entry_b");
     assert.equal(savedStore?.token?.access_token, "token_b");
     assert.equal(clearAuthContextCacheCalls, 1);
+  } finally {
+    await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
+test("POST /admin/auth-pool/remove refuses to remove leased accounts without persisting", async () => {
+  const app = express();
+  let setStoreCalls = 0;
+  let saveTokenStoreCalls = 0;
+  let clearAuthContextCacheCalls = 0;
+  const store = {
+    active_account_id: "entry_a",
+    token: {
+      access_token: "token_a"
+    },
+    accounts: [
+      {
+        entry_id: "entry_a",
+        account_id: "acct_a",
+        enabled: true,
+        token: {
+          access_token: "token_a"
+        }
+      }
+    ],
+    rotation: { next_index: 0 }
+  };
+
+  registerAdminPoolRoutes(app, {
+    config: {
+      authMode: "codex-oauth",
+      codexOAuth: {
+        tokenStorePath: "store.json",
+        multiAccountEnabled: true,
+        multiAccountStrategy: "smart",
+        sharedApiKey: ""
+      }
+    },
+    readJsonBody,
+    getCodexOAuthStore: () => store,
+    setCodexOAuthStore: () => {
+      setStoreCalls += 1;
+    },
+    ensureCodexOAuthStoreShape: (nextStore) => ({ store: nextStore, changed: false }),
+    saveTokenStore: async () => {
+      saveTokenStoreCalls += 1;
+    },
+    clearAuthContextCache: () => {
+      clearAuthContextCacheCalls += 1;
+    },
+    buildCodexPoolMetrics: () => ({ summary: {}, decorated: [] }),
+    isCodexMultiAccountEnabled: () => true,
+    getCodexPoolEntryId: (account) => String(account?.entry_id || account?.account_id || ""),
+    findCodexPoolAccountByRef: () => null,
+    removeCodexPoolAccountFromStore: () => ({
+      removed: false,
+      blocked: "leased",
+      blockedEntryId: "entry_a",
+      blockedAccountId: "acct_a"
+    }),
+    importIntoCodexAuthPool: async () => ({ imported: 0, accountPoolSize: 0, usageProbe: null }),
+    extractCodexOAuthImportItems: () => [],
+    normalizeOpenAICodexPlanType: () => "",
+    getOfficialCodexModelCandidateIds: async () => ["gpt-5.4", "gpt-5-codex"],
+    refreshCodexUsageSnapshotInStore: async () => ({ ok: true }),
+    refreshCodexTokensInStore: async () => ({ ok: true, refreshed: 0, total: 0, results: [] }),
+    runCodexPreheat: async () => ({}),
+    getCodexPreheatState: () => ({ running: false })
+  });
+
+  const backend = await listen(app);
+  try {
+    const response = await fetch(`${backend.url}/admin/auth-pool/remove`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ entryId: "entry_a" })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 409);
+    assertNoStoreHeaders(response);
+    assert.deepEqual(body, {
+      error: "account_in_use",
+      message: "Account is currently serving an in-flight request.",
+      entryId: "entry_a",
+      accountId: "acct_a"
+    });
+    assert.equal(setStoreCalls, 0);
+    assert.equal(saveTokenStoreCalls, 0);
+    assert.equal(clearAuthContextCacheCalls, 0);
   } finally {
     await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
   }
@@ -231,6 +624,7 @@ test("POST /admin/auth-pool/refresh-tokens refreshes every pooled token and pers
     const body = await response.json();
 
     assert.equal(response.status, 200);
+    assertNoStoreHeaders(response);
     assert.equal(body.ok, true);
     assert.equal(body.refreshed, 2);
     assert.equal(body.total, 2);
@@ -321,6 +715,7 @@ test("POST /admin/auth-pool/refresh-usage forwards shared codex model candidates
     const body = await response.json();
 
     assert.equal(response.status, 200);
+    assertNoStoreHeaders(response);
     assert.equal(body.ok, true);
     assert.equal(capturedOptions.length, 2);
     assert.deepEqual(capturedOptions[0]?.modelCandidates, ["gpt-5.4", "gpt-5-codex", "codex-mini-latest"]);
@@ -418,6 +813,7 @@ test("POST /admin/auth-pool/refresh-usage preserves the active account token poi
     const body = await response.json();
 
     assert.equal(response.status, 200);
+    assertNoStoreHeaders(response);
     assert.equal(body.ok, true);
     assert.equal(store.active_account_id, "entry_b");
     assert.equal(store.token?.access_token, "token_b_refreshed");
@@ -517,6 +913,7 @@ test("POST /admin/auth-pool/refresh-usage starts all usage probes in parallel", 
     const response = await responsePromise;
     const body = await response.json();
     assert.equal(response.status, 200);
+    assertNoStoreHeaders(response);
     assert.equal(body.ok, true);
     assert.equal(body.refreshed, 2);
     assert.equal(body.total, 2);
@@ -552,6 +949,28 @@ test("GET /admin/auth-pool/export returns a single importable json bundle", asyn
         },
         usage_updated_at: 456,
         slot: 1
+      },
+      {
+        entry_id: "entry_b",
+        account_id: "acct_b",
+        enabled: true,
+        token: {
+          access_token: "token_b",
+          expires_at: Symbol("expires")
+        },
+        usage_updated_at: Symbol("usage_updated_at"),
+        slot: Symbol("slot")
+      },
+      {
+        entry_id: "entry_c",
+        account_id: "acct_c",
+        enabled: true,
+        token: {
+          access_token: "token_c",
+          expires_at: "1234.0"
+        },
+        usage_updated_at: "789.0",
+        slot: "9.9"
       }
     ],
     rotation: { next_index: 0 }
@@ -596,12 +1015,29 @@ test("GET /admin/auth-pool/export returns a single importable json bundle", asyn
     const body = await response.json();
 
     assert.equal(response.status, 200);
+    assertNoStoreHeaders(response);
     assert.equal(body.ok, true);
-    assert.equal(body.exported, 1);
+    assert.equal(body.exported, 3);
     assert.match(String(body.fileName || ""), /^codex-oauth-account-pool-.*\.json$/);
     assert.equal(body.payload?.type, "codex-pro-max-auth-pool-export");
-    assert.equal(body.payload?.exported, 1);
+    assert.equal(body.payload?.exported, 3);
     assert.equal(Array.isArray(body.payload?.accounts), true);
+    for (const tokenKey of ["access_token", "id_token", "refresh_token", "token_type", "scope", "expires_at"]) {
+      assert.equal(Object.prototype.hasOwnProperty.call(body, tokenKey), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(body.payload || {}, tokenKey), false);
+    }
+    const envelopeMetadata = {
+      ok: body.ok,
+      exported: body.exported,
+      generatedAt: body.generatedAt,
+      fileName: body.fileName,
+      payloadType: body.payload?.type,
+      payloadGeneratedAt: body.payload?.generated_at,
+      payloadExported: body.payload?.exported
+    };
+    for (const tokenValue of ["token_a", "id_a", "refresh_a"]) {
+      assert.equal(JSON.stringify(envelopeMetadata).includes(tokenValue), false);
+    }
     assert.deepEqual(body.payload.accounts[0], {
       label: "Alpha",
       slot: 1,
@@ -620,6 +1056,12 @@ test("GET /admin/auth-pool/export returns a single importable json bundle", asyn
       scope: "openid profile email offline_access",
       expires_at: 123
     });
+    assert.equal(body.payload.accounts[1]?.slot, 2);
+    assert.equal(body.payload.accounts[1]?.usage_updated_at, 0);
+    assert.equal(body.payload.accounts[1]?.expires_at, 0);
+    assert.equal(body.payload.accounts[2]?.slot, 3);
+    assert.equal(body.payload.accounts[2]?.usage_updated_at, 0);
+    assert.equal(body.payload.accounts[2]?.expires_at, 0);
   } finally {
     await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));
   }
@@ -711,6 +1153,7 @@ test("POST /admin/auth-pool/switch-local verifies the pooled account and rewrite
     const body = await response.json();
 
     assert.equal(response.status, 200);
+    assertNoStoreHeaders(response);
     assert.equal(body.ok, true);
     assert.equal(body.entryId, "entry_a");
     assert.equal(body.accountId, "acct_a");
@@ -794,6 +1237,7 @@ test("POST /admin/auth-pool/switch-local returns 409 when the account has no usa
     const body = await response.json();
 
     assert.equal(response.status, 409);
+    assertNoStoreHeaders(response);
     assert.equal(body.error, "missing_reusable_chatgpt_bundle");
   } finally {
     await new Promise((resolve, reject) => backend.server.close((err) => (err ? reject(err) : resolve())));

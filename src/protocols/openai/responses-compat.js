@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 
-import { DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS } from "../../upstream-timeouts.js";
+import {
+  DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS,
+  normalizeUpstreamStreamIdleTimeoutMs
+} from "../../upstream-timeouts.js";
 import {
   consumeSseBlocks,
   createSseSession,
@@ -19,7 +22,9 @@ import {
   extractAssistantAnnotationsFromResponse,
   extractAssistantTextFromResponse,
   extractAssistantToolCallsFromResponse,
+  chooseResponsesWebSearchCallStatus,
   isRecordObject,
+  mergeResponsesWebSearchCallOutputItems,
   normalizeResponsesOutputItem
 } from "./responses-output-items.js";
 import {
@@ -45,7 +50,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
       typeof upstreamStreamIdleTimeoutMsInput === "function"
         ? upstreamStreamIdleTimeoutMsInput()
         : upstreamStreamIdleTimeoutMsInput;
-    return Math.max(0, Number(raw || 0));
+    return normalizeUpstreamStreamIdleTimeoutMs(raw, 0);
   }
 
   function mapCodexUsageToChatUsage(usage) {
@@ -74,8 +79,9 @@ export function createOpenAIResponsesCompatHelpers(context) {
       if (!item) return null;
       const itemId = typeof item.id === "string" ? item.id : "";
       if (itemId && state.outputIndexById.has(itemId)) {
-        state.output[state.outputIndexById.get(itemId)] = item;
-        return item;
+        const outputIndex = state.outputIndexById.get(itemId);
+        state.output[outputIndex] = mergeResponsesWebSearchCallOutputItems(state.output[outputIndex], item);
+        return state.output[outputIndex];
       }
       state.output.push(item);
       if (itemId) state.outputIndexById.set(itemId, state.output.length - 1);
@@ -100,6 +106,24 @@ export function createOpenAIResponsesCompatHelpers(context) {
         }
       }
       return upsertOutputItem({ ...(itemId ? { id: itemId } : {}), type: "reasoning", summary: [], content: [] });
+    };
+
+    const ensureWebSearchCallItem = (itemId = "", outputIndex = null) => {
+      if (itemId && state.outputIndexById.has(itemId)) {
+        const existing = state.output[state.outputIndexById.get(itemId)];
+        if (existing?.type === "web_search_call") return existing;
+      }
+      if (Number.isInteger(outputIndex) && outputIndex >= 0) {
+        const existing = state.output[outputIndex];
+        if (existing?.type === "web_search_call") {
+          if (itemId && (typeof existing.id !== "string" || existing.id.length === 0)) {
+            existing.id = itemId;
+            state.outputIndexById.set(itemId, outputIndex);
+          }
+          return existing;
+        }
+      }
+      return upsertOutputItem({ ...(itemId ? { id: itemId } : {}), type: "web_search_call" });
     };
 
     const ensureReasoningSummaryPart = (itemId, summaryIndex = 0) => {
@@ -279,6 +303,22 @@ export function createOpenAIResponsesCompatHelpers(context) {
         continue;
       }
 
+      if (
+        parsed.type === "response.web_search_call.in_progress" ||
+        parsed.type === "response.web_search_call.searching" ||
+        parsed.type === "response.web_search_call.completed"
+      ) {
+        const itemId = typeof parsed.item_id === "string" ? parsed.item_id : "";
+        const outputIndex = Number.isInteger(parsed.output_index) ? parsed.output_index : null;
+        if (!itemId && outputIndex === null) continue;
+        const item = ensureWebSearchCallItem(itemId, outputIndex);
+        item.status = chooseResponsesWebSearchCallStatus(
+          item.status,
+          parsed.type.slice("response.web_search_call.".length)
+        );
+        continue;
+      }
+
       if (parsed.type === "response.refusal.delta") {
         appendAssistantText(
           typeof parsed.item_id === "string" ? parsed.item_id : "",
@@ -441,7 +481,11 @@ export function createOpenAIResponsesCompatHelpers(context) {
       while (!session.isClosed()) {
         let chunkResult;
         try {
-          chunkResult = await readUpstreamChunkWithIdleTimeout(reader, upstream);
+          chunkResult = await readUpstreamChunkWithIdleTimeout(
+            reader,
+            upstream,
+            getResolvedUpstreamStreamIdleTimeoutMs()
+          );
         } catch (err) {
           if (session.isClosed()) break;
           throw err;
@@ -571,7 +615,11 @@ export function createOpenAIResponsesCompatHelpers(context) {
       while (!session.isClosed()) {
         let chunkResult;
         try {
-          chunkResult = await readUpstreamChunkWithIdleTimeout(reader, upstream);
+          chunkResult = await readUpstreamChunkWithIdleTimeout(
+            reader,
+            upstream,
+            getResolvedUpstreamStreamIdleTimeoutMs()
+          );
         } catch (err) {
           if (session.isClosed()) break;
           throw err;
@@ -753,7 +801,11 @@ export function createOpenAIResponsesCompatHelpers(context) {
     const annotations = extractAssistantAnnotationsFromResponse(response);
     const toolCalls = extractAssistantToolCallsFromResponse(response);
     const nowSec = Math.floor(Date.now() / 1000);
-    const usage = response?.usage || {};
+    const usage = toChatUsageFromNormalizedTokenUsage(response?.usage || null) || {
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0
+    };
 
     return {
       id: response?.id || `chatcmpl_${crypto.randomUUID().replace(/-/g, "")}`,
@@ -770,11 +822,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
         },
         finish_reason: toolCalls.length > 0 ? "tool_calls" : mapResponsesStatusToChatFinishReason(response?.status)
       }],
-      usage: {
-        prompt_tokens: Number(usage.input_tokens || 0),
-        completion_tokens: Number(usage.output_tokens || 0),
-        total_tokens: Number(usage.total_tokens || 0)
-      }
+      usage
     };
   }
 

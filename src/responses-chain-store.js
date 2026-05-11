@@ -12,9 +12,41 @@ function cloneJson(value) {
   return value === undefined ? undefined : structuredClone(value);
 }
 
+function toIntegerNumber(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) ? value : fallback;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : fallback;
+  }
+  return fallback;
+}
+
+function toPositiveInteger(value, fallback) {
+  const parsed = toIntegerNumber(value, null);
+  if (parsed === null || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function toTimestamp(value, fallback = Date.now()) {
+  const parsed = toIntegerNumber(value, null);
+  if (parsed !== null && parsed >= 0) return parsed;
+  const fallbackParsed = toIntegerNumber(fallback, 0);
+  return fallbackParsed !== null && fallbackParsed >= 0 ? fallbackParsed : 0;
+}
+
 function stableStringify(value) {
+  if (typeof value === "bigint") {
+    return JSON.stringify(value.toString());
+  }
+  if (typeof value === "symbol" || typeof value === "function" || value === undefined) {
+    return JSON.stringify(String(value));
+  }
   if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
+    const serialized = JSON.stringify(value);
+    return serialized === undefined ? JSON.stringify(String(value)) : serialized;
   }
   if (Array.isArray(value)) {
     return `[${value.map((item) => stableStringify(item)).join(",")}]`;
@@ -107,6 +139,9 @@ function normalizeReplayableItems(items, options = {}) {
   if (!Array.isArray(items)) return [];
   const normalized = [];
   for (const item of items) {
+    if (shouldFilterReplayItemByStructure(item)) {
+      continue;
+    }
     if (
       item &&
       typeof item === "object" &&
@@ -187,7 +222,7 @@ function normalizeChainEntry(entry) {
   return {
     responseId,
     inputHistory: normalizeReplayableItems(entry.inputHistory),
-    updatedAt: Number(entry.updatedAt || Date.now())
+    updatedAt: toTimestamp(entry.updatedAt)
   };
 }
 
@@ -223,14 +258,14 @@ export function expandResponsesRequestBodyFromChain(requestBody, previousEntry) 
 }
 
 export function createResponsesChainStore(options = {}) {
-  const ttlMs = Number(options.ttlMs) > 0 ? Number(options.ttlMs) : DEFAULT_CHAIN_TTL_MS;
-  const maxEntries =
-    Number(options.maxEntries) > 0 ? Math.max(1, Math.floor(Number(options.maxEntries))) : DEFAULT_CHAIN_MAX_ENTRIES;
+  const ttlMs = toPositiveInteger(options.ttlMs, DEFAULT_CHAIN_TTL_MS);
+  const maxEntries = toPositiveInteger(options.maxEntries, DEFAULT_CHAIN_MAX_ENTRIES);
   const entries = new Map();
 
   function prune(now = Date.now()) {
+    const currentTime = toTimestamp(now);
     for (const [key, value] of entries) {
-      if (!value || now - Number(value.updatedAt || 0) > ttlMs) {
+      if (!value || currentTime - toTimestamp(value.updatedAt, 0) > ttlMs) {
         entries.delete(key);
       }
     }
@@ -243,24 +278,26 @@ export function createResponsesChainStore(options = {}) {
   }
 
   function remember(entry, now = Date.now()) {
+    const currentTime = toTimestamp(now);
     const normalized = normalizeChainEntry(entry);
     if (!normalized) return null;
-    prune(now);
+    prune(currentTime);
     entries.delete(normalized.responseId);
-    const stored = { ...normalized, updatedAt: now };
+    const stored = { ...normalized, updatedAt: currentTime };
     entries.set(stored.responseId, stored);
-    prune(now);
+    prune(currentTime);
     return cloneJson(stored);
   }
 
   function lookup(responseId, now = Date.now()) {
+    const currentTime = toTimestamp(now);
     const normalizedResponseId = normalizeId(responseId);
     if (!normalizedResponseId) return null;
-    prune(now);
+    prune(currentTime);
     const entry = entries.get(normalizedResponseId);
     if (!entry) return null;
     entries.delete(normalizedResponseId);
-    const refreshed = { ...entry, updatedAt: now };
+    const refreshed = { ...entry, updatedAt: currentTime };
     entries.set(normalizedResponseId, refreshed);
     return cloneJson(refreshed);
   }

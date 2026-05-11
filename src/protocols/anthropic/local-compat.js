@@ -6,10 +6,13 @@ import {
   createSseSession,
   parseSseJsonEventBlock
 } from "../../http/sse-runtime.js";
+import { getRequestBodyErrorStatus, isRequestBodyTooLargeError } from "../../http/request-body.js";
+import { mapResponsesUsageToChatUsage } from "../../http/token-usage.js";
 import {
   isResponsesFailureEventType,
   isResponsesSuccessTerminalEventType
 } from "../openai/responses-contract.js";
+import { normalizeUpstreamStreamIdleTimeoutMs, readNonNegativeInteger } from "../../upstream-timeouts.js";
 import { estimateTokenCountFromText } from "../../http/token-estimation.js";
 
 const SUPPORTED_LOCAL_IMAGE_EXTENSIONS = new Map([
@@ -46,8 +49,98 @@ export function createAnthropicLocalCompatHelpers(context) {
 
   const anthropicPendingToolBatches = new Map();
 
+  function sendAnthropicRequestBodyError(res, err) {
+    res.status(getRequestBodyErrorStatus(err, 413)).json({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: err?.message || "Invalid request body."
+      }
+    });
+  }
+
   function isRecordObject(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function toFiniteNumber(value, fallback = 0) {
+    try {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function toStatusCode(value, fallback = 0) {
+    if (typeof value === "number") {
+      return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;
+    }
+    if (typeof value === "string" && /^[1-5]\d{2}$/.test(value)) {
+      return Number(value);
+    }
+    return fallback;
+  }
+
+  function toTokenCount(value) {
+    return Math.max(0, Math.floor(toFiniteNumber(value, 0)));
+  }
+
+  function stringifyTokenEstimateSegment(value) {
+    try {
+      const serialized = JSON.stringify(value);
+      return typeof serialized === "string" ? serialized : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function resolveAnthropicErrorStatusCode(err, fallback = 502) {
+    const explicit = toStatusCode(err?.statusCode, 0);
+    if (explicit >= 100 && explicit <= 599) return explicit;
+    try {
+      return resolveCompatErrorStatusCode({ ...err, message: err?.message, statusCode: undefined }, fallback);
+    } catch {
+      return fallback;
+    }
+  }
+
+  function toOpenAIChatUsageFromAnthropicUsage(usage) {
+    return (
+      mapResponsesUsageToChatUsage(usage) || {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0
+      }
+    );
+  }
+
+  function toAnthropicMessageUsage(usage, { serverToolUse = null } = {}) {
+    const chatUsage = mapResponsesUsageToChatUsage(usage);
+    const resolvedServerToolUse = serverToolUse || (isRecordObject(usage?.server_tool_use) ? usage.server_tool_use : null);
+    const anthropicUsage = {
+      input_tokens: chatUsage?.prompt_tokens ?? 0,
+      output_tokens: chatUsage?.completion_tokens ?? 0
+    };
+    if (resolvedServerToolUse) {
+      anthropicUsage.server_tool_use = resolvedServerToolUse;
+    }
+    return anthropicUsage;
+  }
+
+  function toAnthropicMessageStartUsage(usage) {
+    return {
+      input_tokens: toAnthropicMessageUsage(usage).input_tokens,
+      output_tokens: 0
+    };
+  }
+
+  function toAnthropicMessageDeltaUsage(usage) {
+    const normalized = toAnthropicMessageUsage(usage);
+    return {
+      output_tokens: normalized.output_tokens,
+      ...(normalized.server_tool_use ? { server_tool_use: normalized.server_tool_use } : {})
+    };
   }
 
   function isAnthropicBuiltInWebSearchToolType(value) {
@@ -628,7 +721,7 @@ export function createAnthropicLocalCompatHelpers(context) {
     }
 
     if (thinking.budget_tokens !== undefined) {
-      const budgetTokens = Number(thinking.budget_tokens);
+      const budgetTokens = toFiniteNumber(thinking.budget_tokens, Number.NaN);
       if (!Number.isFinite(budgetTokens) || budgetTokens < 0) {
         throw new Error("Anthropic thinking.budget_tokens must be a non-negative number.");
       }
@@ -930,19 +1023,19 @@ export function createAnthropicLocalCompatHelpers(context) {
     }
 
     if (Array.isArray(parsed.tools) && parsed.tools.length > 0) {
-      segments.push(JSON.stringify(parsed.tools));
+      segments.push(stringifyTokenEstimateSegment(parsed.tools));
     }
     if (parsed.tool_choice && typeof parsed.tool_choice === "object") {
-      segments.push(JSON.stringify(parsed.tool_choice));
+      segments.push(stringifyTokenEstimateSegment(parsed.tool_choice));
     }
     if (parsed.metadata && typeof parsed.metadata === "object") {
-      segments.push(JSON.stringify(parsed.metadata));
+      segments.push(stringifyTokenEstimateSegment(parsed.metadata));
     }
     if (Array.isArray(parsed.documents) && parsed.documents.length > 0) {
-      segments.push(JSON.stringify(parsed.documents));
+      segments.push(stringifyTokenEstimateSegment(parsed.documents));
     }
 
-    const fallbackSerialized = JSON.stringify(parsed);
+    const fallbackSerialized = stringifyTokenEstimateSegment(parsed);
     const combined = segments.filter((part) => typeof part === "string" && part.length > 0).join("\n\n");
     let inputTokens = estimateTokenCountFromText(combined || fallbackSerialized);
 
@@ -950,7 +1043,7 @@ export function createAnthropicLocalCompatHelpers(context) {
     if (systemText.trim().length > 0) inputTokens += 4;
     if (Array.isArray(parsed.tools) && parsed.tools.length > 0) inputTokens += parsed.tools.length * 20;
 
-    return Math.max(1, Number(inputTokens || 0));
+    return Math.max(1, toTokenCount(inputTokens));
   }
 
   function parseAnthropicToolUseInput(argumentsText) {
@@ -1336,13 +1429,14 @@ export function createAnthropicLocalCompatHelpers(context) {
   }
 
   function pruneAnthropicPendingToolBatches(now = Date.now()) {
+    const currentTime = readNonNegativeInteger(now) ?? 0;
     for (const [callId, entry] of anthropicPendingToolBatches.entries()) {
       if (!isRecordObject(entry)) {
         anthropicPendingToolBatches.delete(callId);
         continue;
       }
-      const createdAt = Number(entry.createdAt || 0);
-      if (!Number.isFinite(createdAt) || now - createdAt > ANTHROPIC_PENDING_TOOL_BATCH_TTL_MS) {
+      const createdAt = readNonNegativeInteger(entry.createdAt) ?? 0;
+      if (createdAt <= 0 || currentTime - createdAt > ANTHROPIC_PENDING_TOOL_BATCH_TTL_MS) {
         anthropicPendingToolBatches.delete(callId);
       }
     }
@@ -1498,7 +1592,12 @@ export function createAnthropicLocalCompatHelpers(context) {
       }
     }
 
-    const usage = response?.usage || {};
+    const serverToolUse =
+      webSearchRequestCount > 0
+        ? {
+            web_search_requests: webSearchRequestCount
+          }
+        : null;
     return {
       id:
         typeof response?.id === "string" && response.id.length > 0
@@ -1513,17 +1612,7 @@ export function createAnthropicLocalCompatHelpers(context) {
       content,
       stop_reason: mapResponsesStatusToAnthropicStopReason(response),
       stop_sequence: null,
-      usage: {
-        input_tokens: Number(usage.input_tokens || 0),
-        output_tokens: Number(usage.output_tokens || 0),
-        ...(webSearchRequestCount > 0
-          ? {
-              server_tool_use: {
-                web_search_requests: webSearchRequestCount
-              }
-            }
-          : {})
-      }
+      usage: toAnthropicMessageUsage(response?.usage, { serverToolUse })
     };
   }
 
@@ -1541,10 +1630,7 @@ export function createAnthropicLocalCompatHelpers(context) {
           content: [],
           stop_reason: null,
           stop_sequence: null,
-          usage: {
-            input_tokens: Number(message?.usage?.input_tokens || 0),
-            output_tokens: 0
-          }
+          usage: toAnthropicMessageStartUsage(message?.usage)
         }
       }
     });
@@ -1729,10 +1815,7 @@ export function createAnthropicLocalCompatHelpers(context) {
           stop_reason: message.stop_reason,
           stop_sequence: message.stop_sequence
         },
-        usage: {
-          output_tokens: Number(message?.usage?.output_tokens || 0),
-          ...(message?.usage?.server_tool_use ? { server_tool_use: message.usage.server_tool_use } : {})
-        }
+        usage: toAnthropicMessageDeltaUsage(message?.usage)
       }
     });
     events.push({
@@ -1838,10 +1921,7 @@ export function createAnthropicLocalCompatHelpers(context) {
             stop_reason: stopReason,
             stop_sequence: stopSequence
           },
-          usage: {
-            output_tokens: Number(usage?.output_tokens || 0),
-            ...(usage?.server_tool_use ? { server_tool_use: usage.server_tool_use } : {})
-          }
+          usage: toAnthropicMessageDeltaUsage(usage)
         });
         writeEvent("message_stop", { type: "message_stop" });
         session.end();
@@ -1909,7 +1989,7 @@ export function createAnthropicLocalCompatHelpers(context) {
     const reader = upstream.body.getReader();
     const session = createAnthropicPendingSseSession(res, { model });
     session.attachStream(reader, upstream);
-    const idleTimeoutMs = Math.max(0, Number(config?.upstreamStreamIdleTimeoutMs || 0));
+    const idleTimeoutMs = normalizeUpstreamStreamIdleTimeoutMs(config?.upstreamStreamIdleTimeoutMs, 0);
     let nextIndex = 0;
     let finalResponse = null;
     let webSearchRequestCount = 0;
@@ -2186,7 +2266,7 @@ export function createAnthropicLocalCompatHelpers(context) {
 
       if (isResponsesFailureEventType(event.type)) {
         const err = new Error(event.response?.error?.message || "Codex response failed.");
-        err.statusCode = Number(event.response?.status_code || event.status_code || 502) || 502;
+        err.statusCode = toStatusCode(event.response?.status_code || event.status_code, 502);
         throw err;
       }
 
@@ -2212,34 +2292,28 @@ export function createAnthropicLocalCompatHelpers(context) {
         : [];
       const emittedFunctionCallId = allFunctionCalls[0]?.call_id || "";
       const pendingFunctionCalls = allFunctionCalls.slice(1);
-      const usage = finalResponse?.usage || {};
+      const serverToolUse =
+        webSearchRequestCount > 0
+          ? {
+              web_search_requests: webSearchRequestCount
+            }
+          : null;
+      const usage = toAnthropicMessageUsage(finalResponse?.usage, { serverToolUse });
       closeAllOpenBlocks();
       session.finish({
         stopReason: mapResponsesStatusToAnthropicStopReason(finalResponse),
-        usage: {
-          output_tokens: Number(usage.output_tokens || 0),
-          ...(webSearchRequestCount > 0
-            ? {
-                server_tool_use: {
-                  web_search_requests: webSearchRequestCount
-                }
-              }
-            : {})
-        }
+        usage
       });
 
       return {
-        usage: {
-          prompt_tokens: Number(usage.input_tokens || 0),
-          completion_tokens: Number(usage.output_tokens || 0),
-          total_tokens: Number(usage.total_tokens || 0)
-        },
+        usage: toOpenAIChatUsageFromAnthropicUsage(finalResponse?.usage),
         emittedFunctionCallId,
         pendingFunctionCalls
       };
     } catch (err) {
       if (session.hasStarted() && !session.isClosed()) {
-        session.sendError(mapHttpStatusToAnthropicErrorType(Number(err?.statusCode || 502) || 502), err.message);
+        const statusCode = resolveAnthropicErrorStatusCode(err, 502);
+        session.sendError(mapHttpStatusToAnthropicErrorType(statusCode), err.message);
       }
       throw err;
     } finally {
@@ -2280,11 +2354,19 @@ export function createAnthropicLocalCompatHelpers(context) {
         let parsedBody;
         try {
           parsedBody = await readJsonBody(req);
-        } catch {
+        } catch (err) {
+          if (isRequestBodyTooLargeError(err)) {
+            sendAnthropicRequestBodyError(res, err);
+            return;
+          }
           parsedBody = undefined;
         }
         inputTokens = estimateAnthropicCountTokens(rawBody, parsedBody);
       } catch (err) {
+        if (isRequestBodyTooLargeError(err)) {
+          sendAnthropicRequestBodyError(res, err);
+          return;
+        }
         res.status(400).json({
           type: "error",
           error: {
@@ -2295,14 +2377,15 @@ export function createAnthropicLocalCompatHelpers(context) {
         return;
       }
 
+      const normalizedInputTokens = toTokenCount(inputTokens);
       const usage = {
-        prompt_tokens: Number(inputTokens || 0),
+        prompt_tokens: normalizedInputTokens,
         completion_tokens: 0,
-        total_tokens: Number(inputTokens || 0)
+        total_tokens: normalizedInputTokens
       };
       res.locals.tokenUsage = usage;
       res.status(200).json({
-        input_tokens: Number(inputTokens || 0)
+        input_tokens: normalizedInputTokens
       });
       return;
     }
@@ -2313,11 +2396,19 @@ export function createAnthropicLocalCompatHelpers(context) {
       let parsedBody;
       try {
         parsedBody = await readJsonBody(req);
-      } catch {
+      } catch (err) {
+        if (isRequestBodyTooLargeError(err)) {
+          sendAnthropicRequestBodyError(res, err);
+          return;
+        }
         parsedBody = undefined;
       }
       parsedReq = parseAnthropicNativeBody(rawBody, parsedBody);
     } catch (err) {
+      if (isRequestBodyTooLargeError(err)) {
+        sendAnthropicRequestBodyError(res, err);
+        return;
+      }
       res.status(400).json({
         type: "error",
         error: {
@@ -2333,13 +2424,7 @@ export function createAnthropicLocalCompatHelpers(context) {
 
     const queuedToolMessage = maybeBuildQueuedAnthropicToolMessage(parsedReq.messages, parsedReq.model || config.anthropic.defaultModel);
     if (queuedToolMessage) {
-      res.locals.tokenUsage = {
-        prompt_tokens: Number(queuedToolMessage?.usage?.input_tokens || 0),
-        completion_tokens: Number(queuedToolMessage?.usage?.output_tokens || 0),
-        total_tokens:
-          Number(queuedToolMessage?.usage?.input_tokens || 0) +
-          Number(queuedToolMessage?.usage?.output_tokens || 0)
-      };
+      res.locals.tokenUsage = toOpenAIChatUsageFromAnthropicUsage(queuedToolMessage?.usage);
       if (parsedReq.stream === true) {
         sendAnthropicMessageAsSse(res, queuedToolMessage);
         return;
@@ -2402,11 +2487,7 @@ export function createAnthropicLocalCompatHelpers(context) {
               message.model
             );
           }
-          res.locals.tokenUsage = {
-            prompt_tokens: Number(message?.usage?.input_tokens || 0),
-            completion_tokens: Number(message?.usage?.output_tokens || 0),
-            total_tokens: Number(message?.usage?.input_tokens || 0) + Number(message?.usage?.output_tokens || 0)
-          };
+          res.locals.tokenUsage = toOpenAIChatUsageFromAnthropicUsage(message?.usage);
           sendAnthropicMessageAsSse(res, message);
           await streamSession.markSuccess();
           return;
@@ -2433,8 +2514,8 @@ export function createAnthropicLocalCompatHelpers(context) {
         missingSseErr.statusCode = 502;
         throw missingSseErr;
       } catch (err) {
-        await streamSession?.markFailure?.(err.message, err?.statusCode || 502);
-        const statusCode = resolveCompatErrorStatusCode(err, 502);
+        const statusCode = resolveAnthropicErrorStatusCode(err, 502);
+        await streamSession?.markFailure?.(err.message, statusCode);
         if (!res.headersSent) {
           res.status(statusCode).json({
             type: "error",
@@ -2487,7 +2568,7 @@ export function createAnthropicLocalCompatHelpers(context) {
         }
       });
     } catch (err) {
-      const statusCode = resolveCompatErrorStatusCode(err, 502);
+      const statusCode = resolveAnthropicErrorStatusCode(err, 502);
       res.status(statusCode).json({
         type: "error",
         error: {
@@ -2510,11 +2591,7 @@ export function createAnthropicLocalCompatHelpers(context) {
       rememberAnthropicPendingToolBatch(emissionPlan.emittedFunctionCallId, emissionPlan.pendingFunctionCalls, message.model);
     }
     res.locals.authAccountId = result.authAccountId || null;
-    res.locals.tokenUsage = {
-      prompt_tokens: Number(message?.usage?.input_tokens || 0),
-      completion_tokens: Number(message?.usage?.output_tokens || 0),
-      total_tokens: Number(message?.usage?.input_tokens || 0) + Number(message?.usage?.output_tokens || 0)
-    };
+    res.locals.tokenUsage = toOpenAIChatUsageFromAnthropicUsage(message?.usage);
     res.status(200).json(message);
   }
 

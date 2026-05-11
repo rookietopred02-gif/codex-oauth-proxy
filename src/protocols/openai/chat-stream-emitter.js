@@ -1,4 +1,5 @@
 import { createOpenAIChatCompletionStream } from "../../http/openai-chat-stream.js";
+import { mapResponsesUsageToChatUsage } from "../../http/token-usage.js";
 import { isResponsesSuccessTerminalEventType } from "./responses-contract.js";
 
 export function createOpenAIChatCompletionStreamEmitter({
@@ -89,11 +90,13 @@ export function createOpenAIChatCompletionStreamEmitter({
       return usageMapper(usage);
     }
     if (!usage || typeof usage !== "object") return null;
-    return {
-      prompt_tokens: Number(usage.input_tokens || usage.prompt_tokens || 0),
-      completion_tokens: Number(usage.output_tokens || usage.completion_tokens || 0),
-      total_tokens: Number(usage.total_tokens || 0)
-    };
+    return (
+      mapResponsesUsageToChatUsage(usage) || {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0
+      }
+    );
   };
 
   const finalizeFromCompleted = (completedResponse) => {

@@ -1,3 +1,5 @@
+import { setNoStoreHeaders } from "../http/cache-headers.js";
+import { getRequestBodyErrorStatus, isRequestBodyError } from "../http/request-body.js";
 import { buildAdminConfigSnapshot } from "./admin-shared.js";
 
 export function registerAdminSettingsRoutes(app, context) {
@@ -34,13 +36,22 @@ export function registerAdminSettingsRoutes(app, context) {
     targetConfig.upstreamBaseUrl = nextBaseUrl;
   }
 
+  function writeRequestBodyError(res, err) {
+    res.status(getRequestBodyErrorStatus(err)).json({
+      error: err?.code || "invalid_request",
+      message: err?.message || "Invalid request body."
+    });
+  }
+
   app.post("/admin/requests/clear", async (_req, res) => {
+    setNoStoreHeaders(res);
     runtimeStats.recentRequests = recentRequestsStore.clear().recentRequests;
     await recentRequestsStore.flush();
     res.json({ ok: true, cleared: true });
   });
 
   app.post("/admin/config", async (req, res) => {
+    setNoStoreHeaders(res);
     try {
       const body = await readJsonBody(req);
       const nextConfig = structuredClone(config);
@@ -155,11 +166,16 @@ export function registerAdminSettingsRoutes(app, context) {
         })
       });
     } catch (err) {
+      if (isRequestBodyError(err)) {
+        writeRequestBodyError(res, err);
+        return;
+      }
       res.status(400).json({ error: "invalid_config", message: err.message });
     }
   });
 
   app.post("/admin/test", async (req, res) => {
+    setNoStoreHeaders(res);
     try {
       const body = await readJsonBody(req);
       const prompt =
@@ -169,6 +185,10 @@ export function registerAdminSettingsRoutes(app, context) {
       const result = await runDirectChatCompletionTest(prompt);
       res.json({ ok: true, result });
     } catch (err) {
+      if (isRequestBodyError(err)) {
+        writeRequestBodyError(res, err);
+        return;
+      }
       res.status(400).json({ error: "test_failed", message: err.message });
     }
   });

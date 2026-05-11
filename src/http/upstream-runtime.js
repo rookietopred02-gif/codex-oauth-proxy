@@ -1,5 +1,9 @@
 import { Readable, pipeline } from "node:stream";
-import { DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS } from "../upstream-timeouts.js";
+import {
+  DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS,
+  normalizeNonNegativeInteger,
+  normalizeUpstreamStreamIdleTimeoutMs
+} from "../upstream-timeouts.js";
 
 export function createUpstreamRuntimeHelpers(context) {
   const {
@@ -15,7 +19,7 @@ export function createUpstreamRuntimeHelpers(context) {
       typeof upstreamStreamIdleTimeoutMsInput === "function"
         ? upstreamStreamIdleTimeoutMsInput()
         : upstreamStreamIdleTimeoutMsInput;
-    return Math.max(0, Number(raw || 0));
+    return normalizeUpstreamStreamIdleTimeoutMs(raw, 0);
   }
 
   function isClientDisconnectError(err) {
@@ -47,8 +51,8 @@ export function createUpstreamRuntimeHelpers(context) {
   function noteUpstreamRetry(res, retryCount = 0, err = null) {
     if (!res?.locals) return;
     const normalizedRetryCount = Math.max(
-      Number(res.locals.upstreamRetryCount || 0),
-      Math.max(0, Number(retryCount || 0))
+      normalizeNonNegativeInteger(res.locals.upstreamRetryCount, 0),
+      normalizeNonNegativeInteger(retryCount, 0)
     );
     res.locals.upstreamRetryCount = normalizedRetryCount;
     if (!err) return;
@@ -121,13 +125,34 @@ export function createUpstreamRuntimeHelpers(context) {
         new Promise((_, reject) => {
           timer = setTimeout(() => {
             const timeoutError = createUpstreamIdleTimeoutError(timeoutMs);
+            reject(timeoutError);
             const cancelReader = typeof reader?.cancel === "function" ? reader.cancel.bind(reader) : null;
             if (cancelReader) {
               cancelReader(timeoutError).catch(() => {});
             } else {
               cancelUpstreamBody(upstream).catch(() => {});
             }
-            reject(timeoutError);
+          }, timeoutMs);
+          timer.unref?.();
+        })
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function readFallbackTextWithIdleTimeout(upstream, timeoutMs = getResolvedUpstreamStreamIdleTimeoutMs()) {
+    if (!(timeoutMs > 0)) {
+      return await upstream.text();
+    }
+
+    let timer = null;
+    try {
+      return await Promise.race([
+        upstream.text(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            reject(createUpstreamIdleTimeoutError(timeoutMs));
           }, timeoutMs);
           timer.unref?.();
         })
@@ -142,7 +167,7 @@ export function createUpstreamRuntimeHelpers(context) {
       const result = await fetchWithUpstreamRetryImpl(targetUrl, init, {
         requestTimeoutMs: getResolvedUpstreamStreamIdleTimeoutMs(),
         onRetry: ({ retryCount, code, name, detail }) => {
-          noteUpstreamRetry(res, retryCount + 1, {
+          noteUpstreamRetry(res, normalizeNonNegativeInteger(retryCount, 0) + 1, {
             code: code || name || "",
             message: detail || code || name || "fetch failed"
           });
@@ -200,7 +225,7 @@ export function createUpstreamRuntimeHelpers(context) {
                   message: err?.message || "stream failed",
                   code: err?.code || err?.cause?.code || null,
                   detail: extractUpstreamTransportError(err).detail || null,
-                  retry_count: Number(res?.locals?.upstreamRetryCount || 0)
+                  retry_count: normalizeNonNegativeInteger(res?.locals?.upstreamRetryCount, 0)
                 });
               } else if (!res.writableEnded) {
                 res.end();
@@ -217,7 +242,7 @@ export function createUpstreamRuntimeHelpers(context) {
                 message: err?.message || "stream failed",
                 code: err?.code || err?.cause?.code || null,
                 detail: extractUpstreamTransportError(err).detail || null,
-                retry_count: Number(res?.locals?.upstreamRetryCount || 0)
+                retry_count: normalizeNonNegativeInteger(res?.locals?.upstreamRetryCount, 0)
               });
             } else if (!res.writableEnded) {
               res.end();
@@ -235,7 +260,7 @@ export function createUpstreamRuntimeHelpers(context) {
   async function readUpstreamTextOrThrow(upstream) {
     try {
       if (!upstream?.body) {
-        return await upstream.text();
+        return await readFallbackTextWithIdleTimeout(upstream);
       }
 
       const reader = upstream.body.getReader();

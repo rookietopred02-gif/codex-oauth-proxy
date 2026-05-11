@@ -1,7 +1,13 @@
 function toFiniteTokenNumber(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  if (typeof value !== "string") return null;
+
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function readNestedTokenValue(object, keys) {
@@ -86,13 +92,13 @@ export function toChatUsageFromNormalizedTokenUsage(usage) {
   const normalized = normalizeTokenUsage(usage);
   if (!normalized) return null;
   const chatUsage = {
-    prompt_tokens: Number(normalized.inputTokens || 0),
-    completion_tokens: Number(normalized.outputTokens || 0),
-    total_tokens: Number(normalized.totalTokens || 0)
+    prompt_tokens: normalized.inputTokens ?? 0,
+    completion_tokens: normalized.outputTokens ?? 0,
+    total_tokens: normalized.totalTokens ?? 0
   };
   if (normalized.cachedInputTokens !== null) {
     chatUsage.prompt_tokens_details = {
-      cached_tokens: Number(normalized.cachedInputTokens || 0)
+      cached_tokens: normalized.cachedInputTokens ?? 0
     };
   }
   return chatUsage;

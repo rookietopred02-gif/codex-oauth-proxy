@@ -6,6 +6,10 @@ import {
 } from "./sse-runtime.js";
 import { authorizeProxyApiRequest } from "./proxy-api-key-auth.js";
 import { isResponsesCreatePath } from "../protocols/openai/responses-contract.js";
+import {
+  DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS,
+  normalizeUpstreamStreamIdleTimeoutMs
+} from "../upstream-timeouts.js";
 
 const WEBSOCKET_CONNECTION_LIMIT_MS = 60 * 60 * 1000;
 const WEBSOCKET_OPEN_STATE = 1;
@@ -16,13 +20,44 @@ function safeTruncate(value, limit = 400) {
   return `${text.slice(0, limit)}...`;
 }
 
+function toStatusCode(value, fallback = 502) {
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!/^[1-5]\d{2}$/.test(text)) return fallback;
+    return Number(text);
+  }
+  try {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= 100 && parsed <= 599 ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function toNonNegativeInteger(value, fallback = 0) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+  }
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
+  }
+  return fallback;
+}
+
+function resolveUpstreamStreamIdleTimeoutMs(config) {
+  const raw =
+    config?.upstreamStreamIdleTimeoutMs ?? DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_MS;
+  return normalizeUpstreamStreamIdleTimeoutMs(raw, 0);
+}
+
 function buildResponseFailedEvent({ message, code = "", statusCode = 400, responseId = "" } = {}) {
   return {
     type: "response.failed",
     response: {
       ...(responseId ? { id: responseId } : {}),
       status: "failed",
-      status_code: Number(statusCode || 400) || 400,
+      status_code: toStatusCode(statusCode, 400),
       error: {
         ...(code ? { code } : {}),
         message: String(message || "Response request failed.")
@@ -299,7 +334,7 @@ export function attachResponsesWebSocketServer(server, context) {
             authAccountId: session?.authAccountId || null,
             proxyApiKeyId: meta.proxyApiKeyId || null,
             proxyApiKeyLabel: meta.proxyApiKeyLabel || "",
-            upstreamRetryCount: session?.retryCount || 0,
+            upstreamRetryCount: toNonNegativeInteger(session?.retryCount, 0),
             upstreamErrorCode: latestUpstreamErrorCode,
             upstreamErrorDetail: latestUpstreamErrorDetail,
             compatibilityHint: session?.compatibilityHint || "",
@@ -386,7 +421,7 @@ export function attachResponsesWebSocketServer(server, context) {
             }
 
             replayBufferedSseEvents(ws, raw);
-            latestStatusCode = parsedResult.failed ? Number(parsedResult.failed.statusCode || 502) || 502 : 200;
+            latestStatusCode = parsedResult.failed ? toStatusCode(parsedResult.failed.statusCode, 502) : 200;
             latestResponseBody = raw;
             latestResponseContentType = "text/event-stream";
             latestTokenUsage = parsedResult.completed?.usage || null;
@@ -453,6 +488,7 @@ export function attachResponsesWebSocketServer(server, context) {
 
         await consumeSseBlocks(session.upstream, {
           reader,
+          timeoutMs: resolveUpstreamStreamIdleTimeoutMs(config),
           isClosed: () => state.closed || ws.readyState !== ws.OPEN,
           onBlock(block) {
             const parsedEvent = parseSseJsonEventBlock(block);
@@ -466,7 +502,7 @@ export function attachResponsesWebSocketServer(server, context) {
 
         const parsedResult = parseResponsesResultFromSse(rawSse);
         if (parsedResult.failed) {
-          latestStatusCode = Number(parsedResult.failed.statusCode || 502) || 502;
+          latestStatusCode = toStatusCode(parsedResult.failed.statusCode, 502);
           latestResponseBody = rawSse;
           latestResponseContentType = String(session.upstream.headers.get("content-type") || "text/event-stream");
           latestUpstreamErrorCode = String(parsedResult.failed.code || "");
@@ -507,7 +543,7 @@ export function attachResponsesWebSocketServer(server, context) {
         finalizeRecentRequest();
       } catch (err) {
         if (!state.closed && ws.readyState === WEBSOCKET_OPEN_STATE && !terminalSent) {
-          const statusCode = Number(err?.statusCode || 502) || 502;
+          const statusCode = toStatusCode(err?.statusCode, 502);
           const failureCode =
             typeof err?.failureCode === "string" && err.failureCode.length > 0
               ? err.failureCode
@@ -521,7 +557,7 @@ export function attachResponsesWebSocketServer(server, context) {
             })
           );
         }
-        latestStatusCode = Number(err?.statusCode || 502) || 502;
+        latestStatusCode = toStatusCode(err?.statusCode, 502);
         latestResponseBody = JSON.stringify(
           buildResponseFailedEvent({
             code:
@@ -536,8 +572,8 @@ export function attachResponsesWebSocketServer(server, context) {
         latestUpstreamErrorCode = String(err?.code || err?.failureCode || err?.error || "");
         latestUpstreamErrorDetail = String(err?.message || "");
         if (session) {
-          session.forgetPinnedAffinity(Number(err?.statusCode || 0), err?.message || "");
-          await session.markFailure(err?.message || "WebSocket response request failed.", Number(err?.statusCode || 502) || 502);
+          session.forgetPinnedAffinity(toStatusCode(err?.statusCode, 0), err?.message || "");
+          await session.markFailure(err?.message || "WebSocket response request failed.", toStatusCode(err?.statusCode, 502));
         }
         finalizeRecentRequest();
       } finally {
