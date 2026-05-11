@@ -19,7 +19,7 @@
     "lint": "node scripts/lint.mjs",
     "format:check": "node scripts/check-format.mjs",
     "typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
-    "test:smoke": "node --test tests/app-server.test.js tests/cloudflared-service.test.js tests/config-service.test.js tests/dashboard-auth.test.js tests/proxy-handlers.test.js tests/responses-websocket-server.test.js tests/account-lease-selection.test.js tests/electron-runtime-paths.test.js tests/lifecycle-control.test.js",
+    "test:smoke": "node --test tests/app-server.test.js tests/cloudflared-service.test.js tests/config-service.test.js tests/dashboard-auth.test.js tests/proxy-handlers.test.js tests/request-normalization.test.js tests/responses-websocket-server.test.js tests/responses-compat.test.js tests/account-lease-selection.test.js tests/electron-runtime-paths.test.js tests/lifecycle-control.test.js tests/clean-build-cache.test.js",
     "test": "node --test",
     "check": "npm run lint && npm run format:check && npm run typecheck && npm run test:smoke",
     "release:gate": "npm run check && npm test"

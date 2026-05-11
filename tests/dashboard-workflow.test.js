@@ -959,8 +959,11 @@ test("package.json smoke gate covers streaming and account routing suites", asyn
 
   for (const suite of [
     "tests/proxy-handlers.test.js",
+    "tests/request-normalization.test.js",
     "tests/responses-websocket-server.test.js",
-    "tests/account-lease-selection.test.js"
+    "tests/responses-compat.test.js",
+    "tests/account-lease-selection.test.js",
+    "tests/clean-build-cache.test.js"
   ]) {
     assert.ok(smokeScript.includes(suite), `expected smoke script to include ${suite}`);
   }
