@@ -248,7 +248,7 @@ export function createProxyRouteHandlers(context) {
     const capturePackets = shouldCaptureAuditPackets();
     const packetCharLimit = getAuditPacketCharLimit();
     const normalizedStatusCode = readStatusCode(statusCode, 0);
-    const normalizedStartedAt = readFiniteNumber(startedAt, Date.now());
+    const normalizedStartedAt = readNonNegativeInteger(startedAt, Date.now());
     const normalizedRetryCount = readNonNegativeInteger(upstreamRetryCount, 0);
     const responsePacketForUsage = formatPayloadForAudit(responseBody, normalizedResponseContentType, 0);
     const responsePacket = capturePackets
@@ -372,15 +372,6 @@ export function createProxyRouteHandlers(context) {
       return Number(value);
     }
     return fallback;
-  }
-
-  function readFiniteNumber(value, fallback = 0) {
-    try {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : fallback;
-    } catch {
-      return fallback;
-    }
   }
 
   function readNonNegativeInteger(value, fallback = 0) {

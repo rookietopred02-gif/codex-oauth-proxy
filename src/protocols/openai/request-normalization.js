@@ -24,11 +24,8 @@ export function createOpenAIRequestNormalizationHelpers(context) {
 
   function ensureResponsesInclude(requestBody, value) {
     if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) return;
-    const existing = Array.isArray(requestBody.include)
-      ? requestBody.include.filter((item) => typeof item === "string" && item.length > 0)
-      : [];
+    const existing = Array.isArray(requestBody.include) ? requestBody.include : [];
     if (existing.includes(value)) {
-      requestBody.include = existing;
       return;
     }
     requestBody.include = [...existing, value];
@@ -220,7 +217,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     if (!hasExplicitInclude && normalized.store === false) {
       ensureResponsesInclude(normalized, "reasoning.encrypted_content");
     }
-    if (!hasExplicitInclude && hasResponsesWebSearchTool(normalized.tools)) {
+    if (hasResponsesWebSearchTool(normalized.tools) && (!hasExplicitInclude || Array.isArray(normalized.include))) {
       ensureResponsesInclude(normalized, "web_search_call.action.sources");
     }
     preserveExplicitReasoningEffort(normalized, parsed);

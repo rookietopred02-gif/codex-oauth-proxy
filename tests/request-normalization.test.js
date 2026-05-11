@@ -124,7 +124,7 @@ test("normalizeCodexResponsesRequestBody adds web search sources include when om
   ]);
 });
 
-test("normalizeCodexResponsesRequestBody preserves explicit web search include choices", () => {
+test("normalizeCodexResponsesRequestBody preserves explicit includes while adding web search sources", () => {
   const helpers = createHelpers();
   const normalized = helpers.normalizeCodexResponsesRequestBody(
     Buffer.from(JSON.stringify({
@@ -141,7 +141,70 @@ test("normalizeCodexResponsesRequestBody preserves explicit web search include c
     }), "utf8")
   );
 
-  assert.deepEqual(normalized.json.include, ["message.output_text.logprobs"]);
+  assert.deepEqual(normalized.json.include, [
+    "message.output_text.logprobs",
+    "web_search_call.action.sources"
+  ]);
+});
+
+test("normalizeCodexResponsesRequestBody does not prune explicit include entries while adding web search sources", () => {
+  const helpers = createHelpers();
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      store: true,
+      include: ["message.output_text.logprobs", "", 42, null],
+      input: "Search the web for the latest docs.",
+      tools: [
+        {
+          type: "web_search_preview"
+        }
+      ]
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.include, [
+    "message.output_text.logprobs",
+    "",
+    42,
+    null,
+    "web_search_call.action.sources"
+  ]);
+});
+
+test("normalizeCodexResponsesRequestBody preserves web search tuning fields", () => {
+  const helpers = createHelpers();
+  const webSearchTool = {
+    type: "web_search",
+    external_web_access: false,
+    search_context_size: "high",
+    filters: {
+      allowed_domains: ["openai.com"],
+      blocked_domains: ["example.test"]
+    },
+    user_location: {
+      type: "approximate",
+      country: "US",
+      city: "San Francisco",
+      region: "California"
+    }
+  };
+  const normalized = helpers.normalizeCodexResponsesRequestBody(
+    Buffer.from(JSON.stringify({
+      model: "gpt-5.4",
+      stream: false,
+      input: "Search with web constraints.",
+      tools: [webSearchTool]
+    }), "utf8")
+  );
+
+  assert.deepEqual(normalized.json.tools, [webSearchTool]);
+  assert.deepEqual(normalized.json.include, [
+    "reasoning.encrypted_content",
+    "web_search_call.action.sources"
+  ]);
+  assert.notEqual(normalized.json.tools[0], webSearchTool);
 });
 
 test("normalizeCodexResponsesRequestBody adds web search sources include for dated preview tools", () => {
@@ -1166,7 +1229,7 @@ test("normalizeChatCompletionsRequestBody flattens function tool_choice and pres
 test("normalizeChatCompletionsRequestBody preserves the official built-in Responses tool families", () => {
   const helpers = createHelpers();
   const builtInTools = [
-    { type: "web_search", search_context_size: "low" },
+    { type: "web_search", external_web_access: false, search_context_size: "low" },
     { type: "file_search", vector_store_ids: ["vs_123"] },
     { type: "mcp", server_label: "docs", server_url: "https://example.test/mcp", require_approval: "never" },
     { type: "image_generation", size: "1024x1024" },

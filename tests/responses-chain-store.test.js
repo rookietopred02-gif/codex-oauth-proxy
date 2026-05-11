@@ -159,6 +159,56 @@ test("responses chain replay keeps streamed function calls even when terminal co
   ]);
 });
 
+test("responses chain replay preserves streamed web search sources", () => {
+  const helpers = createResponsesHelpers();
+  const completed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}',
+      'data: {"type":"response.completed","response":{"id":"resp_web_search_chain","status":"completed","output":[{"id":"ws_1","type":"web_search_call","status":"in_progress","action":{"query":"latest docs","sources":[]}}]}}'
+    ].join("\n\n") + "\n\n"
+  ).completed;
+
+  const entry = buildResponsesChainEntry(
+    {
+      model: "gpt-5.4",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Search for the latest docs." }]
+        }
+      ]
+    },
+    completed
+  );
+
+  const expanded = expandResponsesRequestBodyFromChain(
+    {
+      previous_response_id: "resp_web_search_chain",
+      input: [{ role: "user", content: [{ type: "input_text", text: "Summarize the source." }] }]
+    },
+    entry
+  );
+
+  assert.deepEqual(
+    expanded.input.find((item) => item.type === "web_search_call"),
+    {
+      id: "ws_1",
+      type: "web_search_call",
+      status: "completed",
+      action: {
+        query: "latest docs",
+        sources: [
+          {
+            type: "url",
+            title: "Docs",
+            url: "https://example.test/docs"
+          }
+        ]
+      }
+    }
+  );
+});
+
 test("responses chain replay does not duplicate already-expanded history prefixes", () => {
   const priorEntry = {
     responseId: "resp_existing",

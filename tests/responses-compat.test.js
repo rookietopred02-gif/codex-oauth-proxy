@@ -616,12 +616,115 @@ test("parseResponsesResultFromSse keeps web_search_call terminal status when ite
   ]);
 });
 
+test("parseResponsesResultFromSse merges indexed web_search_call placeholders with later item details", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.web_search_call.searching","output_index":0}',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}',
+      'data: {"type":"response.completed","response":{"id":"resp_web_search_indexed_placeholder","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "ws_1",
+      type: "web_search_call",
+      status: "completed",
+      action: {
+        query: "latest docs",
+        sources: [
+          {
+            type: "url",
+            title: "Docs",
+            url: "https://example.test/docs"
+          }
+        ]
+      }
+    }
+  ]);
+});
+
+test("parseResponsesResultFromSse keeps nonzero web_search_call placeholders in output order", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.web_search_call.searching","output_index":1}',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Before search.","annotations":[]}]}}',
+      'data: {"type":"response.output_item.added","output_index":1,"item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}',
+      'data: {"type":"response.completed","response":{"id":"resp_web_search_nonzero_indexed_placeholder","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "msg_1",
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [
+        {
+          type: "output_text",
+          text: "Before search.",
+          annotations: []
+        }
+      ]
+    },
+    {
+      id: "ws_1",
+      type: "web_search_call",
+      status: "completed",
+      action: {
+        query: "latest docs",
+        sources: [
+          {
+            type: "url",
+            title: "Docs",
+            url: "https://example.test/docs"
+          }
+        ]
+      }
+    }
+  ]);
+});
+
 test("parseResponsesResultFromSse preserves streamed web_search_call sources when terminal output is partial", () => {
   const helpers = createHelpers();
   const parsed = helpers.parseResponsesResultFromSse(
     [
       'data: {"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}',
       'data: {"type":"response.completed","response":{"id":"resp_web_search_terminal_partial","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"id":"ws_1","type":"web_search_call","status":"in_progress","action":{"query":"latest docs"}}]}}'
+    ].join("\n\n") + "\n\n"
+  );
+
+  assert.equal(parsed.failed, null);
+  assert.deepEqual(parsed.completed?.output, [
+    {
+      id: "ws_1",
+      type: "web_search_call",
+      status: "completed",
+      action: {
+        query: "latest docs",
+        sources: [
+          {
+            type: "url",
+            title: "Docs",
+            url: "https://example.test/docs"
+          }
+        ]
+      }
+    }
+  ]);
+});
+
+test("parseResponsesResultFromSse preserves streamed web_search_call sources when terminal output reports none", () => {
+  const helpers = createHelpers();
+  const parsed = helpers.parseResponsesResultFromSse(
+    [
+      'data: {"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"completed","action":{"query":"latest docs","sources":[{"type":"url","title":"Docs","url":"https://example.test/docs"}]}}}',
+      'data: {"type":"response.completed","response":{"id":"resp_web_search_terminal_empty_sources","status":"completed","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"output":[{"id":"ws_1","type":"web_search_call","status":"in_progress","action":{"query":"latest docs","sources":[]}}]}}'
     ].join("\n\n") + "\n\n"
   );
 

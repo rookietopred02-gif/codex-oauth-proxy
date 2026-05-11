@@ -27,6 +27,10 @@ export function chooseResponsesWebSearchCallStatus(existingStatus, nextStatus) {
   return nextStatus;
 }
 
+function hasNonEmptyArray(value) {
+  return Array.isArray(value) && value.length > 0;
+}
+
 export function mergeResponsesWebSearchCallOutputItems(existing, next) {
   if (existing?.type !== "web_search_call" || next?.type !== "web_search_call") {
     return next;
@@ -38,10 +42,15 @@ export function mergeResponsesWebSearchCallOutputItems(existing, next) {
   const status = chooseResponsesWebSearchCallStatus(existing.status, next.status);
   if (status) merged.status = status;
   if (isRecordObject(existing.action) || isRecordObject(next.action)) {
+    const existingAction = isRecordObject(existing.action) ? cloneJson(existing.action) : {};
+    const nextAction = isRecordObject(next.action) ? cloneJson(next.action) : {};
     merged.action = {
-      ...(isRecordObject(existing.action) ? cloneJson(existing.action) : {}),
-      ...(isRecordObject(next.action) ? cloneJson(next.action) : {})
+      ...existingAction,
+      ...nextAction
     };
+    if (hasNonEmptyArray(existingAction.sources) && !hasNonEmptyArray(nextAction.sources)) {
+      merged.action.sources = existingAction.sources;
+    }
   }
   return merged;
 }

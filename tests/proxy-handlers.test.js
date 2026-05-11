@@ -502,7 +502,9 @@ test("recent proxy audit rows mark normal requests as HTTP transport", () => {
   assert.equal(appendedRows[0]?.transportType, "http");
 });
 
-test("recent proxy audit rows tolerate malformed numeric metadata", () => {
+test("recent proxy audit rows tolerate malformed numeric metadata", (t) => {
+  t.mock.method(Date, "now", () => 5000);
+
   const appendedRows = [];
   const packetLimits = [];
   const runtimeStats = {
@@ -588,6 +590,20 @@ test("recent proxy audit rows tolerate malformed numeric metadata", () => {
   assert.equal(runtimeStats.okRequests, 0);
   assert.equal(runtimeStats.errorRequests, 3);
   assert.equal(appendedRows.length, 3);
+
+  const exponentStartedAtRow = handlers.recordRecentProxyRequest({
+    method: "GET",
+    rawPath: "/v1/responses",
+    statusCode: 200,
+    startedAt: "1e3"
+  });
+
+  assert.equal(exponentStartedAtRow.status, 200);
+  assert.equal(exponentStartedAtRow.durationMs, 0);
+  assert.equal(runtimeStats.totalRequests, 4);
+  assert.equal(runtimeStats.okRequests, 1);
+  assert.equal(runtimeStats.errorRequests, 3);
+  assert.equal(appendedRows.length, 4);
 });
 
 test("recent proxy audit backfills cached input tokens from response packets", () => {
@@ -1279,6 +1295,68 @@ test("POST /v1/responses forwards web search sources include when omitted", asyn
   session.release();
 });
 
+test("POST /v1/responses preserves explicit includes while adding web search sources", async () => {
+  let capturedInit = null;
+  const realNormalizer = createRealResponsesNormalizer();
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody, options) {
+      return realNormalizer.normalizeCodexResponsesRequestBody(rawBody, options);
+    },
+    async fetchImpl(_url, init) {
+      capturedInit = init;
+      return new Response(
+        JSON.stringify({
+          id: "resp_web_search_explicit_include",
+          status: "completed",
+          output: [],
+          usage: {}
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    }
+  });
+  const payload = {
+    model: "gpt-5.4",
+    stream: false,
+    store: true,
+    include: ["message.output_text.logprobs"],
+    input: "Search for current docs.",
+    tools: [
+      {
+        type: "web_search",
+        search_context_size: "low"
+      }
+    ]
+  };
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {}
+    },
+    createMockResponse(),
+    {
+      originalUrl: "/v1/responses",
+      requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+      parsedRequestBody: payload
+    }
+  );
+
+  const upstreamPayload = JSON.parse(Buffer.from(capturedInit.body).toString("utf8"));
+  assert.deepEqual(upstreamPayload.include, [
+    "message.output_text.logprobs",
+    "web_search_call.action.sources"
+  ]);
+  assert.deepEqual(upstreamPayload.tools, payload.tools);
+  assert.equal(session.collectCompletedResponseAsJson, true);
+  session.release();
+});
+
 test("POST /v1/responses forwards web search sources include for dated web search tools", async () => {
   let capturedInit = null;
   const realNormalizer = createRealResponsesNormalizer();
@@ -1843,6 +1921,75 @@ test("Responses WebSocket session helper forces upstream stream when client send
   assert.equal(upstreamPayload.stream, true);
   assert.equal(session.collectCompletedResponseAsJson, false);
   assert.equal(session.normalizedResponsesRequest.stream, true);
+  assert.equal(capturedInit.headers.get("accept"), "text/event-stream");
+  assert.equal(capturedInit.headers.get("accept-encoding"), "identity");
+  session.release();
+});
+
+test("Responses WebSocket session helper preserves web search include and tuning fields", async () => {
+  let capturedInit = null;
+  const realNormalizer = createRealResponsesNormalizer();
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody, options) {
+      return realNormalizer.normalizeCodexResponsesRequestBody(rawBody, options);
+    },
+    async fetchImpl(_url, init) {
+      capturedInit = init;
+      return new Response("", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" }
+      });
+    }
+  });
+  const webSearchTool = {
+    type: "web_search",
+    external_web_access: false,
+    search_context_size: "high",
+    filters: {
+      allowed_domains: ["openai.com"],
+      blocked_domains: ["example.test"]
+    },
+    user_location: {
+      type: "approximate",
+      country: "US",
+      city: "San Francisco",
+      region: "California"
+    }
+  };
+  const payload = {
+    model: "gpt-5.4",
+    stream: false,
+    store: true,
+    include: ["message.output_text.logprobs"],
+    input: "Search with web constraints.",
+    tools: [webSearchTool]
+  };
+
+  const session = await handlers.openResponsesCreateProxySession(
+    {
+      method: "POST",
+      originalUrl: "/v1/responses",
+      url: "/v1/responses",
+      headers: {}
+    },
+    null,
+    {
+      originalUrl: "/v1/responses",
+      requestBody: Buffer.from(JSON.stringify(payload), "utf8"),
+      parsedRequestBody: payload
+    }
+  );
+
+  const upstreamPayload = JSON.parse(Buffer.from(capturedInit.body).toString("utf8"));
+  assert.equal(upstreamPayload.stream, true);
+  assert.deepEqual(upstreamPayload.include, [
+    "message.output_text.logprobs",
+    "web_search_call.action.sources"
+  ]);
+  assert.deepEqual(upstreamPayload.tools, [webSearchTool]);
+  assert.equal(session.collectCompletedResponseAsJson, false);
+  assert.deepEqual(session.normalizedResponsesRequest.include, upstreamPayload.include);
+  assert.deepEqual(session.normalizedResponsesRequest.tools, upstreamPayload.tools);
   assert.equal(capturedInit.headers.get("accept"), "text/event-stream");
   assert.equal(capturedInit.headers.get("accept-encoding"), "identity");
   session.release();

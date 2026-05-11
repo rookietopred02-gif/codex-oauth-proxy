@@ -75,13 +75,27 @@ export function createOpenAIResponsesCompatHelpers(context) {
       functionCallByItemId: new Map()
     };
 
-    const upsertOutputItem = (item) => {
+    const upsertOutputItem = (item, outputIndex = null) => {
       if (!item) return null;
       const itemId = typeof item.id === "string" ? item.id : "";
       if (itemId && state.outputIndexById.has(itemId)) {
-        const outputIndex = state.outputIndexById.get(itemId);
-        state.output[outputIndex] = mergeResponsesWebSearchCallOutputItems(state.output[outputIndex], item);
-        return state.output[outputIndex];
+        const existingIndex = state.outputIndexById.get(itemId);
+        state.output[existingIndex] = mergeResponsesWebSearchCallOutputItems(state.output[existingIndex], item);
+        return state.output[existingIndex];
+      }
+      if (Number.isInteger(outputIndex) && outputIndex >= 0) {
+        const existing = state.output[outputIndex];
+        const existingId = typeof existing?.id === "string" ? existing.id : "";
+        if (existing === undefined) {
+          state.output[outputIndex] = item;
+          if (itemId) state.outputIndexById.set(itemId, outputIndex);
+          return state.output[outputIndex];
+        }
+        if (existing?.type === item.type && (!existingId || !itemId || existingId === itemId)) {
+          state.output[outputIndex] = mergeResponsesWebSearchCallOutputItems(existing, item);
+          if (itemId) state.outputIndexById.set(itemId, outputIndex);
+          return state.output[outputIndex];
+        }
       }
       state.output.push(item);
       if (itemId) state.outputIndexById.set(itemId, state.output.length - 1);
@@ -123,7 +137,7 @@ export function createOpenAIResponsesCompatHelpers(context) {
           return existing;
         }
       }
-      return upsertOutputItem({ ...(itemId ? { id: itemId } : {}), type: "web_search_call" });
+      return upsertOutputItem({ ...(itemId ? { id: itemId } : {}), type: "web_search_call" }, outputIndex);
     };
 
     const ensureReasoningSummaryPart = (itemId, summaryIndex = 0) => {
@@ -226,7 +240,8 @@ export function createOpenAIResponsesCompatHelpers(context) {
       if (parsed.type === "response.output_item.added" || parsed.type === "response.output_item.done") {
         const outputItem = normalizeResponsesOutputItem(parsed.item);
         if (outputItem) {
-          upsertOutputItem(outputItem);
+          const outputIndex = Number.isInteger(parsed.output_index) ? parsed.output_index : null;
+          upsertOutputItem(outputItem, outputIndex);
           if (outputItem.type === "function_call" && typeof parsed?.item?.id === "string" && parsed.item.id.length > 0) {
             state.functionCallByItemId.set(parsed.item.id, outputItem);
           }
