@@ -3,13 +3,20 @@ import test from "node:test";
 
 import { createAuthContextRuntime } from "../src/server/auth-context-runtime.js";
 
-function createRuntime({ strategy = "smart", pickCandidates, deriveEntryId, refreshAccessToken } = {}) {
+function createRuntime({
+  strategy = "smart",
+  multiAccountEnabled = true,
+  pickCandidates,
+  deriveEntryId,
+  upsertAccount,
+  refreshAccessToken
+} = {}) {
   const savedStores = [];
   const runtime = createAuthContextRuntime({
     config: {
       authMode: "codex-oauth",
       codexOAuth: {
-        multiAccountEnabled: true,
+        multiAccountEnabled,
         multiAccountStrategy: strategy
       },
       expiredAccountCleanup: {
@@ -41,7 +48,10 @@ function createRuntime({ strategy = "smart", pickCandidates, deriveEntryId, refr
       }
       return tokenLike?.access_token ? `entry:${tokenLike.access_token}` : "";
     },
-    upsertCodexOAuthAccount() {
+    upsertCodexOAuthAccount(store, token, options) {
+      if (typeof upsertAccount === "function") {
+        return upsertAccount(store, token, options);
+      }
       throw new Error("not used in these tests");
     },
     pickCodexAccountCandidates: pickCandidates,
@@ -335,6 +345,107 @@ test("non-smart strategies can still fall through to the next pooled account", a
   assert.equal(store.accounts[0].failure_count, 1);
   assert.ok(Number(store.accounts[1].last_used_at || 0) > 0);
   assert.equal(savedStores.length, 1);
+});
+
+test("auth context refreshes pooled tokens with integer-string expiry timestamps", async () => {
+  let refreshCalls = 0;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const { runtime, savedStores } = createRuntime({
+    strategy: "manual",
+    pickCandidates(store) {
+      return Array.isArray(store?.accounts) ? store.accounts : [];
+    },
+    async refreshAccessToken(refreshToken) {
+      refreshCalls += 1;
+      assert.equal(refreshToken, "refresh_a");
+      return {
+        access_token: "token_refreshed",
+        refresh_token: "refresh_a",
+        expires_at: nowSec + 3600
+      };
+    }
+  });
+
+  const store = {
+    token: null,
+    active_account_id: "entry_a",
+    rotation: { next_index: 0 },
+    accounts: [
+      {
+        identity_id: "entry_a",
+        account_id: "acct_a",
+        enabled: true,
+        token: {
+          access_token: "token_a",
+          refresh_token: "refresh_a",
+          expires_at: String(nowSec - 30)
+        },
+        failure_count: 0,
+        cooldown_until: 0,
+        last_error: ""
+      }
+    ]
+  };
+
+  const context = await runtime.getValidAuthContextFromCodexOAuthStore(store, {
+    tokenStorePath: "store.json",
+    tokenUrl: "https://example.test/token",
+    clientId: "client"
+  });
+
+  assert.equal(refreshCalls, 1);
+  assert.equal(context.accessToken, "token_refreshed");
+  assert.equal(store.token?.access_token, "token_refreshed");
+  assert.equal(store.accounts[0]?.token?.access_token, "token_refreshed");
+  assert.equal(savedStores.length, 1);
+});
+
+test("single-account auth context refreshes integer-string expiry timestamps", async () => {
+  let refreshCalls = 0;
+  let upsertOptions = null;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const { runtime, savedStores } = createRuntime({
+    multiAccountEnabled: false,
+    async refreshAccessToken(refreshToken) {
+      refreshCalls += 1;
+      assert.equal(refreshToken, "refresh_single");
+      return {
+        access_token: "token_single_refreshed",
+        refresh_token: "refresh_single",
+        expires_at: nowSec + 3600
+      };
+    },
+    upsertAccount(_store, token, options) {
+      assert.equal(token?.access_token, "token_single_refreshed");
+      upsertOptions = options;
+      return { entryId: "entry:token_single_refreshed" };
+    }
+  });
+
+  const store = {
+    token: {
+      access_token: "token_single_old",
+      refresh_token: "refresh_single",
+      expires_at: String(nowSec - 30)
+    },
+    accounts: []
+  };
+
+  const context = await runtime.getValidAuthContextFromCodexOAuthStore(store, {
+    tokenStorePath: "store.json",
+    tokenUrl: "https://example.test/token",
+    clientId: "client"
+  });
+
+  assert.equal(refreshCalls, 1);
+  assert.equal(context.accessToken, "token_single_refreshed");
+  assert.equal(context.poolAccountId, "entry:token_single_refreshed");
+  assert.equal(context.poolEntryId, "entry:token_single_refreshed");
+  assert.equal(upsertOptions?.label, "principal:token_single_refreshed");
+  assert.equal(store.token?.access_token, "token_single_refreshed");
+  assert.equal(savedStores.length, 2);
+  assert.equal(savedStores[0]?.token?.access_token, "token_single_refreshed");
+  assert.equal(savedStores[1]?.token?.access_token, "token_single_refreshed");
 });
 
 test("preferred pooled account selection fails before mutating fallback account state", async () => {

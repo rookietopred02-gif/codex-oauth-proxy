@@ -938,6 +938,46 @@ test("smart strategy temporarily avoids low-quota accounts while a healthier opt
   }
 });
 
+test("smart strategy still pauses low-quota accounts when usage_updated_at is malformed", () => {
+  const helpers = createPoolSelectionHelpers({ strategy: "smart" });
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  const candidates = helpers.pickCodexAccountCandidates({
+    accounts: [
+      {
+        identity_id: "entry_healthy",
+        enabled: true,
+        usage_snapshot: {
+          fetched_at: nowSec,
+          primary: { remaining_percent: 80 },
+          secondary: { remaining_percent: 80 }
+        }
+      },
+      {
+        identity_id: "entry_limited",
+        enabled: true,
+        usage_updated_at: "1e3",
+        usage_snapshot: {
+          fetched_at: nowSec,
+          primary: { remaining_percent: 75 },
+          secondary: {
+            remaining_percent: 10,
+            reset_at: nowSec + 900,
+            window_minutes: 10080
+          }
+        }
+      }
+    ],
+    active_account_id: "entry_healthy",
+    rotation: { next_index: 0 }
+  });
+
+  assert.deepEqual(
+    candidates.map((account) => account.identity_id),
+    ["entry_healthy"]
+  );
+});
+
 test("smart strategy reconsiders low-quota accounts after the temporary pause window expires", async () => {
   process.env.CODEX_PRO_MAX_DISABLE_AUTOSTART = "1";
   const serverModule = await import(`../src/server.js?smart-limited-retry=${Date.now()}`);

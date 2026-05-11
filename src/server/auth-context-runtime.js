@@ -2,9 +2,10 @@ import { refreshAccessToken as defaultRefreshAccessToken } from "./oauth-token-c
 import { resetCodexAccountHealth } from "../services/codex-account-state.js";
 
 function isExpiredOrNearExpirySec(expiresAtSec) {
-  if (!Number.isFinite(expiresAtSec)) return false;
+  const parsedExpiresAtSec = toIntegerNumber(expiresAtSec, null);
+  if (parsedExpiresAtSec === null) return false;
   const nowSec = Math.floor(Date.now() / 1000);
-  return expiresAtSec - nowSec < 60;
+  return parsedExpiresAtSec - nowSec < 60;
 }
 
 function createPinnedAccountUnavailableError() {

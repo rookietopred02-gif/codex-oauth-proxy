@@ -52,6 +52,14 @@ export function createCodexPoolSelectionHelpers(options) {
     return parsed !== null && parsed > 0 ? parsed : fallback;
   }
 
+  function firstPositiveFiniteNumber(values, fallback = 0) {
+    for (const value of Array.isArray(values) ? values : []) {
+      const parsed = toPositiveFiniteNumber(value, null);
+      if (parsed !== null) return parsed;
+    }
+    return fallback;
+  }
+
   function toIntegerNumber(value, fallback = null) {
     if (value === null || value === undefined || value === "") return fallback;
     if (typeof value === "number") return Number.isSafeInteger(value) ? value : fallback;
@@ -258,8 +266,7 @@ export function createCodexPoolSelectionHelpers(options) {
   function getCodexSmartQuotaPauseUntil(account, nowSec = Math.floor(Date.now() / 1000), usage = null) {
     const usageStats = usage || getCodexUsageWindowStats(account);
     const usageSnapshot = account?.usage_snapshot && typeof account.usage_snapshot === "object" ? account.usage_snapshot : null;
-    const snapshotTimestamp =
-      toPositiveFiniteNumber(account?.usage_updated_at || usageSnapshot?.fetched_at || 0, 0);
+    const snapshotTimestamp = firstPositiveFiniteNumber([account?.usage_updated_at, usageSnapshot?.fetched_at], 0);
     if (snapshotTimestamp <= 0) return 0;
 
     const lowQuotaThreshold = resolveCodexLowQuotaThreshold(usageStats);
