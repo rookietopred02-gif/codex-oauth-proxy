@@ -95,22 +95,47 @@ function extractUpstreamError(rawText, parseJsonLoose) {
   };
 }
 
-function looksLikeSsePayload(rawText) {
-  return typeof rawText === "string" && /(^|\n)\s*(event:|data:)/.test(rawText);
-}
+const HEAVY_RESPONSE_EVENT_TYPES = new Set(["response.created", "response.in_progress"]);
+const RESPONSE_EVENT_FORWARD_FIELDS = [
+  "id",
+  "object",
+  "created_at",
+  "status",
+  "background",
+  "error",
+  "incomplete_details",
+  "model",
+  "parallel_tool_calls",
+  "previous_response_id",
+  "reasoning",
+  "service_tier",
+  "temperature",
+  "top_p",
+  "truncation",
+  "usage",
+  "metadata"
+];
 
-function replayBufferedSseEvents(ws, rawSse) {
-  const blocks = String(rawSse || "")
-    .split(/\r?\n\r?\n/)
-    .map((block) => block.trim())
-    .filter(Boolean);
-  for (const block of blocks) {
-    const parsedEvent = parseSseJsonEventBlock(block);
-    if (!parsedEvent) continue;
-    if (!safeSendJson(ws, parsedEvent)) {
-      throw new Error("WebSocket closed while replaying buffered response events.");
+function slimNonTerminalResponseEventForWebSocket(event) {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return event;
+  if (!HEAVY_RESPONSE_EVENT_TYPES.has(event.type)) return event;
+  const response = event.response;
+  if (!response || typeof response !== "object" || Array.isArray(response)) return event;
+
+  const slimResponse = {};
+  for (const field of RESPONSE_EVENT_FORWARD_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(response, field)) {
+      slimResponse[field] = response[field];
     }
   }
+  if (Array.isArray(response.output) && response.output.length === 0) {
+    slimResponse.output = [];
+  }
+
+  return {
+    ...event,
+    response: slimResponse
+  };
 }
 
 function normalizeResponseCreatePayload(event) {
@@ -313,6 +338,12 @@ export function attachResponsesWebSocketServer(server, context) {
       let latestTokenUsage = null;
       let latestUpstreamErrorCode = "";
       let latestUpstreamErrorDetail = "";
+      let streamForwardedEventCount = 0;
+      let streamOutputTextDeltaCount = 0;
+      let streamOutputTextDeltaChars = 0;
+      let streamOutputTextDeltaMaxChars = 0;
+      let streamFirstOutputTextDeltaMs = null;
+      let streamLastOutputTextDeltaMs = null;
 
       const finalizeRecentRequest = () => {
         if (typeof recordRecentProxyRequest !== "function") return;
@@ -337,6 +368,12 @@ export function attachResponsesWebSocketServer(server, context) {
             upstreamRetryCount: toNonNegativeInteger(session?.retryCount, 0),
             upstreamErrorCode: latestUpstreamErrorCode,
             upstreamErrorDetail: latestUpstreamErrorDetail,
+            streamForwardedEventCount,
+            streamOutputTextDeltaCount,
+            streamOutputTextDeltaChars,
+            streamOutputTextDeltaMaxChars,
+            streamFirstOutputTextDeltaMs,
+            streamLastOutputTextDeltaMs,
             compatibilityHint: session?.compatibilityHint || "",
             transportType: "websocket"
           });
@@ -399,59 +436,20 @@ export function attachResponsesWebSocketServer(server, context) {
         const upstreamContentType = String(session.upstream.headers.get("content-type") || "").toLowerCase();
         const shouldTreatUpstreamAsSse = upstreamContentType.length === 0 || upstreamContentType.includes("text/event-stream");
         if (!shouldTreatUpstreamAsSse) {
-          const raw = await readUpstreamTextOrThrow(session.upstream);
-          if (looksLikeSsePayload(raw)) {
-            const parsedResult = parseResponsesResultFromSse(raw);
-            if (!parsedResult.failed && !parsedResult.completed) {
-              const failure = buildResponseFailedEvent({
-                code: "invalid_upstream_sse",
-                message: "Upstream SSE ended before a terminal response event.",
-                statusCode: 502
-              });
-              latestStatusCode = 502;
-              latestResponseBody = raw || JSON.stringify(failure);
-              latestResponseContentType = raw ? "text/event-stream" : "application/json";
-              latestUpstreamErrorCode = "invalid_upstream_sse";
-              latestUpstreamErrorDetail = "Upstream SSE ended before a terminal response event.";
-              await session.markFailure("Invalid upstream SSE on WebSocket bridge.", 502);
-              safeSendJson(ws, failure);
-              terminalSent = true;
-              finalizeRecentRequest();
-              return;
-            }
-
-            replayBufferedSseEvents(ws, raw);
-            latestStatusCode = parsedResult.failed ? toStatusCode(parsedResult.failed.statusCode, 502) : 200;
-            latestResponseBody = raw;
-            latestResponseContentType = "text/event-stream";
-            latestTokenUsage = parsedResult.completed?.usage || null;
-            latestUpstreamErrorCode = String(parsedResult.failed?.code || "");
-            latestUpstreamErrorDetail = String(parsedResult.failed?.message || "");
-            if (parsedResult.failed) {
-              await session.markFailure(
-                `Upstream SSE response failed on POST ${rawPath}: ${safeTruncate(parsedResult.failed.message, 200)}`,
-                parsedResult.failed.statusCode
-              );
-            } else if (parsedResult.completed) {
-              session.rememberCompletion(parsedResult.completed);
-              await session.markSuccess();
-            }
-            terminalSent = true;
-            finalizeRecentRequest();
-            return;
-          }
-
           const failure = buildResponseFailedEvent({
             code: "invalid_upstream_sse",
-            message: "WebSocket mode requires an upstream SSE stream; non-SSE responses are not replayed as HTTP fallbacks.",
+            message: "WebSocket mode requires an upstream SSE stream; non-SSE responses are rejected instead of replayed.",
             statusCode: 502
           });
+          try {
+            await session.upstream.body?.cancel?.();
+          } catch {}
           latestStatusCode = 502;
-          latestResponseBody = raw || JSON.stringify(failure);
-          latestResponseContentType = "application/json";
+          latestResponseBody = JSON.stringify(failure);
+          latestResponseContentType = upstreamContentType || "application/json";
           latestUpstreamErrorCode = "invalid_upstream_sse";
           latestUpstreamErrorDetail =
-            "WebSocket mode requires an upstream SSE stream; non-SSE responses are not replayed as HTTP fallbacks.";
+            "WebSocket mode requires an upstream SSE stream; non-SSE responses are rejected instead of replayed.";
           await session.markFailure("Invalid upstream SSE on WebSocket bridge.", 502);
           safeSendJson(ws, failure);
           terminalSent = true;
@@ -494,7 +492,19 @@ export function attachResponsesWebSocketServer(server, context) {
             const parsedEvent = parseSseJsonEventBlock(block);
             if (!parsedEvent) return;
             rawSse += `${block}\n\n`;
-            if (!safeSendJson(ws, parsedEvent)) {
+            streamForwardedEventCount += 1;
+            if (parsedEvent.type === "response.output_text.delta") {
+              const deltaChars = [...String(parsedEvent.delta || "")].length;
+              streamOutputTextDeltaCount += 1;
+              streamOutputTextDeltaChars += deltaChars;
+              streamOutputTextDeltaMaxChars = Math.max(streamOutputTextDeltaMaxChars, deltaChars);
+              const deltaAtMs = Math.max(0, Date.now() - startedAt);
+              if (streamFirstOutputTextDeltaMs === null) {
+                streamFirstOutputTextDeltaMs = deltaAtMs;
+              }
+              streamLastOutputTextDeltaMs = deltaAtMs;
+            }
+            if (!safeSendJson(ws, slimNonTerminalResponseEventForWebSocket(parsedEvent))) {
               throw new Error("WebSocket closed while streaming response events.");
             }
           }

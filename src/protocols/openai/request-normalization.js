@@ -130,7 +130,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
       const json = {
         model: modelRoute.mappedModel,
         service_tier: config.codex.defaultServiceTier,
-        stream: true,
+        stream: false,
         store: false,
         instructions: fallbackInstructions,
         input: [{ role: "user", content: [{ type: "input_text", text: "" }] }]
@@ -176,7 +176,7 @@ export function createOpenAIRequestNormalizationHelpers(context) {
     const hasExplicitInclude = Object.prototype.hasOwnProperty.call(parsed, "include");
     const modelRoute = resolveCodexCompatibleRoute(normalized.model || config.codex.defaultModel);
     normalized.model = modelRoute.mappedModel;
-    if (!hasExplicitStream) normalized.stream = true;
+    normalized.stream = wantsStream;
     if (!hasExplicitStore) normalized.store = false;
     applyConfiguredServiceTierDefault(normalized, parsed);
     const collaborationMode = resolveResponsesCollaborationMode(normalized);

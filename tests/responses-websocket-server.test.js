@@ -336,7 +336,118 @@ test("Responses WebSocket forwards upstream response events and remembers comple
     assert.equal(recordedRequest?.authAccountId, "acct_ws_1");
     assert.equal(recordedRequest?.proxyApiKeyId, "legacy-local-api-key");
     assert.equal(recordedRequest?.proxyApiKeyLabel, "legacy env LOCAL_API_KEY");
+    assert.equal(recordedRequest?.streamForwardedEventCount, 2);
+    assert.equal(recordedRequest?.streamOutputTextDeltaCount, 1);
+    assert.equal(recordedRequest?.streamOutputTextDeltaChars, 3);
+    assert.equal(recordedRequest?.streamOutputTextDeltaMaxChars, 3);
+    assert.equal(typeof recordedRequest?.streamFirstOutputTextDeltaMs, "number");
+    assert.equal(typeof recordedRequest?.streamLastOutputTextDeltaMs, "number");
     assert.match(String(recordedRequest?.responseBody || ""), /response\.completed/);
+  } finally {
+    ws?.close();
+    await runtime.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Responses WebSocket slims large non-terminal response events before forwarding deltas", async () => {
+  const server = createServer();
+  const helpers = createResponsesHelpers();
+  const upstream = createControllableReadableStream();
+  let successCount = 0;
+
+  const runtime = attachResponsesWebSocketServer(server, {
+    ...createAuthContext(),
+    async openResponsesCreateProxySession() {
+      return {
+        upstream: new Response(upstream.stream, {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream"
+          }
+        }),
+        release() {},
+        async markFailure() {},
+        async markSuccess() {
+          successCount += 1;
+        },
+        authAccountId: "acct_ws_slim",
+        compatibilityHint: "",
+        rememberCompletion() {},
+        modelRoute: {
+          requestedModel: "gpt-5.4",
+          mappedModel: "gpt-5.4"
+        },
+        forgetPinnedAffinity() {}
+      };
+    },
+    parseResponsesResultFromSse: helpers.parseResponsesResultFromSse,
+    readUpstreamTextOrThrow: async (upstreamResponse) => await upstreamResponse.text(),
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+  });
+
+  let ws;
+  try {
+    const baseUrl = await listen(server);
+    ws = await connectSocket(`${baseUrl}/v1/responses`, {
+      Authorization: "Bearer test-proxy-key"
+    });
+    const queue = createJsonMessageQueue(ws);
+
+    ws.send(
+      JSON.stringify({
+        type: "response.create",
+        model: "gpt-5.4",
+        input: "hello"
+      })
+    );
+
+    upstream.enqueue(
+      `event: response.created\n` +
+        `data: ${JSON.stringify({
+          type: "response.created",
+          response: {
+            id: "resp_ws_slim",
+            object: "response",
+            created_at: 123,
+            status: "in_progress",
+            model: "gpt-5.4",
+            instructions: "x".repeat(100000),
+            tools: [{ type: "function", name: "large", parameters: { payload: "y".repeat(100000) } }],
+            output: []
+          }
+        })}\n\n`
+    );
+
+    const created = await withTimeout(queue.next(), "Timed out waiting for slimmed response.created.");
+    assert.equal(created.type, "response.created");
+    assert.equal(created.response?.id, "resp_ws_slim");
+    assert.equal(created.response?.status, "in_progress");
+    assert.equal(created.response?.instructions, undefined);
+    assert.equal(created.response?.tools, undefined);
+
+    upstream.enqueue(
+      'event: response.output_text.delta\n' +
+        'data: {"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"hel"}\n\n'
+    );
+    const delta = await withTimeout(queue.next(), "Timed out waiting for WebSocket delta after slimmed event.");
+    assert.equal(delta.type, "response.output_text.delta");
+    assert.equal(delta.delta, "hel");
+
+    upstream.enqueue(
+      'event: response.completed\n' +
+        'data: {"type":"response.completed","response":{"id":"resp_ws_slim","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}\n\n'
+    );
+    upstream.close();
+    const completed = await withTimeout(queue.next(), "Timed out waiting for WebSocket completion after slimmed event.");
+    assert.equal(completed.type, "response.completed");
+    assert.equal(successCount, 1);
   } finally {
     ws?.close();
     await runtime.close();
@@ -349,8 +460,8 @@ test("Responses WebSocket flushes official SSE events before upstream completion
   const helpers = createResponsesHelpers();
   const upstream = createDelayedCompletionResponsesStream({
     firstEvent:
-      'event: response.mcp_call_arguments.delta\n' +
-      'data: {"type":"response.mcp_call_arguments.delta","item_id":"mcp_1","output_index":0,"sequence_number":1,"delta":"{\\"city\\""}\n\n',
+      'event: response.output_text.delta\n' +
+      'data: {"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"hel"}\n\n',
     terminalEvent:
       'event: response.completed\n' +
       'data: {"type":"response.completed","response":{"id":"resp_ws_stream","status":"completed","usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}\n\n'
@@ -406,9 +517,9 @@ test("Responses WebSocket flushes official SSE events before upstream completion
     );
 
     const delta = await withTimeout(queue.next(), "Timed out waiting for WebSocket stream delta.");
-    assert.equal(delta.type, "response.mcp_call_arguments.delta");
-    assert.equal(delta.item_id, "mcp_1");
-    assert.equal(delta.delta, "{\"city\"");
+    assert.equal(delta.type, "response.output_text.delta");
+    assert.equal(delta.item_id, "msg_1");
+    assert.equal(delta.delta, "hel");
     assert.equal(upstream.completedEnqueued, false);
     assert.equal(successCount, 0);
 
@@ -788,7 +899,7 @@ test("Responses WebSocket rejects completed JSON instead of falling back to HTTP
     assert.equal(failed.type, "response.failed");
     assert.equal(failed.response?.status_code, 502);
     assert.equal(failed.response?.error?.code, "invalid_upstream_sse");
-    assert.match(failed.response?.error?.message || "", /non-SSE responses are not replayed as HTTP fallbacks/i);
+    assert.match(failed.response?.error?.message || "", /non-SSE responses are rejected instead of replayed/i);
     assert.equal(rememberedCompletion, null);
     assert.equal(failureCount, 1);
     assert.equal(successCount, 0);
@@ -796,6 +907,107 @@ test("Responses WebSocket rejects completed JSON instead of falling back to HTTP
     assert.equal(recordedRequest?.transportType, "websocket");
     assert.equal(recordedRequest?.statusCode, 502);
     assert.equal(recordedRequest?.upstreamRetryCount, 0);
+  } finally {
+    ws?.close();
+    await runtime.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Responses WebSocket rejects non-SSE upstream without buffering SSE-looking body", async () => {
+  const server = createServer();
+  const helpers = createResponsesHelpers();
+  const upstream = createDelayedCompletionResponsesStream({
+    firstEvent:
+      'event: response.output_text.delta\n' +
+      'data: {"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"hel"}\n\n',
+    terminalEvent:
+      'event: response.completed\n' +
+      'data: {"type":"response.completed","response":{"id":"resp_ws_buffered_sse","status":"completed","usage":{"input_tokens":4,"output_tokens":5,"total_tokens":9},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}\n\n',
+    delayMs: 80
+  });
+  let readFullBody = false;
+  let rememberedCompletion = null;
+  let failureCount = 0;
+  let successCount = 0;
+  let recordedRequest = null;
+
+  const runtime = attachResponsesWebSocketServer(server, {
+    ...createAuthContext(),
+    async openResponsesCreateProxySession() {
+      return {
+        upstream: new Response(upstream.stream, {
+          status: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8"
+          }
+        }),
+        release() {},
+        async markFailure() {
+          failureCount += 1;
+        },
+        async markSuccess() {
+          successCount += 1;
+        },
+        authAccountId: "acct_ws_buffered_sse",
+        compatibilityHint: "",
+        retryCount: 0,
+        rememberCompletion(completed) {
+          rememberedCompletion = completed;
+        },
+        modelRoute: {
+          requestedModel: "gpt-5.4",
+          mappedModel: "gpt-5.4"
+        },
+        forgetPinnedAffinity() {}
+      };
+    },
+    parseResponsesResultFromSse: helpers.parseResponsesResultFromSse,
+    readUpstreamTextOrThrow: async (response) => {
+      readFullBody = true;
+      return await response.text();
+    },
+    parseJsonLoose(value) {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    },
+    recordRecentProxyRequest(row) {
+      recordedRequest = row;
+    }
+  });
+
+  let ws;
+  try {
+    const baseUrl = await listen(server);
+    ws = await connectSocket(`${baseUrl}/v1/responses`, {
+      Authorization: "Bearer test-proxy-key"
+    });
+    const queue = createJsonMessageQueue(ws);
+
+    ws.send(
+      JSON.stringify({
+        type: "response.create",
+        model: "gpt-5.4",
+        input: "hello"
+      })
+    );
+
+    const failed = await withTimeout(queue.next(), "Timed out waiting for WebSocket non-SSE failure.");
+    assert.equal(failed.type, "response.failed");
+    assert.equal(failed.response?.status_code, 502);
+    assert.equal(failed.response?.error?.code, "invalid_upstream_sse");
+    assert.match(failed.response?.error?.message || "", /non-SSE responses are rejected instead of replayed/i);
+    assert.equal(readFullBody, false);
+    assert.equal(upstream.completedEnqueued, false);
+    assert.equal(rememberedCompletion, null);
+    assert.equal(failureCount, 1);
+    assert.equal(successCount, 0);
+    assert.equal(recordedRequest?.method, "WS");
+    assert.equal(recordedRequest?.transportType, "websocket");
+    assert.equal(recordedRequest?.statusCode, 502);
   } finally {
     ws?.close();
     await runtime.close();

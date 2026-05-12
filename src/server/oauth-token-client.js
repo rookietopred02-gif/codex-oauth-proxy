@@ -2,15 +2,6 @@ import { normalizeNonNegativeInteger } from "../upstream-timeouts.js";
 
 const DEFAULT_TOKEN_RESPONSE_BODY_TIMEOUT_MS = 30_000;
 
-function toFiniteNumber(value, fallback = 0) {
-  try {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 function toStatusCode(value, fallback = 0) {
   if (typeof value === "number") {
     return Number.isInteger(value) && value >= 100 && value <= 599 ? value : fallback;

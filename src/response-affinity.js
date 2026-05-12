@@ -1,15 +1,6 @@
 const DEFAULT_AFFINITY_TTL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_AFFINITY_MAX_ENTRIES = 2048;
 
-function toFiniteNumber(value, fallback = 0) {
-  try {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 function toIntegerNumber(value, fallback) {
   if (typeof value === "number") {
     return Number.isSafeInteger(value) ? value : fallback;

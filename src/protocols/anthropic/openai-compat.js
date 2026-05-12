@@ -1,5 +1,4 @@
 import { getRequestBodyErrorStatus, isRequestBodyTooLargeError } from "../../http/request-body.js";
-import { mapResponsesUsageToChatUsage } from "../../http/token-usage.js";
 
 export function createAnthropicOpenAICompatHelpers(context) {
   const {
@@ -10,7 +9,6 @@ export function createAnthropicOpenAICompatHelpers(context) {
     parseOpenAIChatCompletionsLikeRequest,
     splitSystemAndConversation,
     buildOpenAIChatCompletion,
-    sendOpenAICompletionAsSse,
     openCodexConversationStreamViaOAuth,
     runCodexConversationViaOAuth,
     pipeCodexSseAsChatCompletions
@@ -60,28 +58,6 @@ export function createAnthropicOpenAICompatHelpers(context) {
           stop: chatReq.stop
         });
         res.locals.authAccountId = streamSession.authAccountId || null;
-
-        if (streamSession.bufferedCompletion) {
-          const completion = buildOpenAIChatCompletion({
-            model: modelRoute.requestedModel,
-            text: Array.isArray(streamSession.bufferedCompletion?.output)
-              ? (
-                  streamSession.bufferedCompletion.output.find(
-                    (item) => item?.type === "message" && item.role === "assistant"
-                  )?.content || []
-            )
-                  .filter((part) => part?.type === "output_text" && typeof part.text === "string")
-                  .map((part) => part.text)
-                  .join("")
-              : "",
-            finishReason: streamSession.bufferedCompletion?.status === "incomplete" ? "length" : "stop",
-            usage: mapResponsesUsageToChatUsage(streamSession.bufferedCompletion?.usage)
-          });
-          res.locals.tokenUsage = completion.usage;
-          sendOpenAICompletionAsSse(res, completion, { heartbeatMs: 0 });
-          await streamSession.markSuccess();
-          return;
-        }
 
         if (streamSession.upstream?.body) {
           const streamResult = await pipeCodexSseAsChatCompletions(

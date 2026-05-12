@@ -95,6 +95,38 @@ function createControllableReadableStream() {
   };
 }
 
+function createCompletedResponsesSseStream({
+  text = "done",
+  usage = { input_tokens: 4, output_tokens: 5, total_tokens: 9 }
+} = {}) {
+  const encoder = new TextEncoder();
+  return {
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              type: "response.completed",
+              response: {
+                status: "completed",
+                usage,
+                output: [
+                  {
+                    type: "message",
+                    role: "assistant",
+                    content: [{ type: "output_text", text }]
+                  }
+                ]
+              }
+            })}\n\n`
+          )
+        );
+        controller.close();
+      }
+    })
+  };
+}
+
 function createRequestBodyTooLargeError() {
   const err = new Error("Request body exceeds the 64 byte limit.");
   err.code = "request_body_too_large";
@@ -505,7 +537,6 @@ test("Anthropic native stream sends message_start before awaiting Codex completi
         model: "claude-sonnet-4.5",
         authAccountId: "acct_123",
         upstream: { body: upstream.stream },
-        bufferedCompletion: null,
         async markSuccess() {},
         async markFailure() {},
         release() {}
@@ -549,7 +580,6 @@ test("Anthropic native stream normalizes malformed terminal token usage", async 
         model: "claude-sonnet-4.5",
         authAccountId: "acct_123",
         upstream: { body: upstream.stream },
-        bufferedCompletion: null,
         async markSuccess() {},
         async markFailure() {},
         release() {}
@@ -597,7 +627,6 @@ test("Anthropic native stream ignores malformed idle timeout config", async () =
         model: "claude-sonnet-4.5",
         authAccountId: "acct_123",
         upstream: { body: upstream.stream },
-        bufferedCompletion: null,
         async markSuccess() {},
         async markFailure() {},
         release() {}
@@ -639,7 +668,6 @@ test("Anthropic native stream ignores decimal-form idle timeout config", async (
         model: "claude-sonnet-4.5",
         authAccountId: "acct_123",
         upstream: { body: upstream.stream },
-        bufferedCompletion: null,
         async markSuccess() {},
         async markFailure() {},
         release() {}
@@ -673,7 +701,6 @@ test("Anthropic native stream falls back to JSON error when upstream fails befor
         model: "claude-sonnet-4.5",
         authAccountId: "acct_123",
         upstream: { body: upstream.stream },
-        bufferedCompletion: null,
         async markSuccess() {},
         async markFailure() {},
         release() {}
@@ -724,7 +751,6 @@ test("Anthropic native stream normalizes malformed transport failure statuses", 
             }
           }
         },
-        bufferedCompletion: null,
         async markSuccess() {},
         async markFailure(message, statusCode) {
           failureArgs = { message, statusCode };
@@ -770,7 +796,6 @@ test("Anthropic native stream finalizes response.incomplete", async () => {
         model: "claude-sonnet-4.5",
         authAccountId: "acct_123",
         upstream: { body: upstream.stream },
-        bufferedCompletion: null,
         async markSuccess() {},
         async markFailure() {},
         release() {}
@@ -836,102 +861,6 @@ test("Anthropic native stream rejects sessions without an SSE body", async () =>
   });
 });
 
-test("Anthropic native stream converts buffered JSON completion into SSE", async () => {
-  const helpers = createHelpers({
-    async openCodexResponsesStreamViaOAuth() {
-      return {
-        model: "claude-sonnet-4.5",
-        authAccountId: "acct_123",
-        upstream: null,
-        bufferedCompletion: {
-          status: "completed",
-          usage: {
-            input_tokens: 4,
-            output_tokens: 5,
-            total_tokens: 9
-          },
-          output: [
-            {
-              type: "message",
-              role: "assistant",
-              content: [{ type: "output_text", text: "done" }]
-            }
-          ]
-        },
-        async markSuccess() {},
-        async markFailure() {},
-        release() {}
-      };
-    }
-  });
-  const req = createMockRequest({
-    model: "claude-sonnet-4.5",
-    stream: true,
-    messages: [{ role: "user", content: "hello" }]
-  });
-  const res = createMockResponse();
-
-  await helpers.handleAnthropicNativeCompat(req, res);
-
-  assert.equal(res.statusCode, 200);
-  assert.match(res.writes.join(""), /event: message_start/);
-  assert.match(res.writes.join(""), /"text":"done"/);
-  assert.match(res.writes.join(""), /event: message_stop/);
-  assert.deepEqual(res.locals.tokenUsage, {
-    prompt_tokens: 4,
-    completion_tokens: 5,
-    total_tokens: 9
-  });
-});
-
-test("Anthropic native buffered stream normalizes malformed token usage", async () => {
-  const helpers = createHelpers({
-    async openCodexResponsesStreamViaOAuth() {
-      return {
-        model: "claude-sonnet-4.5",
-        authAccountId: "acct_123",
-        upstream: null,
-        bufferedCompletion: {
-          status: "completed",
-          usage: {
-            input_tokens: -1,
-            output_tokens: "2",
-            total_tokens: "1e3"
-          },
-          output: [
-            {
-              type: "message",
-              role: "assistant",
-              content: [{ type: "output_text", text: "done" }]
-            }
-          ]
-        },
-        async markSuccess() {},
-        async markFailure() {},
-        release() {}
-      };
-    }
-  });
-  const req = createMockRequest({
-    model: "claude-sonnet-4.5",
-    stream: true,
-    messages: [{ role: "user", content: "hello" }]
-  });
-  const res = createMockResponse();
-
-  await helpers.handleAnthropicNativeCompat(req, res);
-
-  const output = res.writes.join("");
-  assert.equal(res.statusCode, 200);
-  assert.match(output, /"input_tokens":0/);
-  assert.match(output, /"output_tokens":2/);
-  assert.deepEqual(res.locals.tokenUsage, {
-    prompt_tokens: 0,
-    completion_tokens: 2,
-    total_tokens: 2
-  });
-});
-
 test("Anthropic native non-stream drops explicit sampling parameters for codex-backed local compat", async () => {
   let captured = null;
   const helpers = createHelpers({
@@ -984,22 +913,7 @@ test("Anthropic native stream drops explicit sampling parameters for codex-backe
       return {
         model: "claude-sonnet-4.5",
         authAccountId: "acct_123",
-        upstream: null,
-        bufferedCompletion: {
-          status: "completed",
-          usage: {
-            input_tokens: 4,
-            output_tokens: 5,
-            total_tokens: 9
-          },
-          output: [
-            {
-              type: "message",
-              role: "assistant",
-              content: [{ type: "output_text", text: "done" }]
-            }
-          ]
-        },
+        upstream: createCompletedResponsesSseStream(),
         async markSuccess() {},
         async markFailure() {},
         release() {}
@@ -1008,7 +922,7 @@ test("Anthropic native stream drops explicit sampling parameters for codex-backe
   });
   const req = createMockRequest({
     model: "claude-sonnet-4.5",
-      stream: true,
+    stream: true,
     temperature: 0.25,
     top_p: 0.8,
     metadata: { trace_id: "trace_123" },
@@ -1119,22 +1033,7 @@ test("Anthropic native stream keeps built-in web search on the native path", asy
       return {
         model: "claude-sonnet-4.5",
         authAccountId: "acct_123",
-        upstream: null,
-        bufferedCompletion: {
-          status: "completed",
-          usage: {
-            input_tokens: 4,
-            output_tokens: 5,
-            total_tokens: 9
-          },
-          output: [
-            {
-              type: "message",
-              role: "assistant",
-              content: [{ type: "output_text", text: "done" }]
-            }
-          ]
-        },
+        upstream: createCompletedResponsesSseStream(),
         async markSuccess() {},
         async markFailure() {},
         release() {}

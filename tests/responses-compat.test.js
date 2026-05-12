@@ -1007,6 +1007,7 @@ test("pipeSseAndCaptureTokenUsage flushes delayed raw response chunks before com
 
   assert.equal(upstream.emittedCount, 1);
   assert.match(res.writes.join(""), /response\.output_text\.delta/);
+  assert.match(res.writes.join(""), /"delta":"hel"/);
   assert.equal(res.writableEnded, false);
 
   const result = await pending;

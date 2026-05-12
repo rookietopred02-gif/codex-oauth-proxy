@@ -669,6 +669,53 @@ test("recent proxy audit backfills cached input tokens from response packets", (
   assert.equal(appendedRows[0]?.cachedInputTokens, 80);
 });
 
+test("recent proxy audit preserves websocket stream metrics", () => {
+  const appendedRows = [];
+  const handlers = createHandlers({
+    normalizeResponsesImpl() {
+      throw new Error("Not used in websocket stream metrics audit test.");
+    },
+    async fetchImpl() {
+      throw new Error("Not used in websocket stream metrics audit test.");
+    },
+    contextOverrides: {
+      recentRequestsStore: {
+        append(row) {
+          appendedRows.push(row);
+          return { recentRequests: appendedRows };
+        }
+      }
+    }
+  });
+
+  const row = handlers.recordRecentProxyRequest({
+    method: "WS",
+    rawPath: "/v1/responses",
+    statusCode: 200,
+    responseContentType: "text/event-stream",
+    transportType: "websocket",
+    streamForwardedEventCount: 42,
+    streamOutputTextDeltaCount: 40,
+    streamOutputTextDeltaChars: 40,
+    streamOutputTextDeltaMaxChars: 1,
+    streamFirstOutputTextDeltaMs: 120,
+    streamLastOutputTextDeltaMs: 950
+  });
+
+  assert.equal(row.streamForwardedEventCount, 42);
+  assert.equal(row.streamOutputTextDeltaCount, 40);
+  assert.equal(row.streamOutputTextDeltaChars, 40);
+  assert.equal(row.streamOutputTextDeltaMaxChars, 1);
+  assert.equal(row.streamFirstOutputTextDeltaMs, 120);
+  assert.equal(row.streamLastOutputTextDeltaMs, 950);
+  assert.equal(appendedRows[0]?.streamForwardedEventCount, 42);
+  assert.equal(appendedRows[0]?.streamOutputTextDeltaCount, 40);
+  assert.equal(appendedRows[0]?.streamOutputTextDeltaChars, 40);
+  assert.equal(appendedRows[0]?.streamOutputTextDeltaMaxChars, 1);
+  assert.equal(appendedRows[0]?.streamFirstOutputTextDeltaMs, 120);
+  assert.equal(appendedRows[0]?.streamLastOutputTextDeltaMs, 950);
+});
+
 test("POST /v1/responses applies create normalization before forwarding upstream", async () => {
   let normalizeCalls = 0;
   let normalizeRawBody = null;
@@ -2215,7 +2262,7 @@ test("Responses create proxy session preserves current explicit developer instru
   session.release();
 });
 
-test("Responses create proxy session streams when the client accepts SSE without an explicit stream flag", async () => {
+test("Responses create proxy session does not stream solely because the client accepts SSE", async () => {
   let capturedInit = null;
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
@@ -2258,8 +2305,8 @@ test("Responses create proxy session streams when the client accepts SSE without
     }
   );
 
-  assert.equal(session.collectCompletedResponseAsJson, false);
-  assert.equal(capturedInit.headers.get("accept"), "text/event-stream");
+  assert.equal(session.collectCompletedResponseAsJson, true);
+  assert.equal(capturedInit.headers.get("accept"), "application/json");
   session.release();
 });
 
@@ -2788,7 +2835,7 @@ test("audit middleware records audit_error instead of throwing from finish hooks
   assert.match(runtimeStats.lastAuditError?.message || "", /soak estimator missing/);
 });
 
-test("Responses create JSON fallback accepts completed non-SSE upstream payloads", async () => {
+test("Responses create non-stream JSON accepts completed upstream payloads", async () => {
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
       return {
@@ -2856,7 +2903,7 @@ test("Responses create JSON fallback accepts completed non-SSE upstream payloads
   });
 });
 
-test("Responses create JSON fallback coerces out-of-range failed SSE statuses", async () => {
+test("Responses create non-stream JSON rejects upstream SSE payloads", async () => {
   let failureStatusCode = null;
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
@@ -2880,15 +2927,6 @@ test("Responses create JSON fallback coerces out-of-range failed SSE statuses", 
     contextOverrides: {
       async maybeMarkCodexPoolFailure(_auth, _message, statusCode) {
         failureStatusCode = statusCode;
-      },
-      parseResponsesResultFromSse() {
-        return {
-          completed: null,
-          failed: {
-            message: "upstream failed",
-            statusCode: 700
-          }
-        };
       }
     }
   });
@@ -2904,13 +2942,14 @@ test("Responses create JSON fallback coerces out-of-range failed SSE statuses", 
   assert.equal(res.statusCode, 502);
   assert.equal(failureStatusCode, 502);
   assert.deepEqual(res.jsonPayload, {
-    error: "upstream_response_failed",
-    message: "upstream failed",
+    error: "invalid_upstream_json",
+    message: "Could not parse completed response from codex JSON response.",
     retry_count: 0
   });
 });
 
-test("Responses create stream fallback converts completed JSON payloads into SSE", async () => {
+test("Responses create stream rejects non-SSE upstream instead of buffering a JSON completion", async () => {
+  let readFullBody = false;
   const handlers = createHandlers({
     normalizeResponsesImpl(rawBody) {
       return {
@@ -2923,7 +2962,7 @@ test("Responses create stream fallback converts completed JSON payloads into SSE
     async fetchImpl() {
       return new Response(
         JSON.stringify({
-          id: "resp_stream_fallback",
+          id: "resp_stream_non_sse",
           status: "completed",
           usage: {
             input_tokens: 4,
@@ -2945,6 +2984,10 @@ test("Responses create stream fallback converts completed JSON payloads into SSE
       );
     },
     contextOverrides: {
+      async readUpstreamTextOrThrow() {
+        readFullBody = true;
+        throw new Error("streaming responses must not be buffered");
+      },
       extractCompletedResponseFromJson(raw) {
         return JSON.parse(raw);
       }
@@ -2959,15 +3002,71 @@ test("Responses create stream fallback converts completed JSON payloads into SSE
 
   await handlers.openAIProxy(req, res);
 
-  assert.equal(res.statusCode, 200);
-  assert.match(String(res.getHeader("content-type") || ""), /text\/event-stream/i);
-  assert.match(res.body, /"type":"response.completed"/);
-  assert.match(res.body, /"id":"resp_stream_fallback"/);
-  assert.deepEqual(res.locals.tokenUsage, {
-    input_tokens: 4,
-    output_tokens: 5,
-    total_tokens: 9
+  assert.equal(res.statusCode, 502);
+  assert.equal(readFullBody, false);
+  assert.deepEqual(res.jsonPayload, {
+    error: "invalid_upstream_sse",
+    message: "stream=true requires an upstream SSE stream; refusing to buffer or replay a completed response.",
+    content_type: "application/json; charset=utf-8",
+    retry_count: 0
   });
+});
+
+test("Responses create event-stream clients without stream true do not use the streaming path", async () => {
+  let readFullBody = false;
+  const handlers = createHandlers({
+    normalizeResponsesImpl(rawBody) {
+      const json = JSON.parse(rawBody.toString("utf8"));
+      return {
+        body: Buffer.from(JSON.stringify({ ...json, stream: false }), "utf8"),
+        json: { ...json, stream: false },
+        collectCompletedResponseAsJson: true,
+        model: "gpt-5.4"
+      };
+    },
+    async fetchImpl() {
+      return new Response(
+        JSON.stringify({
+          id: "resp_accept_header_non_stream",
+          status: "completed",
+          output: [
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: "done" }]
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" }
+        }
+      );
+    },
+    contextOverrides: {
+      async readUpstreamTextOrThrow(upstream) {
+        readFullBody = true;
+        return await upstream.text();
+      },
+      extractCompletedResponseFromJson(raw) {
+        return JSON.parse(raw);
+      }
+    }
+  });
+  const req = createMockRequest({
+    method: "POST",
+    originalUrl: "/v1/responses",
+    body: { model: "gpt-5.4", input: "hello" }
+  });
+  req.headers.accept = "text/event-stream";
+  const res = createMockResponse();
+
+  await handlers.openAIProxy(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(readFullBody, true);
+  assert.equal(res.jsonPayload.id, "resp_accept_header_non_stream");
+  assert.equal(res.jsonPayload.model, "gpt-5.4");
 });
 
 test("Responses create stream accepts upstream SSE without content-type header", async () => {
@@ -3057,7 +3156,7 @@ test("Responses create stream accepts upstream SSE without content-type header",
   });
 });
 
-test("Responses create HTTP stream flushes official SSE events before upstream completion", async () => {
+test("Responses create HTTP stream flushes upstream SSE events before upstream completion", async () => {
   const encoder = new TextEncoder();
   let completedEnqueued = false;
   const responseHelpers = createOpenAIResponsesCompatHelpers({
@@ -3087,8 +3186,8 @@ test("Responses create HTTP stream flushes official SSE events before upstream c
         start(controller) {
           controller.enqueue(
             encoder.encode(
-              'event: response.mcp_call_arguments.delta\n' +
-                'data: {"type":"response.mcp_call_arguments.delta","item_id":"mcp_1","output_index":0,"sequence_number":1,"delta":"{\\"city\\""}\n\n'
+              'event: response.output_text.delta\n' +
+                'data: {"type":"response.output_text.delta","item_id":"msg_1","content_index":0,"delta":"hel"}\n\n'
             )
           );
           completionTimer = setTimeout(() => {
@@ -3218,7 +3317,8 @@ test("Responses create HTTP stream flushes official SSE events before upstream c
     assert.equal(first.statusCode, 200);
     assert.match(String(first.contentType || ""), /text\/event-stream/i);
     assert.equal(first.completedEnqueued, false);
-    assert.match(first.chunk, /response\.mcp_call_arguments\.delta/);
+    assert.match(first.chunk, /response\.output_text\.delta/);
+    assert.match(first.chunk, /"delta":"hel"/);
     assert.doesNotMatch(first.chunk, /response\.completed/);
   } finally {
     await new Promise((resolve) => server.close(resolve));

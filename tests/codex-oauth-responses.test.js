@@ -64,7 +64,20 @@ function createHelpers(overrides = {}) {
       };
     },
     async readUpstreamTextOrThrow() {
-      return 'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":11,"output_tokens":22,"total_tokens":33},"output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}}\n\n';
+      return JSON.stringify({
+        status: "completed",
+        usage: {
+          input_tokens: 11,
+          output_tokens: 22,
+          total_tokens: 33
+        },
+        output: [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "done" }]
+          }
+        ]
+      });
     },
     parseResponsesResultFromSse() {
       return {
@@ -155,7 +168,7 @@ function createHelpers(overrides = {}) {
   };
 }
 
-test("runCodexConversationViaOAuth uses stream-first upstream requests with request timeout", async () => {
+test("runCodexConversationViaOAuth uses non-stream upstream requests with request timeout", async () => {
   const { helpers, getCapturedRequest } = createHelpers();
 
   const result = await helpers.runCodexConversationViaOAuth({
@@ -167,8 +180,9 @@ test("runCodexConversationViaOAuth uses stream-first upstream requests with requ
 
   const captured = getCapturedRequest();
   assert.equal(captured?.url, "https://example.test/codex/responses");
-  assert.equal(captured?.init?.headers?.accept, "text/event-stream");
-  assert.equal(captured?.json?.stream, true);
+  assert.equal(captured?.init?.headers?.accept, "application/json");
+  assert.equal(captured?.init?.headers?.["accept-encoding"], undefined);
+  assert.equal(captured?.json?.stream, false);
   assert.equal(captured?.json?.max_output_tokens, 777);
   assert.equal(captured?.options?.requestTimeoutMs, 54321);
   assert.equal(result.text, "done");
@@ -205,22 +219,20 @@ test("runCodexConversationViaOAuth ignores decimal-form request timeout config",
 
 test("runCodexConversationViaOAuth normalizes malformed token usage", async () => {
   const { helpers } = createHelpers({
-    parseResponsesResultFromSse() {
+    extractCompletedResponseFromJson() {
       return {
-        completed: {
-          status: "completed",
-          usage: {
-            input_tokens: -1,
-            output_tokens: "2",
-            total_tokens: "1e3"
-          },
-          output: [
-            {
-              type: "message",
-              content: [{ type: "output_text", text: "done" }]
-            }
-          ]
-        }
+        status: "completed",
+        usage: {
+          input_tokens: -1,
+          output_tokens: "2",
+          total_tokens: "1e3"
+        },
+        output: [
+          {
+            type: "message",
+            content: [{ type: "output_text", text: "done" }]
+          }
+        ]
       };
     }
   });
@@ -444,7 +456,6 @@ test("openCodexResponsesStreamViaOAuth returns the upstream SSE response unchang
   assert.equal(captured?.json?.stream, true);
   assert.equal(captured?.options?.requestTimeoutMs, 54321);
   assert.equal(opened.authAccountId, "pool_123");
-  assert.equal(opened.bufferedCompletion, null);
   assert.equal(opened.upstream, getDefaultResponse());
   assert.equal(getReleaseCount(), 0);
   opened.release();
@@ -480,7 +491,6 @@ test("openCodexResponsesStreamViaOAuth streams upstream responses without conten
     input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
   });
 
-  assert.equal(opened.bufferedCompletion, null);
   assert.equal(opened.upstream, upstreamResponse);
   assert.equal(readBufferedBody, false);
   opened.release();
@@ -526,64 +536,46 @@ test("openCodexResponsesStreamViaOAuth does not retry without an explicit max ou
   assert.equal(getReleaseCount(), 1);
 });
 
-test("openCodexResponsesStreamViaOAuth buffers completed JSON responses on stream fallback", async () => {
+test("openCodexResponsesStreamViaOAuth rejects completed JSON stream responses without buffering", async () => {
+  let readFullBody = false;
+  let bodyCanceled = false;
   const { helpers, getCapturedRequest, getReleaseCount } = createHelpers({
     async fetchWithUpstreamRetry() {
       return {
-        response: {
+        response: new Response(new ReadableStream({
+          cancel() {
+            bodyCanceled = true;
+          }
+        }), {
           ok: true,
           status: 200,
           headers: new Headers({ "content-type": "application/json; charset=utf-8" })
-        },
+        }),
         attempts: 1,
         retryCount: 0,
         lastTransportError: null
       };
     },
     async readUpstreamTextOrThrow() {
-      return JSON.stringify({
-        id: "resp_123",
-        status: "completed",
-        usage: {
-          input_tokens: 1,
-          output_tokens: 1,
-          total_tokens: 2
-        },
-        output: [
-          {
-            type: "message",
-            content: [{ type: "output_text", text: "done" }]
-          }
-        ]
-      });
+      readFullBody = true;
+      throw new Error("stream responses must not be buffered");
     }
   });
 
-  const opened = await helpers.openCodexResponsesStreamViaOAuth({
-    model: "gpt-5.4",
-    input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
-  });
+  await assert.rejects(
+    () =>
+      helpers.openCodexResponsesStreamViaOAuth({
+        model: "gpt-5.4",
+        input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }]
+      }),
+    /non-SSE content-type/i
+  );
   const captured = getCapturedRequest();
   assert.equal(captured?.init?.headers?.accept, "text/event-stream");
   assert.equal(captured?.init?.headers?.["accept-encoding"], "identity");
   assert.equal(captured?.json?.stream, true);
-  assert.deepEqual(opened.bufferedCompletion, {
-    id: "resp_123",
-    status: "completed",
-    usage: {
-      input_tokens: 1,
-      output_tokens: 1,
-      total_tokens: 2
-    },
-    output: [
-      {
-        type: "message",
-        content: [{ type: "output_text", text: "done" }]
-      }
-    ]
-  });
-  assert.equal(opened.upstream, null);
-  opened.release();
+  assert.equal(readFullBody, false);
+  assert.equal(bodyCanceled, true);
   assert.equal(getReleaseCount(), 1);
 });
 

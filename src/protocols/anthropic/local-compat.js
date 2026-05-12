@@ -2471,28 +2471,6 @@ export function createAnthropicLocalCompatHelpers(context) {
         });
         res.locals.authAccountId = streamSession.authAccountId || null;
 
-        if (streamSession.bufferedCompletion) {
-          const emissionPlan = planAnthropicFunctionCallEmission(streamSession.bufferedCompletion.output);
-          const message = buildAnthropicMessageFromResponsesResponse(
-            {
-              ...streamSession.bufferedCompletion,
-              output: emissionPlan.immediateOutput
-            },
-            codexRoute.requestedModel || parsedReq.model || config.anthropic.defaultModel
-          );
-          if (emissionPlan.pendingFunctionCalls.length > 0) {
-            rememberAnthropicPendingToolBatch(
-              emissionPlan.emittedFunctionCallId,
-              emissionPlan.pendingFunctionCalls,
-              message.model
-            );
-          }
-          res.locals.tokenUsage = toOpenAIChatUsageFromAnthropicUsage(message?.usage);
-          sendAnthropicMessageAsSse(res, message);
-          await streamSession.markSuccess();
-          return;
-        }
-
         if (streamSession.upstream?.body) {
           const streamResult = await pipeCodexSseAsAnthropicMessages(streamSession.upstream, res, {
             model: codexRoute.requestedModel || parsedReq.model || config.anthropic.defaultModel

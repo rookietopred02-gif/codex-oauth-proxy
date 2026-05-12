@@ -1,4 +1,4 @@
-import { commitOpenAISseHeaders, setOpenAISseHeaders } from "../http/openai-chat-stream.js";
+import { setOpenAISseHeaders } from "../http/openai-chat-stream.js";
 import { getRequestBodyErrorStatus } from "../http/request-body.js";
 import { isResponsesCreatePath } from "../protocols/openai/responses-contract.js";
 import {
@@ -236,7 +236,13 @@ export function createProxyRouteHandlers(context) {
     upstreamErrorCode = "",
     upstreamErrorDetail = "",
     compatibilityHint = "",
-    transportType = ""
+    transportType = "",
+    streamForwardedEventCount = null,
+    streamOutputTextDeltaCount = null,
+    streamOutputTextDeltaChars = null,
+    streamOutputTextDeltaMaxChars = null,
+    streamFirstOutputTextDeltaMs = null,
+    streamLastOutputTextDeltaMs = null
   } = {}) {
     const safePath = sanitizeAuditPath(rawPath);
     const resolvedProtocolType = inferProtocolType(safePath, protocolType, config.upstreamMode);
@@ -299,6 +305,12 @@ export function createProxyRouteHandlers(context) {
       upstreamErrorCode: String(upstreamErrorCode || "").trim() || null,
       upstreamErrorDetail: String(upstreamErrorDetail || "").trim() || null,
       compatibilityHint: String(compatibilityHint || "").trim() || null,
+      streamForwardedEventCount: readOptionalNonNegativeInteger(streamForwardedEventCount),
+      streamOutputTextDeltaCount: readOptionalNonNegativeInteger(streamOutputTextDeltaCount),
+      streamOutputTextDeltaChars: readOptionalNonNegativeInteger(streamOutputTextDeltaChars),
+      streamOutputTextDeltaMaxChars: readOptionalNonNegativeInteger(streamOutputTextDeltaMaxChars),
+      streamFirstOutputTextDeltaMs: readOptionalNonNegativeInteger(streamFirstOutputTextDeltaMs),
+      streamLastOutputTextDeltaMs: readOptionalNonNegativeInteger(streamLastOutputTextDeltaMs),
       requestContentType: parseContentType(requestContentType) || null,
       upstreamRequestContentType: parseContentType(upstreamRequestContentType) || null,
       responseContentType: normalizedResponseContentType || null,
@@ -566,22 +578,6 @@ export function createProxyRouteHandlers(context) {
     };
   }
 
-  function sendCompletedResponseAsSse(res, completed) {
-    commitOpenAISseHeaders(res);
-    res.write(`data: ${JSON.stringify({ type: "response.completed", response: completed })}\n\n`);
-    res.end();
-  }
-
-  function sendRawSseResponse(res, rawSse) {
-    commitOpenAISseHeaders(res);
-    res.write(rawSse);
-    res.end();
-  }
-
-  function looksLikeSsePayload(rawText) {
-    return typeof rawText === "string" && /(^|\n)\s*(event:|data:)/.test(rawText);
-  }
-
   function buildForwardHeaders(requestHeaders = {}) {
     const headers = new Headers();
     for (const [key, rawValue] of Object.entries(requestHeaders || {})) {
@@ -637,15 +633,6 @@ export function createProxyRouteHandlers(context) {
       : Buffer.from(options.requestBody || "", "utf8");
     const parsedRequestBody =
       options.parsedRequestBody === undefined ? getCachedJsonBody(req) : options.parsedRequestBody;
-    const requestAcceptsEventStream = String(req?.headers?.accept || "")
-      .toLowerCase()
-      .includes("text/event-stream");
-    const requestHasExplicitStreamFlag = Boolean(
-      parsedRequestBody &&
-        typeof parsedRequestBody === "object" &&
-        !Array.isArray(parsedRequestBody) &&
-        Object.prototype.hasOwnProperty.call(parsedRequestBody, "stream")
-    );
 
     let target;
     try {
@@ -688,11 +675,9 @@ export function createProxyRouteHandlers(context) {
         if (shouldForceWebSocketStream) normalizedResponsesRequest.stream = true;
         upstreamBody = Buffer.from(JSON.stringify(normalizedResponsesRequest), "utf8");
       }
-      const collectCompletedResponseAsJson = res
-        ? requestAcceptsEventStream && !requestHasExplicitStreamFlag
-          ? false
-          : normalized.collectCompletedResponseAsJson
-        : false;
+      const downstreamStreams =
+        canRewriteNormalizedRequest && normalizedResponsesRequest.stream === true;
+      const collectCompletedResponseAsJson = !downstreamStreams;
       const requestedModel = String(
         normalized.modelRoute?.mappedModel || normalized.model || config.codex.defaultModel || ""
       ).trim();
@@ -718,6 +703,13 @@ export function createProxyRouteHandlers(context) {
       const headers = buildForwardHeaders(req?.headers);
       if (!applyCodexAuthHeaders(headers, auth)) {
         throw createRouteError(401, "missing_account_id", "Could not extract chatgpt_account_id from OAuth token.");
+      }
+      if (downstreamStreams) {
+        headers.set("accept", "text/event-stream");
+        headers.set("accept-encoding", "identity");
+      } else {
+        headers.set("accept", "application/json");
+        headers.delete("accept-encoding");
       }
 
       if (normalized.modelRoute && res?.locals) {
@@ -810,6 +802,7 @@ export function createProxyRouteHandlers(context) {
         upstreamRequestContentType: "application/json",
         responseModel: normalized.model || config.codex.defaultModel,
         retryCount: readRetryCountFromResponse(retryState),
+        downstreamStreams,
         upstream,
         async markFailure(message, statusCode = 0) {
           await maybeMarkCodexPoolFailure(auth, message, statusCode).catch(() => {});
@@ -1093,6 +1086,7 @@ export function createProxyRouteHandlers(context) {
       let responseShape = "responses";
       let responseModel = config.codex.defaultModel;
       let normalizedResponsesRequest = null;
+      let downstreamStreams = false;
       let upstream;
       const markPoolFailure = async (message, statusCode = 0) => {
         if (!auth) return;
@@ -1163,6 +1157,7 @@ export function createProxyRouteHandlers(context) {
         collectCompletedResponseAsJson = responsesCreateSession.collectCompletedResponseAsJson;
         normalizedResponsesRequest = responsesCreateSession.normalizedResponsesRequest;
         responseModel = responsesCreateSession.responseModel || responseModel;
+        downstreamStreams = responsesCreateSession.downstreamStreams === true;
         upstream = responsesCreateSession.upstream;
       }
 
@@ -1339,27 +1334,31 @@ export function createProxyRouteHandlers(context) {
           return;
         }
 
-        const parsedResponse = parseResponsesResultFromSse(raw);
-        if (parsedResponse.failed) {
-          const failureStatusCode = readStatusCode(parsedResponse.failed.statusCode, 502) || 502;
-          await markPoolFailure(
-            `Upstream SSE response failed on ${req.method} ${req.originalUrl}: ${truncate(parsedResponse.failed.message, 200)}`,
-            failureStatusCode
-          );
-          res.status(failureStatusCode).json({
-            error: "upstream_response_failed",
-            message: parsedResponse.failed.message,
-            retry_count: readRetryCountFromResponse(res)
-          });
-          return;
+        let completed = null;
+        if (responseShape === "chat-completions") {
+          const parsedResponse = parseResponsesResultFromSse(raw);
+          if (parsedResponse.failed) {
+            const failureStatusCode = readStatusCode(parsedResponse.failed.statusCode, 502) || 502;
+            await markPoolFailure(
+              `Upstream SSE response failed on ${req.method} ${req.originalUrl}: ${truncate(parsedResponse.failed.message, 200)}`,
+              failureStatusCode
+            );
+            res.status(failureStatusCode).json({
+              error: "upstream_response_failed",
+              message: parsedResponse.failed.message,
+              retry_count: readRetryCountFromResponse(res)
+            });
+            return;
+          }
+          completed = parsedResponse.completed || null;
         }
-
-        const completed = parsedResponse.completed || extractCompletedResponseFromJson(raw);
+        completed = completed || extractCompletedResponseFromJson(raw);
         if (!completed) {
-          await markPoolFailure(`Invalid upstream SSE on ${req.method} ${req.originalUrl}`, 502);
+          await markPoolFailure(`Invalid upstream JSON on ${req.method} ${req.originalUrl}`, 502);
           res.status(502).json({
-            error: "invalid_upstream_sse",
-            message: "Could not parse completed response from codex SSE stream."
+            error: "invalid_upstream_json",
+            message: "Could not parse completed response from codex JSON response.",
+            retry_count: readRetryCountFromResponse(res)
           });
           return;
         }
@@ -1476,72 +1475,27 @@ export function createProxyRouteHandlers(context) {
 
       if (
         isResponsesCreateRequest &&
-        !collectCompletedResponseAsJson &&
+        downstreamStreams &&
         upstream.ok &&
         upstreamContentType &&
         !upstreamContentType.includes("event-stream")
       ) {
-        let raw;
         try {
-          raw = await readUpstreamTextOrThrow(upstream);
-        } catch (err) {
-          const details = extractUpstreamTransportError(err);
-          noteUpstreamRetry(res, readRetryCountFromResponse(res), err);
-          await markPoolFailure(`Upstream body read failed on ${req.method} ${req.originalUrl}: ${err.message}`, 502);
-          res.status(502).json({
-            error: "upstream_body_read_failed",
-            message: err.message,
-            code: details.code || details.name || null,
-            detail: details.detail || null,
-            retry_count: readRetryCountFromResponse(res)
-          });
-          return;
-        }
-
-        if (looksLikeSsePayload(raw)) {
-          const parsedResponse = parseResponsesResultFromSse(raw);
-          if (parsedResponse.failed) {
-            const failureStatusCode = readStatusCode(parsedResponse.failed.statusCode, 502) || 502;
-            await markPoolFailure(
-              `Upstream SSE response failed on ${req.method} ${req.originalUrl}: ${truncate(parsedResponse.failed.message, 200)}`,
-              failureStatusCode
-            );
-            sendRawSseResponse(res, raw);
-            return;
-          }
-
-          if (!parsedResponse.completed) {
-            await markPoolFailure(`Invalid upstream SSE on ${req.method} ${req.originalUrl}`, 502);
-            res.status(502).json({
-              error: "invalid_upstream_sse",
-              message: "Upstream SSE ended before a terminal response event."
-            });
-            return;
-          }
-
-          parsedResponse.completed.model = responseModel;
-          res.locals.tokenUsage = parsedResponse.completed.usage || null;
-          rememberCompletion(parsedResponse.completed);
-          await markPoolSuccess();
-          sendRawSseResponse(res, raw);
-          return;
-        }
-
-        const completed = extractCompletedResponseFromJson(raw);
-        if (!completed) {
-          await markPoolFailure(`Invalid upstream SSE on ${req.method} ${req.originalUrl}`, 502);
-          res.status(502).json({
-            error: "invalid_upstream_sse",
-            message: "Stream request returned a non-SSE body without a completed response payload."
-          });
-          return;
-        }
-
-        completed.model = responseModel;
-        res.locals.tokenUsage = completed.usage || null;
-        rememberCompletion(completed);
-        await markPoolSuccess();
-        sendCompletedResponseAsSse(res, completed);
+          await upstream.body?.cancel?.();
+        } catch {}
+        await markPoolFailure(
+          `Upstream stream request returned non-SSE content-type on ${req.method} ${req.originalUrl}: ${
+            upstreamContentType || "unknown"
+          }`,
+          502
+        );
+        res.status(502).json({
+          error: "invalid_upstream_sse",
+          message:
+            "stream=true requires an upstream SSE stream; refusing to buffer or replay a completed response.",
+          content_type: upstreamContentType || null,
+          retry_count: readRetryCountFromResponse(res)
+        });
         return;
       }
 

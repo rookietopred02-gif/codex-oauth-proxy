@@ -8,7 +8,6 @@ export function createCodexOAuthResponsesHelpers(context) {
     getCodexOriginator,
     fetchWithUpstreamRetry,
     readUpstreamTextOrThrow,
-    parseResponsesResultFromSse,
     extractCompletedResponseFromJson,
     normalizeTokenUsage,
     extractAssistantDisplayTextFromResponse,
@@ -85,21 +84,6 @@ export function createCodexOAuthResponsesHelpers(context) {
     );
     err.statusCode = statusCode;
     return err;
-  }
-
-  function extractCompletedResponseFromBufferedPayload(raw, contentType = "") {
-    const normalizedContentType = String(contentType || "").toLowerCase();
-    if (normalizedContentType.includes("text/event-stream") || /(^|\n)\s*(event:|data:)/.test(String(raw || ""))) {
-      const parsedSse = parseResponsesResultFromSse(raw);
-      if (parsedSse.failed) {
-        const upstreamErr = new Error(parsedSse.failed.message);
-        upstreamErr.statusCode = toStatusCode(parsedSse.failed.statusCode, 502);
-        throw upstreamErr;
-      }
-      return parsedSse.completed || null;
-    }
-
-    return extractCompletedResponseFromJson(raw) || null;
   }
 
   async function sendCodexResponsesRequest(currentAuth, url, body, acceptHeader) {
@@ -268,18 +252,8 @@ export function createCodexOAuthResponsesHelpers(context) {
           return { response, raw };
         };
 
-        const parseRequestResult = (result, expectSse = false) => {
-          if (!expectSse) {
-            return extractCompletedResponseFromJson(result.raw);
-          }
-          return extractCompletedResponseFromBufferedPayload(
-            result.raw,
-            result.response?.headers?.get?.("content-type") || ""
-          );
-        };
-
-        let activeBody = { ...baseBody, stream: true };
-        let requestResult = await sendCodexRequest(activeBody, "text/event-stream");
+        const activeBody = { ...baseBody, stream: false };
+        const requestResult = await sendCodexRequest(activeBody, "application/json");
 
         if (!requestResult.response.ok) {
           throw buildCodexRequestError(requestResult.response, requestResult.raw);
@@ -289,22 +263,9 @@ export function createCodexOAuthResponsesHelpers(context) {
           () => {}
         );
 
-        const contentType = requestResult.response.headers.get("content-type") || "";
-        const looksLikeSse =
-          contentType.includes("text/event-stream") || /(^|\n)\s*(event:|data:)/.test(requestResult.raw);
-        let completed = parseRequestResult(requestResult, looksLikeSse);
-
-        if (!completed && activeBody.stream === true && !looksLikeSse) {
-          activeBody = { ...baseBody, stream: false };
-          requestResult = await sendCodexRequest(activeBody, "application/json");
-          if (!requestResult.response.ok) {
-            throw buildCodexRequestError(requestResult.response, requestResult.raw);
-          }
-          completed = parseRequestResult(requestResult, false);
-        }
-
+        const completed = extractCompletedResponseFromJson(requestResult.raw);
         if (!completed) {
-          const parseErr = new Error("Could not parse completed response from upstream.");
+          const parseErr = new Error("Could not parse completed response from upstream JSON.");
           parseErr.statusCode = 502;
           throw parseErr;
         }
@@ -446,25 +407,19 @@ export function createCodexOAuthResponsesHelpers(context) {
         const contentType = String(response.headers.get("content-type") || "").toLowerCase();
         if (!contentType || contentType.includes("text/event-stream")) {
           return {
-            upstream: response,
-            bufferedCompletion: null
+            upstream: response
           };
         }
 
-        const raw = await readUpstreamTextOrThrow(response);
-        const bufferedCompletion = extractCompletedResponseFromBufferedPayload(raw, contentType);
-        if (bufferedCompletion) {
-          return {
-            upstream: null,
-            bufferedCompletion
-          };
-        }
+        try {
+          await response.body?.cancel?.();
+        } catch {}
 
         const unsupportedStreamErr = new Error(
           `Upstream stream request returned non-SSE content-type: ${contentType || "unknown"}`
         );
         unsupportedStreamErr.statusCode = 502;
-        unsupportedStreamErr.upstreamBody = raw;
+        unsupportedStreamErr.code = "invalid_upstream_sse";
         throw unsupportedStreamErr;
       };
 
@@ -522,7 +477,6 @@ export function createCodexOAuthResponsesHelpers(context) {
       return {
         model: resolvedRequestedModel,
         upstream: opened.upstream,
-        bufferedCompletion: opened.bufferedCompletion,
         authAccountId: auth.poolAccountId || auth.accountId || null,
         authContext: auth,
         async markSuccess() {

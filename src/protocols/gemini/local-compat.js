@@ -20,7 +20,6 @@ export function createGeminiLocalCompatHelpers(context) {
     parseOpenAIChatCompletionsLikeRequest,
     splitSystemAndConversation,
     buildOpenAIChatCompletion,
-    sendOpenAICompletionAsSse,
     openCodexConversationStreamViaOAuth,
     mapOpenAIFinishReasonToGemini,
     runCodexConversationViaOAuth,
@@ -44,15 +43,6 @@ export function createGeminiLocalCompatHelpers(context) {
       error: err?.code || "invalid_request",
       message: err?.message || "Invalid request body."
     });
-  }
-
-  function toFiniteNumber(value, fallback = 0) {
-    try {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : fallback;
-    } catch {
-      return fallback;
-    }
   }
 
   function toStatusCode(value, fallback = 0) {
@@ -171,16 +161,6 @@ export function createGeminiLocalCompatHelpers(context) {
       usageMetadata: toGeminiUsageMetadata(usage),
       modelVersion: model
     };
-  }
-
-  function sendGeminiGenerateContentAsSse(res, payload) {
-    res.status(200);
-    res.setHeader("content-type", "text/event-stream; charset=utf-8");
-    res.setHeader("cache-control", "no-cache");
-    res.setHeader("connection", "keep-alive");
-    res.setHeader("x-accel-buffering", "no");
-    res.write(`data: ${JSON.stringify(payload)}\n\n`);
-    res.end();
   }
 
   function extractBufferedAssistantText(response) {
@@ -432,25 +412,6 @@ export function createGeminiLocalCompatHelpers(context) {
         });
         res.locals.authAccountId = streamSession.authAccountId || null;
 
-        if (streamSession.bufferedCompletion) {
-          const usage = toOpenAIUsage(streamSession.bufferedCompletion?.usage);
-          if (usage) {
-            res.locals.tokenUsage = usage;
-          }
-          sendGeminiGenerateContentAsSse(
-            res,
-            buildGeminiGenerateContentResponse({
-              model: codexRoute.requestedModel,
-              text: extractBufferedAssistantText(streamSession.bufferedCompletion),
-              finishReason:
-                streamSession.bufferedCompletion?.status === "incomplete" ? "length" : "stop",
-              usage
-            })
-          );
-          await streamSession.markSuccess();
-          return;
-        }
-
         if (streamSession.upstream?.body) {
           const streamResult = await pipeCodexSseAsGeminiSse(
             streamSession.upstream,
@@ -559,21 +520,6 @@ export function createGeminiLocalCompatHelpers(context) {
           stop: chatReq.stop
         });
         res.locals.authAccountId = streamSession.authAccountId || null;
-
-        if (streamSession.bufferedCompletion) {
-          const usage = toOpenAIUsage(streamSession.bufferedCompletion?.usage);
-          const completion = buildOpenAIChatCompletion({
-            model: modelRoute.requestedModel,
-            text: extractBufferedAssistantText(streamSession.bufferedCompletion),
-            finishReason:
-              streamSession.bufferedCompletion?.status === "incomplete" ? "length" : "stop",
-            usage
-          });
-          res.locals.tokenUsage = completion.usage;
-          sendOpenAICompletionAsSse(res, completion, { heartbeatMs: 0 });
-          await streamSession.markSuccess();
-          return;
-        }
 
         if (streamSession.upstream?.body) {
           const streamResult = await pipeCodexSseAsChatCompletions(
